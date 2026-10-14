@@ -65,10 +65,16 @@ test('Discord: open the export page in your browser, request, and the download i
   await clickAction(run.page, 'mark-requested');
   let s = await until(run.page, 'requested', (x) => !!find(x, 'discord').requestedAt);
   assert.equal(find(s, 'discord').section, 'working');
+  await run.page.locator('[data-testid=state] .wait-clock').waitFor({ timeout: 10_000 }); // its clock has started
+  assert.equal(await run.page.locator('[data-testid=state] .bar').count(), 0, 'no progress bar while the service prepares it');
   // Days later the email's link downloads the package into Downloads.
   fs.copyFileSync(sb.exports.discord, path.join(sb.downloads, 'package.zip'));
   s = await until(run.page, 'discord imported', (x) => find(x, 'discord').section === 'done' && !x.jobs.length, 90_000);
   assert.equal(find(s, 'discord').records, 3);
+  // It's home: a banner says so, and opens it.
+  const banner = run.page.locator('[data-testid=arrival-discord]');
+  await banner.waitFor({ timeout: 10_000 });
+  assert.match(await banner.innerText(), /Discord is home/);
   assert.ok(fs.existsSync(path.join(sb.corpus, 'imports/discord/package.zip')));
   assert.ok(!fs.existsSync(path.join(sb.downloads, 'package.zip')), 'moved out of Downloads');
   assert.equal(readJson(path.join(sb.corpus, 'manifest.json')).discord.count, 3);

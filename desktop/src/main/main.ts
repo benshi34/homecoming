@@ -124,9 +124,8 @@ queue.onFinish(({ job, result, cancelled }) => {
   const good = job.sourceIds.filter((id) => !errs[id]);
   if (cancelled) toast(`Stopped: ${job.label}`);
   else if (bad.length) toast(`${names(bad)}: couldn't ${job.kind === 'import' ? 'import' : 'read'} ${bad.length > 1 ? 'them' : 'it'}. See the row for why.`, 'error');
-  else if (job.kind === 'import') toast(`Imported ${names(good)}`);
-  else if (job.kind === 'iphone') toast('Read the iPhone backup');
-  else toast(good.length > 3 ? `Read ${good.length} sources on this Mac` : `Read ${names(good)}`);
+  // An export or the iPhone coming home gets the window's own banner (moments.tsx) rather than a toast.
+  else if (job.kind !== 'import' && job.kind !== 'iphone') toast(good.length > 3 ? `Read ${good.length} sources on this Mac` : `Read ${names(good)}`);
   const settling = { id: job.id, kind: job.kind, label: job.label, sourceIds: job.sourceIds, connectors: job.connectors, state: 'running' as const,
     current: 'build_index', startedAt: job.startedAt, lastLine: 'Updating the counts…' };
   finishing.push(settling);

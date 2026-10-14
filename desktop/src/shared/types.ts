@@ -173,6 +173,7 @@ export interface SourceView {
   section: Section;
   status: string;
   stage?: 'waiting' | 'reading' | 'read'; // where it is in a run that reads several sources in turn
+  waiting?: boolean; // requested, and the service hasn't sent it yet
   detail?: string;
   records: number;
   first?: string | null;

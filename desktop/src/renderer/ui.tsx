@@ -27,12 +27,12 @@ export function animate(change: () => void, direction?: 'forward' | 'back' | 'mo
   });
 }
 
-export function Button({ children, kind = 'default', size = 'regular', onClick, disabled, type = 'button', testAction, title, ariaLabel }: {
+export function Button({ children, kind = 'default', size = 'regular', onClick, disabled, type = 'button', testAction, title, ariaLabel, className = '' }: {
   children: ReactNode; kind?: 'primary' | 'default' | 'plain' | 'destructive'; size?: 'regular' | 'large' | 'small';
-  onClick?: () => void; disabled?: boolean; type?: 'button' | 'submit'; testAction?: string; title?: string; ariaLabel?: string;
+  onClick?: () => void; disabled?: boolean; type?: 'button' | 'submit'; testAction?: string; title?: string; ariaLabel?: string; className?: string;
 }) {
   return (
-    <button type={type} className={`btn btn-${kind} btn-${size}`} onClick={onClick} disabled={disabled} data-action={testAction} title={title} aria-label={ariaLabel}>
+    <button type={type} className={`btn btn-${kind} btn-${size} ${className}`} onClick={onClick} disabled={disabled} data-action={testAction} title={title} aria-label={ariaLabel}>
       {children}
     </button>
   );

@@ -382,8 +382,10 @@ describe('web exports', () => {
     const waiting = view('google_takeout', { state: at(1) });
     assert.equal(waiting.section, 'working');
     assert.equal(waiting.status, 'Requested 1 h ago. Usually ready in 8 hours to 2 days.');
+    assert.equal(waiting.waiting, true, 'waiting on the service: its clock shows, not a progress bar');
     const ready = view('google_takeout', { state: at(10) });
     assert.equal(ready.section, 'needs');
+    assert.equal(ready.waiting, undefined);
     assert.equal(ready.status, 'Requested 10 h ago. It should be ready.');
     assert.equal(ready.actions[0].id, 'open-download');
     assert.ok(ready.notes!.includes('The download link stays valid for 7 days.'));

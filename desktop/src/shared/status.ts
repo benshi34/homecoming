@@ -461,7 +461,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
         actions: getIt, steps: undefined };
     }
     if (since < lo * HOUR) {
-      return { ...v, section: 'working', priority: 50, status: `${reqText}. Usually ready in ${waitRange([lo, hi])}.`, actions: getIt.map((a) => ({ ...a, primary: false })), steps: undefined };
+      return { ...v, section: 'working', waiting: true, priority: 50, status: `${reqText}. Usually ready in ${waitRange([lo, hi])}.`, actions: getIt.map((a) => ({ ...a, primary: false })), steps: undefined };
     }
     const expired = src.expiresDays && since > (hi * HOUR + src.expiresDays * DAY);
     if (expired) {

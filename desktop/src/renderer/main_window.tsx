@@ -9,8 +9,9 @@ import type { Snapshot, SourceView } from '../shared/types.ts';
 import { api } from './api.ts';
 import { Glyph, SourceIcon } from './icons.tsx';
 import { AskPage } from './ask.tsx';
-import { ExplorePage } from './explore.tsx';
+import { ExplorePage, Num } from './explore.tsx';
 import { Hub } from './hub.tsx';
+import { ArrivalBanners, RowCount, useArrivals, WaitClock } from './moments.tsx';
 import { AddServiceSheet, Detail, vt } from './parts.tsx';
 import { animate, Button, Checkmark, Group, GroupRow, ProgressBar, ProgressRing, Sheet, Spinner, Toggle } from './ui.tsx';
 
@@ -34,6 +35,14 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
   const selId = (selected[nav] && rows.some((r) => r.id === selected[nav])) ? selected[nav]! : rows[0]?.id;
   const view = all.find((s) => s.id === selId) ?? null;
   const prog = useMemo(() => progress(all, new Date()), [all]);
+  const { banners, popped, dismiss } = useArrivals(all);
+  // Each time another source is collected, a light sweeps along the sidebar's bar.
+  const lastCollected = useRef(prog.collected);
+  const [grew, setGrew] = useState(0);
+  useEffect(() => {
+    if (prog.collected > lastCollected.current) setGrew((n) => n + 1);
+    lastCollected.current = prog.collected;
+  }, [prog.collected]);
 
   // After you act on a source it moves (Needs You -> In Progress -> Collected); the selection follows it for a
   // couple of minutes instead of jumping to whatever is next in the old list.
@@ -96,8 +105,8 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
           <div className="side-item" onClick={() => setAdding(true)} data-testid="nav-add-service"><Glyph name="plus" size={16} /><span>Add Another Service…</span></div>
         </div>
         <div className="sidebar-foot no-drag" data-testid="sidebar-progress">
-          {prog.collected} of {prog.applicable} sources collected
-          <ProgressBar value={prog.percent} small />
+          <Num value={prog.collected} /> of {prog.applicable} sources collected
+          <div className="foot-bar"><ProgressBar value={prog.percent} small />{grew > 0 && <span className="foot-sweep" key={grew} aria-hidden />}</div>
         </div>
       </nav>
 
@@ -129,7 +138,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
                 {groups.filter((g) => g.rows.length).map((g) => (
                   <div key={g.title ?? 'main'} data-group={g.title ?? 'main'}>
                     {g.title && <div className="list-section">{g.title}</div>}
-                    {g.rows.map((v) => <Row key={v.id} v={v} selected={v.id === selId} onSelect={pick} needsYou={g.needsYou}
+                    {g.rows.map((v) => <Row key={v.id} v={v} selected={v.id === selId} onSelect={pick} needsYou={g.needsYou} popped={popped.has(v.id)}
                       unlocks={g === groups[0] ? all.filter((s) => s.blockedBy === v.id && s.group !== 'setup') : []} />)}
                   </div>
                 ))}
@@ -145,6 +154,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
           </div>
         </>
       )}
+      <ArrivalBanners banners={banners} onOpen={jump} onDismiss={dismiss} />
       {adding && <AddServiceSheet onClose={() => setAdding(false)} onAdded={added} />}
       {settingsOpen && <SettingsSheet snap={snap} onClose={() => setSettingsOpen(false)} onAssistant={() => { setSettingsOpen(false); onAssistant(); }} />}
     </div>
@@ -183,19 +193,20 @@ function ToolbarButtons({ onAssistant, onSettings }: { onAssistant: () => void; 
   );
 }
 
-function Row({ v, selected, onSelect, unlocks, needsYou }: { v: SourceView; selected: boolean; onSelect: (id: string) => void; unlocks: SourceView[]; needsYou?: boolean }) {
+function Row({ v, selected, onSelect, unlocks, needsYou, popped }: { v: SourceView; selected: boolean; onSelect: (id: string) => void; unlocks: SourceView[]; needsYou?: boolean; popped?: boolean }) {
   // The dot marks each row the sidebar badge counts.
   const side = needsYou ? <span className="status-dot needs" role="img" aria-label="Needs you" data-testid="needs-dot" />
-    : v.section === 'done' && v.group !== 'setup' && v.records > 0 ? count(v.records) : v.section === 'working' ? <Spinner size={13} /> : null;
+    : v.section === 'done' && v.group !== 'setup' && v.records > 0 ? <RowCount v={v} popped={!!popped} /> : v.waiting ? <WaitClock size={15} started={v.requestedAt} />
+      : v.section === 'working' ? <Spinner size={13} /> : null;
   return (
-    <div className={`lrow ${selected ? 'selected' : ''}`} onClick={() => onSelect(v.id)} data-testid={`row-${v.id}`} data-section={v.section} style={vt(`row-${v.id}`)}>
+    <div className={`lrow ${selected ? 'selected' : ''} ${popped ? 'arrived' : ''}`} onClick={() => onSelect(v.id)} data-testid={`row-${v.id}`} data-section={v.section} style={vt(`row-${v.id}`)}>
       <SourceIcon id={v.id} group={v.group} size={28} />
       <div className="main">
         <div className="name"><span className="n">{v.name}</span>{v.tag && <span className="tag">{v.tag}</span>}</div>
         <div className="status">{v.status}</div>
         {v.warnings[0] && <div className="warn">{v.warnings[0]}</div>}
         {unlocks.length > 0 && <div className="unlocks">Unlocks {unlocks.map((u) => u.name).join(', ')}</div>}
-        {v.section === 'working' && <div style={{ marginTop: 5 }}><ProgressBar value={v.progress} small /></div>}
+        {v.section === 'working' && !v.waiting && <div style={{ marginTop: 5 }}><ProgressBar value={v.progress} small /></div>}
       </div>
       <div className="side">{side}</div>
     </div>

@@ -9,6 +9,7 @@ import { api } from './api.ts';
 import { Glyph, SourceIcon } from './icons.tsx';
 import { PHONE_SOURCES, phoneGroups } from '../shared/phone.ts';
 import { Banner, Button, Group, GroupRow, ProgressBar, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
+import { WaitClock } from './moments.tsx';
 
 export const vt = (name: string): CSSProperties => ({ viewTransitionName: name } as CSSProperties);
 
@@ -422,11 +423,11 @@ export function Detail({ snap, view, onActed }: { snap: Snapshot; view: SourceVi
 
       <div className="group-box" data-testid="state">
         <div className="status-box">
-          <div style={{ marginTop: 1 }}><StatusGlyph section={view.section} size={18} /></div>
+          <div style={{ marginTop: 1 }}>{view.waiting ? <WaitClock size={18} started={view.requestedAt} /> : <StatusGlyph section={view.section} size={18} />}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="big" data-testid="status">{view.status}</div>
+            <div className="big appear-soft" key={view.status} data-testid="status">{view.status}</div>
             {view.detail && <div className="pre" data-testid="state-detail">{view.detail}</div>}
-            {view.section === 'working' && <ProgressBar value={view.progress} small />}
+            {view.section === 'working' && !view.waiting && <ProgressBar value={view.progress} small />}
           </div>
         </div>
         {view.actions.length > 0 && (

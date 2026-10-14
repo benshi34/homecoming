@@ -11,12 +11,13 @@ import { Glyph, GlyphTile, SourceIcon } from './icons.tsx';
 import { Hub, type HubFilter } from './hub.tsx';
 import { Timeline } from './main_window.tsx';
 import { AccountForm, AddServiceSheet, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, Steps, vt } from './parts.tsx';
-import { animate, Banner, Button, Checkmark, Group, GroupRow, ProgressBar, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
+import { animate, Banner, Button, Checkmark, Group, GroupRow, ProgressBar, reducedMotion, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
+import { Tick, WaitClock } from './moments.tsx';
 import { Welcome } from './welcome.tsx';
 
 interface PageSpec {
   body: ReactNode;
-  primary?: { label: string; onClick: () => void; disabled?: boolean };
+  primary?: { label: string; onClick: () => void; disabled?: boolean; done?: boolean };
   secondary?: ReactNode;
   wide?: boolean;
 }
@@ -45,7 +46,16 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
     if (n >= 0) goTo(n, n > i ? 'forward' : 'back');
   };
 
-  const page = renderStep(step, { snap, v, next, jump, onFinish, steps, index: i, draft, setDraft });
+  // Saying you've requested an export is a commitment: the button turns into a checkmark for a beat, then moves on.
+  const [justAsked, setJustAsked] = useState<string | null>(null);
+  const confirmed = (id: string, then: () => void) => {
+    setJustAsked(id);
+    setTimeout(() => {
+      setJustAsked(null);
+      then();
+    }, reducedMotion() ? 150 : 750);
+  };
+  const page = renderStep(step, { snap, v, next, jump, onFinish, steps, index: i, draft, setDraft, justAsked, confirmed });
   return (
     <div className="assistant" data-testid="assistant" data-step={step.id}>
       <StepsBar steps={steps} index={i} />
@@ -60,7 +70,8 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
         <div className="spacer" />
         <span className="where">{i + 1} of {steps.length}</span>
         {page.secondary}
-        {page.primary && <Button kind="primary" size="large" onClick={page.primary.onClick} disabled={page.primary.disabled} testAction="assistant-continue">{page.primary.label}</Button>}
+        {page.primary && <Button kind="primary" size="large" onClick={page.primary.onClick} disabled={page.primary.disabled || page.primary.done} testAction="assistant-continue"
+          className={page.primary.done ? 'is-done' : ''}>{page.primary.done && <Tick size={13} />}{page.primary.label}</Button>}
       </div>
     </div>
   );
@@ -105,6 +116,8 @@ interface Ctx {
   index: number;
   draft: Set<string>;
   setDraft: (s: Set<string>) => void;
+  justAsked: string | null; // the export just marked requested: its button shows a checkmark for a beat
+  confirmed: (id: string, then: () => void) => void;
 }
 
 function renderStep(step: Step, ctx: Ctx): PageSpec {
@@ -505,9 +518,9 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
   const asked = !!view.requestedAt || view.section === 'done' || view.section === 'working';
   // This one is passed over even before the snapshot shows it asked for.
   const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id));
-  const markAndNext = () => void api.action(id, 'mark-requested').then(onward);
+  const markAndNext = () => void api.action(id, 'mark-requested').then(() => ctx.confirmed(id, onward));
   const primary = view.section === 'done' || asked
-    ? { label: 'Continue', onClick: onward }
+    ? { label: ctx.justAsked === id ? 'Requested' : 'Continue', onClick: onward, done: ctx.justAsked === id }
     : { label: 'I\'ve Requested It', onClick: markAndNext };
   const secondary = (
     <>
@@ -518,11 +531,11 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
   const statusBox = (
     <div className="group-box" data-testid="export-status">
       <div className="status-box">
-        <div style={{ marginTop: 1 }}>{view.section === 'done' ? <Checkmark size={20} /> : <StatusGlyph section={view.section} size={20} />}</div>
+        <div style={{ marginTop: 1 }}>{view.section === 'done' ? <Checkmark size={20} /> : view.waiting ? <WaitClock size={20} started={view.requestedAt} /> : <StatusGlyph section={view.section} size={20} />}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="big" data-testid="status">{view.status}</div>
+          <div className="big appear-soft" key={view.status} data-testid="status">{view.status}</div>
           {view.detail && <div className="pre">{view.detail}</div>}
-          {view.section === 'working' && <ProgressBar value={view.progress} small />}
+          {view.section === 'working' && !view.waiting && <ProgressBar value={view.progress} small />}
         </div>
       </div>
       {view.section !== 'done' && (
