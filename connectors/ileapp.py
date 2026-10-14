@@ -145,6 +145,8 @@ def install():
         sys.exit(f"[ileapp] the bundled iLEAPP is missing ({ILEAPP})")
     TOOLS.mkdir(parents=True, exist_ok=True)
     if not VENV_PY.exists():
+        # Its Python can be gone (the app moved, from the disk image to Applications, or was replaced): start over.
+        shutil.rmtree(VENV_PY.parent.parent, ignore_errors=True)
         subprocess.run([sys.executable, "-m", "venv", str(VENV_PY.parent.parent)], check=True)
     r = subprocess.run([str(VENV_PY), "-m", "pip", "install", "-q", "--no-index", "--find-links", str(WHEELS),
                         "-r", str(REQUIREMENTS)], capture_output=True, text=True,

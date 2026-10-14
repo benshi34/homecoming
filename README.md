@@ -12,7 +12,7 @@ Homecoming is a Mac app that brings it home. It gathers your data into one libra
 
 ## Your data, and where it goes
 
-Everything Homecoming collects stays in one folder on your Mac, `corpus/` inside the folder you install it in. It isn't uploaded anywhere, and if that folder would sync to iCloud, the app says so and offers to keep it on this Mac.
+Everything Homecoming collects stays on your Mac, in your library: the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what iLEAPP reads from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
 
 Only three things ever leave your Mac, and each is something you start:
 
@@ -26,7 +26,7 @@ There's no analytics, no account, no update check and no telemetry.
 
 It reads, and changes only what you tell it to:
 
-- **Downloads you're expecting** move from `~/Downloads` into `corpus/imports/` when they arrive. Files on another drive are copied, not moved. Anything you weren't expecting waits for a yes.
+- **Downloads you're expecting** move from `~/Downloads` into your library's `imports/` folder when they arrive. Files on another drive are copied, not moved. Anything you weren't expecting waits for a yes.
 - **Two settings, only if you click Keep:** Claude Code's `cleanupPeriodDays` in `~/.claude/settings.json`, so it stops deleting transcripts after 30 days, and a few lines at the end of `~/.zshrc`, marked `# Added by Homecoming`, so Terminal keeps every command and when it ran.
 - **Settings in other apps:** Messages, Safari, your iPhone and Google can delete old history. For each one, the app shows you how to keep it, and you change it there yourself.
 
@@ -38,7 +38,24 @@ It reads, and changes only what you tell it to:
 
 ## Install and run
 
-### What you need
+### Download the app
+
+You need a Mac with Apple silicon (M1 or later). Everything else comes inside the app.
+
+1. **Download** `Homecoming-0.1.0-arm64.dmg` from the [latest release](https://github.com/benshi34/homecoming/releases/latest). The repository is private, so accept GitHub's invitation email and sign in first.
+2. **Open it** and drag Homecoming into Applications.
+3. **Open Homecoming** from Applications. macOS says it can't check the app for malicious software, because it isn't signed with an Apple Developer ID yet. Click **Done**. Then open System Settings → Privacy & Security, scroll down to "Homecoming was blocked", click **Open Anyway**, and confirm. You only do this once.
+4. **Turn on Full Disk Access** when the app asks: System Settings → Privacy & Security → Full Disk Access → Homecoming. Then quit and reopen it.
+
+To ask questions about your data, you'll also want the Claude Code or Codex CLI, signed in.
+
+**Updating:** download the new `.dmg` and drag Homecoming into Applications again, replacing the old one. Your library and progress stay where they are.
+
+### Run from source
+
+For developers, or if you'd rather build it yourself.
+
+#### What you need
 
 - **A Mac with Apple silicon** (M1 or later). On an Intel Mac the iPhone backup step can't run.
 - **Python 3.14 from [python.org](https://www.python.org/downloads/macos/).** The iPhone backup step uses packages that come with Homecoming and are built for Python 3.14 only. The app looks for python.org's Python first (`/usr/local/bin/python3`).
@@ -46,7 +63,7 @@ It reads, and changes only what you tell it to:
 - **git**, if you clone rather than download. The first time you type `git` in Terminal, macOS offers to install it.
 - **Optional: the Claude Code or Codex CLI**, signed in, to ask questions about your data.
 
-### Get the code
+#### Get the code
 
 The repository is private during the beta. Accept the invitation email from GitHub first, then do one of these:
 
@@ -59,7 +76,7 @@ The repository is private during the beta. Accept the invitation email from GitH
 
 Keep it out of Desktop and Documents. If iCloud syncs those folders, everything you collect would be uploaded to iCloud.
 
-### Install and start
+#### Install and start
 
 ```bash
 cd ~/Developer/homecoming
@@ -73,7 +90,7 @@ npm start
 
 To use a different Python 3.14, start the app with `UMP_PYTHON=/path/to/python3 npm start`.
 
-### Full Disk Access goes to Terminal
+#### Full Disk Access goes to Terminal
 
 macOS keeps Messages, Mail, Photos, Notes and call history behind Full Disk Access. When you run from source, macOS gives that permission to the app that started Homecoming (usually Terminal), not to Homecoming itself. That means every command you run in Terminal can read those files too.
 
@@ -81,7 +98,7 @@ macOS keeps Messages, Mail, Photos, Notes and call history behind Full Disk Acce
 2. Quit and reopen Terminal (macOS offers to), then run `npm start` again from `desktop/`.
 3. When you're done collecting, turn Terminal off in the same list.
 
-### Updating
+#### Updating
 
 If you cloned it:
 
@@ -103,20 +120,22 @@ Open an issue on this repository. Say:
 - which source it was (Messages, Google, your iPhone...);
 - your macOS version, and Intel or Apple silicon.
 
-Each source's detail pane has a **Progress** log, and Terminal shows the app's output; both help. **Read them before you paste.** They can hold file names, account names and bits of your data. Never attach an export or anything from `corpus/`. If something about your data looks wrong, describe its shape ("a group chat shows up twice"), not who's in it.
+Each source's detail pane has a **Progress** log, and when you run from source, Terminal shows the app's output; both help. **Read them before you paste.** They can hold file names, account names and bits of your data. Never attach an export or anything from your library. If something about your data looks wrong, describe its shape ("a group chat shows up twice"), not who's in it.
 
 ## Removing everything
 
 1. Quit Homecoming.
-2. Delete `corpus/` in the folder you installed it in (or the whole folder). That's everything it collected, including the exports it filed.
-3. Delete `~/Library/Application Support/Homecoming`: its progress, settings and Ask conversations.
-4. Turn Terminal off in System Settings → Privacy & Security → Full Disk Access.
-5. If you clicked Keep for them: remove the lines under `# Added by Homecoming` at the end of `~/.zshrc`, and `cleanupPeriodDays` from `~/.claude/settings.json`.
+2. Delete your library: `~/Homecoming`, or `corpus/` in the folder you ran it from. That's everything it collected, including the exports it filed.
+3. Delete `~/Library/Application Support/q1_user_model`: the decrypted copy of your iPhone backup and what iLEAPP read from it.
+4. Delete `~/Library/Application Support/Homecoming`: its progress, settings and Ask conversations.
+5. Drag Homecoming from Applications to the Trash (or delete the folder you ran it from).
+6. Turn Homecoming (or Terminal) off in System Settings → Privacy & Security → Full Disk Access.
+7. If you clicked Keep for them: remove the lines under `# Added by Homecoming` at the end of `~/.zshrc`, and `cleanupPeriodDays` from `~/.claude/settings.json`.
 
 ## Known limits
 
-- **It's a development build**, run from source. A signed app you can download is planned.
-- **Apple silicon and Python 3.14 only**, for the iPhone step.
+- **Not signed with an Apple Developer ID yet**, so macOS asks you to allow it the first time (Open Anyway, above).
+- **Apple silicon only**, and when run from source, Python 3.14 only, for the iPhone step.
 - **It refreshes only while it's open.** Leave it open while you wait for downloads, or open it every day or two.
 - **It doesn't fill in export forms for you.** Download pages open in your browser; the steps are in the app.
 

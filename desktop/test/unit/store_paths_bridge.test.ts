@@ -80,6 +80,21 @@ describe('paths', () => {
     assert.equal(p.bridge, '/repo/desktop/py/bridge.py');
     assert.equal(p.downloads, '/Users/ada/Downloads');
     assert.equal(p.userData, null);
+    assert.equal(p.packaged, false);
+    assert.equal(childEnv(p, {}).PYTHONDONTWRITEBYTECODE, undefined);
+  });
+
+  test('packaged: the library in ~/Homecoming, the bundled Python, no .pyc written into the app', () => {
+    const res = '/Applications/Homecoming.app/Contents/Resources';
+    const bundled = `${res}/python/bin/python3`;
+    const p = resolvePaths({ HOME: '/Users/ada' }, `${res}/app`, '/Users/ada', true);
+    assert.equal(p.repo, res, 'connectors/ sits in Resources');
+    assert.equal(p.bridge, `${res}/app/py/bridge.py`);
+    assert.equal(p.corpus, '/Users/ada/Homecoming');
+    assert.equal(childEnv(p, {}).PYTHONDONTWRITEBYTECODE, '1');
+    assert.equal(findPython({}, (x) => x === bundled || x === '/usr/local/bin/python3', bundled), bundled, 'its own Python first');
+    assert.equal(findPython({ UMP_PYTHON: '/x' }, () => true, bundled), '/x');
+    assert.equal(resolvePaths({ HOME: '/Users/ada', CORPUS_DIR: '/c' }, `${res}/app`, '/Users/ada', true).corpus, '/c');
   });
 
   test('environment overrides', () => {

@@ -65,8 +65,9 @@ export async function launch(env: Record<string, string>, opts: { assistant?: bo
   }
   const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('UMP_') && k !== 'CORPUS_DIR' && k !== 'ELECTRON_RUN_AS_NODE')) as Record<string, string>;
   const app = await electron.launch({
-    executablePath: electronPath as unknown as string,
-    args: [DESKTOP],
+    // UMP_APP: a packaged Homecoming.app's executable, to run the same tests against the build testers download.
+    executablePath: process.env.UMP_APP || (electronPath as unknown as string),
+    args: process.env.UMP_APP ? [] : [DESKTOP],
     env: { ...base, UMP_SETTLE_MS: '300', UMP_POLL_MS: '250', UMP_HIDDEN: '1', ...env }, // off screen, so a test run doesn't take over the Mac
     timeout: 60_000,
   });

@@ -12,7 +12,10 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { launch, shot, snap } from './harness.ts';
 
-const SKIP = process.env.UMP_REAL !== '1' && 'set UMP_REAL=1 (npm run test:real) to walk through on this Mac';
+// A packaged app (UMP_APP) is its own app to macOS: until you've turned on Full Disk Access for that build by hand,
+// reading ~/Documents waits on a permission prompt, so it runs only when you say you have (UMP_APP_FDA=1).
+const SKIP = process.env.UMP_REAL !== '1' ? 'set UMP_REAL=1 (npm run test:real) to walk through on this Mac'
+  : process.env.UMP_APP && process.env.UMP_APP_FDA !== '1' && 'turn on Full Disk Access for this Homecoming.app, then set UMP_APP_FDA=1';
 
 // Every process under `main`, and the sockets they have open (local ones are Playwright's own connection).
 function sockets(main: number): string[] {

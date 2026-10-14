@@ -27,9 +27,10 @@ test('killed mid-read, the next launch finishes the job', async () => {
   await new Promise((r) => setTimeout(r, 500));
 
   run = await launch(env);
-  const s = await until(run.page, 'everything read', (x) => !!x.probeTime && !x.jobs.length
-    && x.sources.filter((v) => v.group === 'mac').every((v) => v.section !== 'working'), 120_000);
-  for (const id of ['ai_coding', 'documents', 'git_commits']) { // what this fake Mac has
+  // Read again, not just idle: right after launch there's a moment before the read is queued.
+  const ids = ['ai_coding', 'documents', 'git_commits']; // what this fake Mac has
+  const s = await until(run.page, 'everything read', (x) => !x.jobs.length && ids.every((id) => find(x, id).section === 'done'), 120_000);
+  for (const id of ids) {
     assert.equal(find(s, id).section, 'done', `${id} read after the restart`);
     assert.ok((find(s, id).records ?? 0) > 0, `${id} has its records`);
   }

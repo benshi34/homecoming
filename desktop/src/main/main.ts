@@ -35,7 +35,7 @@ const HOUR = 3600_000;
 const REFRESH_AFTER = 20 * HOUR;
 
 app.setName('Homecoming');
-const P = resolvePaths(process.env, app.getAppPath());
+const P = resolvePaths(process.env, app.getAppPath(), undefined, app.isPackaged);
 // Not app.getPath('userData'): asking for it creates the folder, and then there'd be nothing to adopt into.
 app.setPath('userData', P.userData ?? adoptFolder(path.join(app.getPath('appData'), 'User Model'), path.join(app.getPath('appData'), 'Homecoming')));
 const URLS = urlOverrides(process.env);

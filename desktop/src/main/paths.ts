@@ -25,19 +25,25 @@ export interface Paths {
   python: string;
   home: string;
   userData: string | null;
+  packaged: boolean;
 }
 
 const PYTHONS = ['/usr/local/bin/python3', '/opt/homebrew/bin/python3',
   '/Library/Frameworks/Python.framework/Versions/Current/bin/python3', '/usr/bin/python3'];
 
-export function findPython(env: NodeJS.ProcessEnv, exists: (p: string) => boolean = fs.existsSync): string {
+// bundled: the Python inside Homecoming.app (scripts/package_mac.mjs puts it there, its packages installed).
+export function findPython(env: NodeJS.ProcessEnv, exists: (p: string) => boolean = fs.existsSync, bundled?: string): string {
   if (env.UMP_PYTHON) return env.UMP_PYTHON;
+  if (bundled && exists(bundled)) return bundled;
   return PYTHONS.find(exists) ?? 'python3';
 }
 
-export function resolvePaths(env: NodeJS.ProcessEnv, appDir: string, home = env.HOME || os.homedir()): Paths {
+// Run from source, everything is in the clone: connectors/ next to desktop/, the library in corpus/. Packaged
+// (Homecoming.app), the app's Resources hold connectors/ and Python, and the library is ~/Homecoming: the app is
+// read-only, and replaced whole on every update.
+export function resolvePaths(env: NodeJS.ProcessEnv, appDir: string, home = env.HOME || os.homedir(), packaged = false): Paths {
   const repo = path.resolve(env.UMP_REPO || path.join(appDir, '..'));
-  const corpus = path.resolve(env.CORPUS_DIR || path.join(repo, 'corpus'));
+  const corpus = path.resolve(env.CORPUS_DIR || (packaged ? path.join(home, 'Homecoming') : path.join(repo, 'corpus')));
   return {
     appDir,
     repo,
@@ -46,9 +52,10 @@ export function resolvePaths(env: NodeJS.ProcessEnv, appDir: string, home = env.
     imports: path.join(corpus, 'imports'),
     incoming: path.join(corpus, 'imports', '.incoming'),
     downloads: path.resolve(env.UMP_DOWNLOADS || path.join(home, 'Downloads')),
-    python: findPython(env),
+    python: findPython(env, fs.existsSync, packaged ? path.join(repo, 'python', 'bin', 'python3') : undefined),
     home,
     userData: env.UMP_USER_DATA ? path.resolve(env.UMP_USER_DATA) : null,
+    packaged,
   };
 }
 
@@ -79,8 +86,9 @@ export function adoptFolder(oldDir: string, newDir: string): string {
   }
 }
 
+// Packaged, Python mustn't write .pyc files into the signed app: they come precompiled.
 export function childEnv(p: Paths, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...env, CORPUS_DIR: p.corpus, UMP_REPO: p.repo, PYTHONUNBUFFERED: '1', HOME: p.home };
+  return { ...env, CORPUS_DIR: p.corpus, UMP_REPO: p.repo, PYTHONUNBUFFERED: '1', HOME: p.home, ...(p.packaged ? { PYTHONDONTWRITEBYTECODE: '1' } : {}) };
 }
 
 export function urlOverrides(env: NodeJS.ProcessEnv): Record<string, string> {

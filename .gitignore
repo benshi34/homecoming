@@ -13,3 +13,7 @@ corpus.nosync/
 *.jsonl
 .venv/
 
+
+# The packaged app and what's downloaded to build it (desktop/scripts/package_mac.mjs)
+desktop/release/
+desktop/build/cache/
