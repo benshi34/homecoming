@@ -16,7 +16,7 @@
     "test:py": "python3 -m unittest discover -s test/py -p 'test_*.py'",
     "test:e2e": "node build.mjs && node --test --test-concurrency=4 'test/e2e/*.test.ts'",
     "test:clis": "node --test 'test/clis/*.test.ts'",
-    "test:real": "node build.mjs && UMP_REAL=1 node --test test/e2e/real_data.test.ts",
+    "test:real": "node build.mjs && UMP_REAL=1 node --test test/e2e/real_data.test.ts test/e2e/walk_real.test.ts",
     "icons": "node scripts/build_icons.mjs"
   },
   "devDependencies": {

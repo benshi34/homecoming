@@ -309,7 +309,8 @@ function KeepPage({ ctx }: { ctx: Ctx }) {
 function mac(ctx: Ctx): PageSpec {
   const list = ctx.snap.sources.filter((s) => s.group === 'mac');
   const counted = list.filter((s) => s.section !== 'unavailable');
-  const read = counted.filter((s) => s.section === 'done').length;
+  const isRead = (s: SourceView) => s.section === 'done' || s.stage === 'read'; // read this run, saved when the run ends
+  const read = counted.filter(isRead).length;
   const busy = list.some((s) => s.section === 'working');
   const ready = list.filter((s) => s.status === 'Ready to read');
   return {
@@ -332,7 +333,7 @@ function mac(ctx: Ctx): PageSpec {
         <div className="group-box" data-testid="mac-sources">
           {list.map((s) => (
             <GroupRow key={s.id} testId={`mac-${s.id}`} icon={<SourceIcon id={s.id} size={26} />} title={s.name}
-              subtitle={<>{s.status}<ContentsLines view={s} /></>} trailing={s.section === 'done' ? <Checkmark size={17} /> : <StatusGlyph section={s.section} />} />
+              subtitle={<>{s.status}<ContentsLines view={s} /></>} trailing={isRead(s) ? <Checkmark size={17} /> : s.stage === 'waiting' ? <Glyph name="clock" size={15} className="waiting-glyph" /> : <StatusGlyph section={s.section} />} />
           ))}
         </div>
       </>

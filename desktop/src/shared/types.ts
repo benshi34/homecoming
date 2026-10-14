@@ -149,6 +149,7 @@ export interface JobView {
   connectors: string[];
   state: 'queued' | 'running';
   current?: string;
+  finished?: string[];
   startedAt?: string;
   lastLine?: string;
 }
@@ -171,6 +172,7 @@ export interface SourceView {
   blurb: string;
   section: Section;
   status: string;
+  stage?: 'waiting' | 'reading' | 'read'; // where it is in a run that reads several sources in turn
   detail?: string;
   records: number;
   first?: string | null;

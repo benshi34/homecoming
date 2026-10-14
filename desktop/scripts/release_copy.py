@@ -2,7 +2,7 @@
 
     python3 desktop/scripts/release_copy.py OUT [--corpus PATH] [--allow TERM ...]
 
-Copies the committed versions (git archive HEAD, so nothing uncommitted and nothing ignored) of README.md,
+Copies the committed versions (git archive HEAD, so nothing uncommitted and nothing ignored) of README.md, BETA.md,
 .gitignore, desktop/ and connectors/ into OUT, which must not exist yet. The research notes, the evals and the
 experiments stay behind.
 
@@ -10,6 +10,9 @@ Then it scans every text file in OUT for the names, emails, usernames and phone 
 identity.json, and the full names of everyone with 20 or more messages in corpus.db, and exits 1 if any turn up.
 Third-party data (vendored iLEAPP, the services directory, icons, coastlines) isn't scanned. --allow lets through
 terms that belong there, such as the GitHub username in the clone URL. The corpus defaults to <repo>/corpus.
+
+To update the release repo: clone it, replace everything but its .git with a new copy
+(rsync -a --delete --exclude .git OUT/ CLONE/), then commit and push.
 """
 
 import argparse
@@ -23,7 +26,7 @@ import tarfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PATHS = ["README.md", ".gitignore", "desktop", "connectors"]
+PATHS = ["README.md", "BETA.md", ".gitignore", "desktop", "connectors"]
 NOT_SCANNED = re.compile(r"(^|/)vendor/|services\.json$|service_icons\.json$|world_land\.json$|categories\.json$|link_check\.json$|THIRD_PARTY\.md$")
 
 

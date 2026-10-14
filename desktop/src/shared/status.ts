@@ -150,11 +150,17 @@ function jobFor(id: string, jobs: JobView[]): JobView | undefined {
   return jobs.find((j) => j.sourceIds.includes(id) && j.state === 'running') ?? jobs.find((j) => j.sourceIds.includes(id));
 }
 
-function jobStatus(job: JobView, now: Date): { status: string; detail?: string } {
+// One run can read several sources, one at a time (all of the Mac's at first): each says where it is in that run.
+function jobStatus(job: JobView, now: Date, connector?: string): { status: string; detail?: string; stage?: SourceView['stage'] } {
   if (job.state === 'queued') return { status: 'Waiting to start', detail: job.label };
+  if (connector && job.connectors.length > 1 && job.connectors.includes(connector) && job.current !== connector) {
+    if (!job.finished?.includes(connector)) return { status: 'Waiting its turn', detail: job.label, stage: 'waiting' };
+    const rest = job.connectors.some((c) => !job.finished!.includes(c));
+    return { status: rest ? 'Read; the others are still being read' : 'Read; making it searchable', detail: job.label, stage: 'read' };
+  }
   const since = job.startedAt ? ` (started ${ago(job.startedAt, now)})` : '';
   const what = job.kind === 'import' ? 'Importing' : job.kind === 'iphone' ? 'Decrypting and reading' : 'Reading';
-  return { status: `${what}${job.current && job.connectors.length > 1 ? `: ${job.current}` : ''}…${since}`, detail: job.lastLine };
+  return { status: `${what}…${since}`, detail: job.lastLine, stage: connector && job.connectors.length > 1 ? 'reading' : undefined };
 }
 
 const skip: Action = { id: 'skip', label: 'Skip', input: 'skip-reason' };
@@ -308,7 +314,7 @@ function macView(src: Source, inp: StatusInput): SourceView {
   const access = probe?.sources?.[src.connector!];
   if (st?.skipped) return { ...v, section: 'unavailable', status: `Skipped: ${st.skipped}`, actions: [unskip] };
   const job = jobFor(src.id, jobs);
-  if (job) return { ...v, section: 'working', ...jobStatus(job, now), actions: [{ id: 'cancel-job', label: 'Stop' }] };
+  if (job) return { ...v, section: 'working', ...jobStatus(job, now, src.connector), actions: [{ id: 'cancel-job', label: 'Stop' }] };
   if (st?.lastError && later(st.lastErrorAt ?? '1970-01-01T00:00:00Z', t.ranAt)) {
     return { ...v, section: 'needs', priority: 12, status: 'Couldn\'t read it', detail: st.lastError, actions: [{ id: 'run', label: 'Try again', primary: true }, skip] };
   }

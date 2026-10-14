@@ -1154,7 +1154,7 @@ button.hbar:hover { background: var(--fill); }
 .demo-head .bar { grid-column: 1 / -1; margin-top: 6px; }
 .demo-pill { font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 10px; background: var(--fill-strong); color: var(--secondary); white-space: nowrap; }
 .demo-pill.ready { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
-.demo-wait { color: var(--tertiary); }
+.demo-wait, .waiting-glyph { color: var(--tertiary); }
 .demo-col-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--secondary); margin: 0 2px 7px; font-variant-numeric: tabular-nums; }
 .demo-col-title svg { color: var(--accent); }
 .demo-home { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 18px; align-items: start; max-width: 940px; margin: 0 auto; padding-top: 22px; }

@@ -206,10 +206,18 @@ describe('Mac sources', () => {
   });
 
   test('running and queued jobs', () => {
-    const running = view('imessage', { jobs: [job({ sourceIds: ['imessage', 'contacts'], connectors: ['contacts', 'imessage'], current: 'imessage', lastLine: '[imessage] 400k records' })] });
+    // One run reads the Mac's sources in turn: each says where it is, not what the run is reading right now.
+    const all = job({ sourceIds: ['contacts', 'imessage', 'photos'], connectors: ['contacts', 'imessage', 'photos'], current: 'imessage', finished: ['contacts'], lastLine: '[imessage] 400k records' });
+    const running = view('imessage', { jobs: [all] });
     assert.equal(running.section, 'working');
-    assert.match(running.status, /^Reading: imessage…/);
+    assert.match(running.status, /^Reading… \(started/);
     assert.equal(running.detail, '[imessage] 400k records');
+    assert.equal(view('photos', { jobs: [all] }).status, 'Waiting its turn');
+    assert.equal(view('contacts', { jobs: [all] }).status, 'Read; the others are still being read');
+    const indexing = { ...all, current: 'build_index', finished: ['contacts', 'imessage', 'photos'] };
+    assert.equal(view('photos', { jobs: [indexing] }).status, 'Read; making it searchable');
+    for (const id of ['contacts', 'imessage', 'photos']) assert.equal(view(id, { jobs: [all] }).section, 'working');
+    assert.deepEqual(['contacts', 'imessage', 'photos'].map((id) => view(id, { jobs: [all] }).stage), ['read', 'reading', 'waiting']);
     const queued = view('photos', { jobs: [job({ state: 'queued', sourceIds: ['photos'], connectors: ['photos'] })] });
     assert.equal(queued.status, 'Waiting to start');
   });

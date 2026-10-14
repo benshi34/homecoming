@@ -17,6 +17,7 @@ export interface Job extends JobSpec {
   id: string;
   state: 'queued' | 'running';
   current?: string;
+  finished: string[]; // connectors this run has done, in order
   startedAt?: string;
   lastLine?: string;
   log: string[];
@@ -82,7 +83,7 @@ export class JobQueue {
         return run;
       }
     }
-    const job: Job = { ...spec, id: `job-${++this.seq}`, state: 'queued', log: [] };
+    const job: Job = { ...spec, id: `job-${++this.seq}`, state: 'queued', finished: [], log: [] };
     this.jobs.push(job);
     this.changed();
     this.pump();
@@ -116,8 +117,8 @@ export class JobQueue {
   }
 
   list(): JobView[] {
-    return this.jobs.map(({ id, kind, label, sourceIds, connectors, state, current, startedAt, lastLine }) =>
-      ({ id, kind, label, sourceIds, connectors, state, current, startedAt, lastLine }));
+    return this.jobs.map(({ id, kind, label, sourceIds, connectors, state, current, finished, startedAt, lastLine }) =>
+      ({ id, kind, label, sourceIds, connectors, state, current, finished: [...finished], startedAt, lastLine }));
   }
 
   get(id: string): Job | undefined {
@@ -132,6 +133,7 @@ export class JobQueue {
     job.startedAt = this.now().toISOString();
     const handle = this.runner(job, (e) => {
       if (e.type === 'start') job.current = e.connector;
+      if (e.type === 'done' && !job.finished.includes(e.connector)) job.finished.push(e.connector);
       const line = e.type === 'log' ? e.line : e.type === 'raw' ? e.line : e.type === 'error' ? `${e.connector}: ${e.error}` : null;
       if (line) {
         job.lastLine = line;
