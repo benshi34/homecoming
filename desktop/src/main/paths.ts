@@ -53,7 +53,8 @@ export function resolvePaths(env: NodeJS.ProcessEnv, appDir: string, home = env.
 }
 
 // The app was called User Model before it was Homecoming. The first time, its state folder takes the new name, so
-// nothing starts over; while the old app has the folder open (Chromium's SingletonLock), it's used where it is.
+// nothing starts over; while the old app has the folder open (Chromium's SingletonLock), it's used where it is. An
+// empty new folder doesn't count: Electron makes one whenever anything asks for the app's data path.
 export function adoptFolder(oldDir: string, newDir: string): string {
   const present = (p: string) => {
     try {
@@ -63,6 +64,11 @@ export function adoptFolder(oldDir: string, newDir: string): string {
       return false;
     }
   };
+  try {
+    if (present(oldDir) && fs.readdirSync(newDir).length === 0) fs.rmdirSync(newDir);
+  } catch {
+    // no new folder yet, or not one we can read: decided below
+  }
   if (present(newDir) || !present(oldDir)) return newDir;
   if (present(path.join(oldDir, 'SingletonLock'))) return oldDir;
   try {

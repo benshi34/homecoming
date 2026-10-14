@@ -103,8 +103,9 @@ describe('paths', () => {
       fs.symlinkSync('host-123', path.join(old, 'SingletonLock')); // a dangling link, as Chromium leaves it
       assert.equal(adoptFolder(old, neu), old, 'open: used where it is');
       fs.unlinkSync(path.join(old, 'SingletonLock'));
+      fs.mkdirSync(neu); // empty, as Electron leaves it when something asks for the app's data path
       assert.equal(adoptFolder(old, neu), neu);
-      assert.ok(fs.existsSync(path.join(neu, 'state.json')) && !fs.existsSync(old), 'moved, with what was in it');
+      assert.ok(fs.existsSync(path.join(neu, 'state.json')) && !fs.existsSync(old), 'moved, with what was in it, past an empty new folder');
       fs.mkdirSync(old);
       assert.equal(adoptFolder(old, neu), neu, 'the new folder wins once it exists');
       assert.ok(fs.existsSync(old), 'and the old one is left alone');
