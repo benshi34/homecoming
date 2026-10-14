@@ -1,0 +1,18 @@
+{
+  "service": "TikTok",
+  "version": 1,
+  "items": [
+    {"describe": "Videos you watched", "file": "user_data_tiktok.json", "path": "Your Activity.Watch History.VideoList",
+     "kind": "watch", "time": "Date", "zone": "UTC", "title": "Title", "text": ["Title", "Link"], "url": "Link", "author": "me"},
+    {"describe": "Your searches", "file": "user_data_tiktok.json", "path": "Your Activity.Searches.SearchList",
+     "kind": "search", "time": "Date", "zone": "UTC", "title": "SearchTerm", "text": ["SearchTerm"], "author": "me"},
+    {"describe": "Videos you liked", "file": "user_data_tiktok.json", "path": "Likes and Favorites.Like List.ItemFavoriteList",
+     "kind": "like", "time": "date", "zone": "UTC", "text": ["link"], "url": "link", "author": "me"},
+    {"describe": "Videos you saved as favorites", "file": "user_data_tiktok.json", "path": "Likes and Favorites.Favorite Videos.FavoriteVideoList",
+     "kind": "like", "time": "Date", "zone": "UTC", "text": ["Link"], "url": "Link", "author": "me"},
+    {"describe": "Videos you posted", "file": "user_data_tiktok.json", "path": "Post.Posts.VideoList",
+     "kind": "post", "time": "Date", "zone": "UTC", "text": ["Sound", "Location", "WhoCanView"], "url": "Link", "author": "me"},
+    {"describe": "Accounts you follow", "file": "user_data_tiktok.json", "path": "Profile And Settings.Following.Following",
+     "kind": "follow", "time": "Date", "zone": "UTC", "title": "UserName", "text": ["UserName"], "author": "me"}
+  ]
+}

@@ -1,0 +1,206 @@
+// How far along the whole collection is (the Overview timeline), and the Setup Assistant's pages. Both are
+// derived from the per-source views, so they move as soon as anything changes. Pure, for the tests.
+
+import { BY_ID, CATALOG } from './catalog.ts';
+import type { FoundService, SourceView } from './types.ts';
+
+const HOUR = 3600_000;
+
+export type PhaseId = 'setup' | 'mac' | 'iphone' | 'request' | 'arrive' | 'extras';
+
+export interface Phase {
+  id: PhaseId;
+  title: string;
+  detail: string;
+  done: number;
+  total: number;
+  status: 'done' | 'active' | 'upcoming' | 'skipped';
+  // Sources in this phase, the ones still to do first.
+  sourceIds: string[];
+}
+
+export interface Waiting {
+  id: string;
+  name: string;
+  readyFrom: number; // epoch ms: typical earliest
+  readyBy: number; // epoch ms: worst case
+  ready: boolean; // past the typical wait already
+}
+
+export interface Progress {
+  phases: Phase[];
+  collected: number;
+  applicable: number;
+  percent: number;
+  toDo: number; // things that need the person right now
+  waiting: Waiting[];
+}
+
+const counts = (v: SourceView) => v.section !== 'unavailable' && !v.optional;
+const requested = (v: SourceView) => !!v.requestedAt || v.section === 'done' || v.section === 'working' || v.status.startsWith('Found');
+
+function phase(id: PhaseId, title: string, members: SourceView[], isDone: (v: SourceView) => boolean, detail: (done: number, total: number) => string): Phase {
+  const total = members.length;
+  const done = members.filter(isDone).length;
+  const ids = [...members.filter((v) => !isDone(v)), ...members.filter(isDone)].map((v) => v.id);
+  const busy = members.some((v) => v.section === 'working');
+  return {
+    id, title, done, total, sourceIds: ids, detail: total ? detail(done, total) : 'Nothing to do here',
+    status: total === 0 ? 'skipped' : done === total ? 'done' : done > 0 || busy ? 'active' : 'upcoming',
+  };
+}
+
+export function progress(views: SourceView[], now: Date): Progress {
+  const by = (g: string) => views.filter((v) => v.group === g && counts(v));
+  const web = by('web');
+  const asked = web.filter(requested);
+  const phases: Phase[] = [
+    phase('setup', 'Set up', by('setup'), (v) => v.section === 'done', (d, t) => `${d} of ${t} checks done`),
+    phase('mac', 'Read this Mac', by('mac'), (v) => v.section === 'done', (d, t) => `${d} of ${t} sources read`),
+    phase('iphone', 'iPhone backup', by('iphone'), (v) => v.section === 'done', (d) => (d ? 'Read' : 'Not read yet')),
+    phase('request', 'Ask for your data', web, requested, (d, t) => `${d} of ${t} exports requested`),
+    phase('arrive', 'Exports arrive', asked, (v) => v.section === 'done', (d, t) => `${d} of ${t} requested exports imported`),
+    phase('extras', 'Everything else', by('guided'), (v) => v.section === 'done', (d, t) => `${d} of ${t} done`),
+  ];
+  // Phases run side by side (the Mac reads while exports are pending), but the first unfinished one with
+  // nothing started yet is still where to look next.
+  const firstOpen = phases.find((p) => p.status === 'active' || p.status === 'upcoming');
+  if (firstOpen && firstOpen.status === 'upcoming') firstOpen.status = 'active';
+
+  const applicable = views.filter((v) => v.group !== 'setup' && counts(v));
+  const collected = applicable.filter((v) => v.section === 'done').length;
+  const waiting: Waiting[] = web
+    .filter((v) => v.requestedAt && v.section !== 'done')
+    .map((v) => {
+      const src = BY_ID[v.id];
+      const t = Date.parse(v.requestedAt!);
+      const [lo, hi] = src.waitHours ?? [24, 24];
+      return { id: v.id, name: v.name, readyFrom: t + lo * HOUR, readyBy: t + hi * HOUR, ready: now.getTime() >= t + lo * HOUR };
+    })
+    .sort((a, b) => a.readyFrom - b.readyFrom);
+  return {
+    phases, collected, applicable: applicable.length,
+    percent: applicable.length ? collected / applicable.length : 0,
+    toDo: views.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional).length,
+    waiting,
+  };
+}
+
+// ---------------------------------------------------------------- Setup Assistant
+
+export type StepKind = 'welcome' | 'identity' | 'access' | 'library' | 'keep' | 'mac' | 'iphone' | 'accounts' | 'exports' | 'export' | 'mail' | 'extras' | 'done';
+
+export interface Step {
+  id: string;
+  kind: StepKind;
+  group: string; // the label in the step timeline
+  sourceId?: string;
+}
+
+export const STEP_GROUPS = ['Welcome', 'Access', 'Library', 'Mac', 'iPhone', 'Accounts', 'Exports', 'Extras', 'You', 'Keep History', 'Done'];
+
+// Where the library lives and whether it fits; and the settings that decide how much future history survives.
+export const LIBRARY_SOURCES = ['corpus_location', 'disk_space', 'python_env'];
+// Grouped by where each setting lives.
+export const KEEP_GROUPS: { title: string; ids: string[] }[] = [
+  { title: 'On this Mac', ids: ['retention_messages', 'retention_safari', 'retention_claude', 'retention_codex', 'retention_shell'] },
+  { title: 'On your iPhone', ids: ['retention_iphone_messages', 'retention_maps'] },
+  { title: 'In your Google account', ids: ['retention_google'] },
+];
+export const KEEP_SOURCES = KEEP_GROUPS.flatMap((g) => g.ids);
+
+// Web accounts the person is asked about, longest wait first so those clocks start soonest. Ties keep the catalog's
+// order, never the views' (which follows status): the Setup Assistant's pages mustn't reshuffle as imports finish.
+export function accountChoices(views: SourceView[]): SourceView[] {
+  const w = (id: string) => BY_ID[id]?.waitHours?.[1] ?? 24;
+  const at = (id: string) => CATALOG.findIndex((s) => s.id === id);
+  return views.filter((v) => v.group === 'web')
+    .sort((a, b) => Number(!!a.optional) - Number(!!b.optional) || w(b.id) - w(a.id) || at(a.id) - at(b.id));
+}
+
+// The accounts most people have, roughly by how many people use each (monthly users, public figures for 2025).
+// Google Photos and Drive sits with Google.
+export const POPULARITY = ['google_takeout', 'google_photos_drive', 'facebook', 'instagram', 'chatgpt', 'spotify', 'x', 'reddit',
+  'linkedin', 'discord', 'notion', 'claude_ai'];
+
+// "Used by most people" on the Accounts page: the app's own web accounts, most used first.
+export function commonAccounts(views: SourceView[]): SourceView[] {
+  const rank = (id: string) => (POPULARITY.includes(id) ? POPULARITY.indexOf(id) : POPULARITY.length);
+  return views.filter((v) => v.group === 'web' && !BY_ID[v.id]?.custom).sort((a, b) => rank(a.id) - rank(b.id));
+}
+
+// "Recommended for you": services found in your data, the ones you seem to use most first. An app you have counts
+// most (you open it), then visits to its site; mail counts for less the more there is, since a big pile from one
+// sender is mostly marketing (on a real Mac, plain counts put shops' newsletters above Airbnb and Venmo). Only the
+// top few are shown so the page stays short; the rest are a click away.
+export const RECOMMENDED = 8;
+export function recommended(found: FoundService[], n = RECOMMENDED): FoundService[] {
+  const weight = (f: FoundService) => (f.apps.length ? 1000 : 0) + 3 * f.visits + 10 * Math.sqrt(f.emails);
+  return [...found].sort((a, b) => weight(b) - weight(a) || Number(!!b.export?.url) - Number(!!a.export?.url) || a.name.localeCompare(b.name)).slice(0, n);
+}
+
+// The default answer to "which of these do you use?": every account that isn't optional or already skipped.
+export function defaultChosen(views: SourceView[]): string[] {
+  return accountChoices(views).filter((v) => !v.optional && v.section !== 'unavailable').map((v) => v.id);
+}
+
+// An export is handled once it's asked for, collected or skipped.
+export function exportHandled(v: SourceView): boolean {
+  return !!v.requestedAt || v.section === 'done' || v.section === 'working' || v.section === 'unavailable';
+}
+
+// Where the Setup Assistant goes when an export is handled (or from the list, with no `from`): the next one not yet
+// handled, wrapping round to ones skipped over by jumping ahead, else the step after the exports.
+export function nextExportStep(steps: Step[], views: SourceView[], from?: string): string {
+  const ids = steps.filter((s) => s.kind === 'export').map((s) => s.sourceId!);
+  const at = from ? ids.indexOf(from) : -1;
+  const todo = [...ids.slice(at + 1), ...ids.slice(0, Math.max(at, 0))]
+    .find((x) => x !== from && !exportHandled(views.find((v) => v.id === x)!));
+  if (todo) return `export:${todo}`;
+  const last = steps.findIndex((s) => s.id === `export:${ids[ids.length - 1]}`);
+  return steps[last + 1]?.id ?? 'done';
+}
+
+export function assistantSteps(views: SourceView[], chosen?: string[]): Step[] {
+  const pick = new Set(chosen ?? defaultChosen(views));
+  const steps: Step[] = [
+    { id: 'welcome', kind: 'welcome', group: 'Welcome' },
+    { id: 'access', kind: 'access', group: 'Access', sourceId: 'fda' },
+    { id: 'library', kind: 'library', group: 'Library' },
+    { id: 'mac', kind: 'mac', group: 'Mac' },
+    { id: 'iphone', kind: 'iphone', group: 'iPhone', sourceId: 'iphone_backup' },
+    { id: 'accounts', kind: 'accounts', group: 'Accounts' },
+  ];
+  // A list of them first, so you can start with the ones you care about most, then a page each.
+  const picked = accountChoices(views).filter((v) => pick.has(v.id));
+  if (picked.length) steps.push({ id: 'exports', kind: 'exports', group: 'Exports' });
+  for (const v of picked) steps.push({ id: `export:${v.id}`, kind: 'export', group: 'Exports', sourceId: v.id });
+  steps.push(
+    { id: 'mail', kind: 'mail', group: 'Extras', sourceId: 'other_mail' },
+    { id: 'extras', kind: 'extras', group: 'Extras' },
+    // Last, once there's data to look at: recognizing yourself in a list beats remembering every address.
+    { id: 'identity', kind: 'identity', group: 'You', sourceId: 'identity' },
+    // From now on: settings that decide how much future history is still there to collect.
+    { id: 'keep', kind: 'keep', group: 'Keep History' },
+    { id: 'done', kind: 'done', group: 'Done' },
+  );
+  return steps;
+}
+
+// Where a saved step id lands when the step list has changed since (an account was dropped, say).
+export function stepIndex(steps: Step[], id: string | undefined): number {
+  if (!id) return 0;
+  const i = steps.findIndex((s) => s.id === id);
+  if (i >= 0) return i;
+  if (id === 'exports' || id.startsWith('export:')) return Math.max(0, steps.findIndex((s) => s.id === 'mail')); // none chosen, or dropped
+  if (id === 'history') return Math.max(0, steps.findIndex((s) => s.id === 'library')); // the page before it was split
+  return 0;
+}
+
+export function readyIn(w: Waiting, now: Date): string {
+  if (w.ready) return now.getTime() > w.readyBy ? 'should have arrived by now' : 'should be ready now';
+  const h = (w.readyFrom - now.getTime()) / HOUR;
+  if (h < 1) return 'ready within the hour';
+  if (h < 36) return `ready in about ${Math.round(h)} h`;
+  return `ready in about ${Math.round(h / 24)} days`;
+}

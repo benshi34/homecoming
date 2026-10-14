@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+.ipynb_checkpoints/
+.env
+
+# Personal data: never commit (corpus may be a link to corpus.nosync, kept out of iCloud)
+corpus
+corpus/
+corpus.nosync/
+*.db
+*.sqlite
+*.sqlitedb
+*.jsonl
+.venv/
+

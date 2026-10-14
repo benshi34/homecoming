@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""A stand-in for `claude -p --output-format stream-json`: starts the MCP server from --mcp-config, makes the tool
+calls in its plan through it, and prints Claude Code's stream-json events. The plan is JSON {"steps": [...], "answer"}
+from the file $FAKE_CLAUDE_PLAN (or $FAKE_CLAUDE_SCRIPT and $FAKE_CLAUDE_ANSWER). A step is {"tool", "input"}, {"probe":
+path} (read a file directly, which the sandbox should stop, and say what happened) or {"sleep": seconds}.
+$FAKE_CLAUDE_LOG gets the arguments, the prompt, and which sign-in variables it was given (never their values)."""
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+if os.environ.get("FAKE_CLAUDE_PLAN"):
+    plan = json.load(open(os.environ["FAKE_CLAUDE_PLAN"]))
+else:
+    plan = {"steps": json.loads(os.environ.get("FAKE_CLAUDE_SCRIPT", "[]")), "answer": os.environ.get("FAKE_CLAUDE_ANSWER", "Done.")}
+cfg = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]["corpus"]
+log = os.environ.get("FAKE_CLAUDE_LOG")
+if log:
+    with open(log, "w") as f:
+        json.dump({"args": args, "prompt": prompt, "env": sorted(k for k in os.environ if k.startswith(("ANTHROPIC", "CLAUDE", "CODEX", "OPENAI")))}, f)
+mcp = subprocess.Popen([cfg["command"], *cfg["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                       env={**os.environ, **cfg.get("env", {})})
+
+
+def rpc(i, method, params=None):
+    mcp.stdin.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}) + "\n")
+    mcp.stdin.flush()
+    return json.loads(mcp.stdout.readline())["result"]
+
+
+def out(o):
+    print(json.dumps(o), flush=True)
+
+
+rpc(0, "initialize", {"protocolVersion": "2025-06-18"})
+out({"type": "system", "subtype": "init", "tools": [t["name"] for t in rpc(1, "tools/list")["tools"]]})
+notes = []
+for n, step in enumerate(plan.get("steps", [])):
+    if "sleep" in step:
+        time.sleep(step["sleep"])
+        continue
+    if "probe" in step:
+        try:
+            open(step["probe"], "rb").read(10)
+            notes.append("probe: read")
+        except OSError:
+            notes.append("probe: blocked")
+        continue
+    tid = f"toolu_{n}"
+    out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tid, "name": f"mcp__corpus__{step['tool']}", "input": step["input"]}]}})
+    r = rpc(10 + n, "tools/call", {"name": step["tool"], "arguments": step["input"]})
+    out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": r["content"], "is_error": r["isError"]}]}})
+    notes.append(f"{step['tool']}: {r['content'][0]['text'].splitlines()[-1] if r['content'][0]['text'] else ''}")
+answer = plan.get("answer", "Done.") + ("\n\n" + "\n".join(notes) if notes and plan.get("notes", True) else "") + \
+    ("\n\n(had history)" if "Earlier question" in prompt else "")
+out({"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}})
+out({"type": "result", "subtype": "success", "is_error": False, "result": answer})
+mcp.stdin.close()
+mcp.wait(timeout=10)

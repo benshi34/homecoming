@@ -1,0 +1,192 @@
+__artifacts_v2__ = {
+    "icloudSharedOwnerInfo": {
+        "name": "iCloud Shared Albums - Owner Info",
+        "description": "iCloud shared album owner info (Info.plist)",
+        "author": "@abrignoni", "creation_date": "2026-06-23", "last_update_date": "2026-06-24", "requirements": "none",
+        "category": "iCloud Shared Albums", "notes": "",
+        "paths": ('*/mobile/Media/PhotoData/PhotoCloudSharingData/*',),
+        "output_types": "standard", "artifact_icon": "users",
+        "sample_data": {
+            "ctf2020_ios12": "iOS 12.4 | 1 row",
+            "dexter_ios18": "iOS 18.3.2 | 0 rows",
+            "felix_ios17": "iOS 17.6.1 | 0 rows",
+            "fsfull002_ios17": "iOS 17.1 | 0 rows",
+            "hc_ios18_7": "iOS 18.7.8 | 0 rows",
+            "iphone11_ios17": "iOS 17.3 | 5 rows",
+            "iphone12_ios18": "iOS 18.7 | 0 rows",
+            "iphone14plus_ios18": "iOS 18.0 | 0 rows",
+            "otto_ios17": "iOS 17.5.1 | 0 rows",
+            "abe_ios16": "iOS 16.5 | 1 row",
+            "felix23_ios16": "iOS 16.5 | 0 rows",
+            "hickman_ios13": "iOS 13.3.1 | 0 rows",
+            "hickman_ios14": "iOS 14.3 | 1 row",
+            "jess_ios15": "iOS 15.0.2 | 0 rows",
+            "magnet_ios16": "iOS 16.1.1 | 0 rows",
+        }
+    },
+    "icloudSharedAlbumData": {
+        "name": "iCloud Shared Albums - Album Data",
+        "description": "iCloud shared album DCIM counters (DCIM_CLOUD.plist)",
+        "author": "@abrignoni", "creation_date": "2026-06-23", "last_update_date": "2026-07-31", "requirements": "none",
+        "category": "iCloud Shared Albums", "notes": "",
+        "paths": ('*/mobile/Media/PhotoData/PhotoCloudSharingData/*',),
+        "output_types": "standard", "artifact_icon": "photo",
+        "sample_data": {
+            "ctf2020_ios12": "iOS 12.4 | 0 rows",
+            "dexter_ios18": "iOS 18.3.2 | 0 rows",
+            "felix_ios17": "iOS 17.6.1 | 0 rows",
+            "fsfull002_ios17": "iOS 17.1 | 0 rows",
+            "hc_ios18_7": "iOS 18.7.8 | 0 rows",
+            "iphone11_ios17": "iOS 17.3 | 4 rows",
+            "iphone12_ios18": "iOS 18.7 | 0 rows",
+            "iphone14plus_ios18": "iOS 18.0 | 0 rows",
+            "otto_ios17": "iOS 17.5.1 | 0 rows",
+            "abe_ios16": "iOS 16.5 | 1 row",
+            "felix23_ios16": "iOS 16.5 | 0 rows",
+            "hickman_ios13": "iOS 13.3.1 | 0 rows",
+            "hickman_ios14": "iOS 14.3 | 1 row",
+            "jess_ios15": "iOS 15.0.2 | 0 rows",
+            "magnet_ios16": "iOS 16.1.1 | 0 rows",
+        }
+    },
+    "icloudSharedPersonInfo": {
+        "name": "iCloud Shared Albums - Person Info",
+        "description": "iCloud shared album participants (cloudSharedPersonInfos.plist)",
+        "author": "@abrignoni", "creation_date": "2026-06-23", "last_update_date": "2026-06-24", "requirements": "none",
+        "category": "iCloud Shared Albums", "notes": "",
+        "paths": ('*/mobile/Media/PhotoData/PhotoCloudSharingData/*',),
+        "output_types": "standard", "artifact_icon": "user",
+        "sample_data": {
+            "ctf2020_ios12": "iOS 12.4 | 1 row",
+            "dexter_ios18": "iOS 18.3.2 | 0 rows",
+            "felix_ios17": "iOS 17.6.1 | 0 rows",
+            "fsfull002_ios17": "iOS 17.1 | 0 rows",
+            "hc_ios18_7": "iOS 18.7.8 | 0 rows",
+            "iphone11_ios17": "iOS 17.3 | 21 rows",
+            "iphone12_ios18": "iOS 18.7 | 0 rows",
+            "iphone14plus_ios18": "iOS 18.0 | 0 rows",
+            "otto_ios17": "iOS 17.5.1 | 0 rows",
+            "abe_ios16": "iOS 16.5 | 1 row",
+            "felix23_ios16": "iOS 16.5 | 0 rows",
+            "hickman_ios13": "iOS 13.3.1 | 0 rows",
+            "hickman_ios14": "iOS 14.3 | 4 rows",
+            "jess_ios15": "iOS 15.0.2 | 0 rows",
+            "magnet_ios16": "iOS 16.1.1 | 0 rows",
+        }
+    },
+    "icloudSharedEmails": {
+        "name": "iCloud Shared Albums - Emails",
+        "description": "iCloud shared album emails (cloudSharedEmails.plist)",
+        "author": "@abrignoni", "creation_date": "2026-06-23", "last_update_date": "2026-06-24", "requirements": "none",
+        "category": "iCloud Shared Albums", "notes": "",
+        "paths": ('*/mobile/Media/PhotoData/PhotoCloudSharingData/*',),
+        "output_types": "standard", "artifact_icon": "mail",
+        "sample_data": {
+            "ctf2020_ios12": "iOS 12.4 | 0 rows",
+            "dexter_ios18": "iOS 18.3.2 | 0 rows",
+            "felix_ios17": "iOS 17.6.1 | 0 rows",
+            "fsfull002_ios17": "iOS 17.1 | 0 rows",
+            "hc_ios18_7": "iOS 18.7.8 | 0 rows",
+            "iphone11_ios17": "iOS 17.3 | 3 rows",
+            "iphone12_ios18": "iOS 18.7 | 0 rows",
+            "iphone14plus_ios18": "iOS 18.0 | 0 rows",
+            "otto_ios17": "iOS 17.5.1 | 0 rows",
+            "abe_ios16": "iOS 16.5 | 0 rows",
+            "felix23_ios16": "iOS 16.5 | 0 rows",
+            "hickman_ios13": "iOS 13.3.1 | 0 rows",
+            "hickman_ios14": "iOS 14.3 | 1 row",
+            "jess_ios15": "iOS 15.0.2 | 0 rows",
+            "magnet_ios16": "iOS 16.1.1 | 0 rows",
+        }
+    }
+}
+
+import os
+import plistlib
+
+from scripts.ilapfuncs import artifact_processor
+
+
+@artifact_processor
+def icloudSharedOwnerInfo(context):
+    data_headers = ('Album Title', 'Album ID', 'Cloud Owner Email', 'Cloud Owner First Name',
+                    'Cloud Owner Last Name', 'Cloud Public URL Enabled?',
+                    ('Cloud Subscription Date', 'datetime'), 'Cloud Relationship State',
+                    'Cloud Owner Hashed Person ID', 'File Location')
+    data_list = []
+    sources = []
+    for file_found in context.get_files_found():
+        file_found = str(file_found)
+        if not os.path.isfile(file_found) or os.path.basename(file_found) != 'Info.plist':
+            continue
+        album_id = os.path.basename(os.path.dirname(file_found))
+        with open(file_found, 'rb') as fp:
+            pl = plistlib.load(fp)
+        rel = context.get_relative_path(file_found)
+        data_list.append((pl.get('title', ''), album_id, pl.get('cloudOwnerEmail', ''),
+                          pl.get('cloudOwnerFirstName', ''), pl.get('cloudOwnerLastName', ''),
+                          pl.get('cloudPublicURLEnabled', ''), pl.get('cloudSubscriptionDate', ''),
+                          pl.get('cloudRelationshipState', ''),
+                          pl.get('cloudOwnerHashedPersonID', ''), rel))
+        sources.append(rel)
+    return data_headers, data_list, ', '.join(dict.fromkeys(sources))
+
+
+@artifact_processor
+def icloudSharedAlbumData(context):
+    data_headers = ('Album ID', 'DCIM Last Directory Number', 'DCIM Last File Number',
+                    'File Location')
+    data_list = []
+    sources = []
+    for file_found in context.get_files_found():
+        file_found = str(file_found)
+        if not os.path.isfile(file_found) or os.path.basename(file_found) != 'DCIM_CLOUD.plist':
+            continue
+        album_id = os.path.basename(os.path.dirname(file_found))
+        with open(file_found, 'rb') as fp:
+            pl = plistlib.load(fp)
+        rel = context.get_relative_path(file_found)
+        data_list.append((album_id, pl.get('DCIMLastDirectoryNumber', ''),
+                          pl.get('DCIMLastFileNumber', ''), rel))
+        sources.append(rel)
+    return data_headers, data_list, ', '.join(dict.fromkeys(sources))
+
+
+@artifact_processor
+def icloudSharedPersonInfo(context):
+    data_headers = ('Email', 'First Name', 'Last Name', 'Full Name', 'Identification')
+    data_list = []
+    sources = []
+    for file_found in context.get_files_found():
+        file_found = str(file_found)
+        if not os.path.isfile(file_found) or os.path.basename(file_found) != 'cloudSharedPersonInfos.plist':
+            continue
+        with open(file_found, 'rb') as fp:
+            pl = plistlib.load(fp)
+        for identifier, info in pl.items():
+            if not isinstance(info, dict):
+                continue
+            email = info.get('email', '')
+            if info.get('emails'):
+                email = info['emails'][0]
+            data_list.append((email, info.get('firstName', ''), info.get('lastName', ''),
+                              info.get('fullName', ''), identifier))
+        sources.append(context.get_relative_path(file_found))
+    return data_headers, data_list, ', '.join(dict.fromkeys(sources))
+
+
+@artifact_processor
+def icloudSharedEmails(context):
+    data_headers = ('Key', 'Value')
+    data_list = []
+    sources = []
+    for file_found in context.get_files_found():
+        file_found = str(file_found)
+        if not os.path.isfile(file_found) or os.path.basename(file_found) != 'cloudSharedEmails.plist':
+            continue
+        with open(file_found, 'rb') as fp:
+            pl = plistlib.load(fp)
+        for key, value in pl.items():
+            data_list.append((key, value))
+        sources.append(context.get_relative_path(file_found))
+    return data_headers, data_list, ', '.join(dict.fromkeys(sources))

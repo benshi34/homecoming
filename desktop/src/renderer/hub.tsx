@@ -1,0 +1,124 @@
+// The hub: every service the app can collect from, by kind, searchable, with what your data says about each.
+// Recognizing a service in a list is easier than remembering it.
+
+import { useEffect, useMemo, useState } from 'react';
+import { count } from '../shared/format.ts';
+import { CATEGORIES, type HubRow, hubRows, searchRows, sortRows } from '../shared/hub.ts';
+import type { DirectoryEntry, Snapshot } from '../shared/types.ts';
+import { api } from './api.ts';
+import { Glyph, SourceIcon } from './icons.tsx';
+import { evidenceLine, strongFind } from './parts.tsx';
+import { Button, Group, GroupRow, Spinner, StatusGlyph } from './ui.tsx';
+
+export type HubFilter = 'all' | 'found' | 'here' | 'export';
+
+let cached: DirectoryEntry[] | null = null;
+function useDirectory(): DirectoryEntry[] | null {
+  const [d, setD] = useState(cached);
+  useEffect(() => {
+    if (!cached) void api.directory().then((x) => setD((cached = x)));
+  }, []);
+  return d;
+}
+
+const SHOWN = 6;
+
+export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther }: {
+  snap: Snapshot; filter?: HubFilter; onOpen?: (sourceId: string) => void; onAdded?: (ids: string[]) => void; onAddOther: () => void;
+}) {
+  const dir = useDirectory();
+  const [q, setQ] = useState('');
+  const [filter, setFilter] = useState<HubFilter>(initial);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [adding, setAdding] = useState<Set<string>>(new Set());
+  useEffect(() => setFilter(initial), [initial]);
+  const rows = useMemo(() => (dir ? hubRows(dir, snap.sources, snap.services, snap.discovery) : []), [dir, snap.sources, snap.services, snap.discovery]);
+  const pass = (r: HubRow) => filter === 'all' || (filter === 'found' && !!r.found) || (filter === 'here' && r.state !== 'available')
+    || (filter === 'export' && r.exportKnown);
+  const shown = rows.filter(pass);
+  const counts = { all: rows.length, found: rows.filter((r) => r.found).length, here: rows.filter((r) => r.state !== 'available').length, export: rows.filter((r) => r.exportKnown).length };
+  const suggested = rows.filter((r) => r.found && r.state === 'available' && strongFind(r.found));
+
+  const add = (slugs: string[]) => {
+    setAdding((a) => new Set([...a, ...slugs]));
+    void Promise.all(slugs.map((slug) => api.action('*', 'add-service', { slug }))).then((rs) => {
+      setAdding((a) => new Set([...a].filter((x) => !slugs.includes(x))));
+      const ids = rs.map((r) => r.id).filter((x): x is string => !!x);
+      onAdded?.(ids);
+      if (ids.length === 1) onOpen?.(ids[0]);
+    });
+  };
+  const row = (r: HubRow, withKind = false) => {
+    const kind = withKind ? CATEGORIES.find((c) => c.id === r.category)?.label : undefined;
+    const sub = [r.domain, kind, r.found ? evidenceLine(r.found) : '', r.state !== 'available' ? r.status : ''].filter(Boolean).join(' · ');
+    return (
+      <GroupRow key={r.key} testId={`hub-${r.key}`} icon={r.sourceId ? <SourceIcon id={r.sourceId} group="web" size={24} /> : <SourceIcon id={r.key} group="web" size={24} />}
+        title={<>{r.name}{r.state === 'built-in' && <span className="tag">Built in</span>}{r.state === 'added' && <span className="tag">Added</span>}
+          {r.state === 'available' && r.exportKnown && <span className="tag">Export steps</span>}{r.found && r.state === 'available' && <span className="tag new">In your data</span>}</>}
+        subtitle={sub || undefined}
+        onClick={r.sourceId && onOpen ? () => onOpen(r.sourceId!) : undefined}
+        trailing={r.state === 'available'
+          ? (adding.has(r.slug!) ? <Spinner size={14} /> : <Button size="small" onClick={() => add([r.slug!])} testAction="hub-add">Add</Button>)
+          : r.section ? <StatusGlyph section={r.section} /> : undefined} />
+    );
+  };
+
+  if (!dir) return <div className="overview"><div className="note"><Spinner size={12} /><span>Loading the services…</span></div></div>;
+  const results = q.trim() ? searchRows(shown, q).slice(0, 120) : null;
+  return (
+    <div className="overview hub" data-testid="hub">
+      <p className="lede">Every service the app can collect your data from: {count(counts.here)} already in the app and {count(rows.length - counts.here)} more,
+        {' '}by kind. The ones your mail, browsing and apps point to come first. Add one and it gets the steps to get your data out.</p>
+      <div className="hub-bar">
+        <div className="search"><Glyph name="search" size={14} /><input type="search" placeholder={`Search ${count(rows.length)} services`} value={q} onChange={(e) => setQ(e.target.value)} autoFocus data-testid="hub-search" /></div>
+        <div className="segmented" role="tablist">
+          {([['all', 'All'], ['found', 'In Your Data'], ['here', 'In the App'], ['export', 'With Export Steps']] as [HubFilter, string][]).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={filter === id} className={filter === id ? 'on' : ''} onClick={() => setFilter(id)} data-testid={`hub-filter-${id}`}>
+              {label} <span>{count(counts[id])}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      {filter === 'found' && suggested.length > 0 && !q && (
+        <div className="actions" style={{ padding: '0 0 6px' }}>
+          <Button kind="primary" onClick={() => add(suggested.map((r) => r.slug!))} testAction="hub-add-suggested">Add the {suggested.length} You Clearly Use</Button>
+          <span className="where">Apps or regular visits, and known export steps.</span>
+        </div>
+      )}
+      {results ? (
+        <Group title={results.length ? `${results.length === 120 ? 'First 120' : count(results.length)} matching “${q.trim()}”` : `Nothing matches “${q.trim()}”`} testId="hub-results">
+          {results.map((r) => row(r, true))}
+          <div className="kv"><Button kind="plain" onClick={onAddOther}>Not listed? Add it by name…</Button><span /></div>
+        </Group>
+      ) : (
+        CATEGORIES.map((c) => {
+          const these = sortRows(shown.filter((r) => r.category === c.id));
+          if (!these.length) return null;
+          const all = open[c.id] || filter !== 'all' || these.length <= SHOWN + 1;
+          const nFound = these.filter((r) => r.found).length;
+          return (
+            <Group key={c.id} title={`${c.label} (${count(these.length)})${nFound && filter === 'all' ? ` · ${nFound} in your data` : ''}`} testId={`hub-kind-${c.id}`}>
+              {(all ? these : these.slice(0, SHOWN)).map((r) => row(r))}
+              {!all && <div className="kv"><Button kind="plain" onClick={() => setOpen((o) => ({ ...o, [c.id]: true }))} testAction="hub-show-all">Show All {count(these.length)}</Button><span /></div>}
+            </Group>
+          );
+        })
+      )}
+      {filter === 'found' && !q && (snap.discovery?.unmatched.length ?? 0) > 0 && (
+        <Group title={`Not in the directory (${snap.discovery!.unmatched.length})`} testId="hub-unmatched"
+          footer="Mail from these comes from account or notification addresses, but no directory knows how to get your data from them. Adding one gives it a drafted access request.">
+          {snap.discovery!.unmatched.map((u) => (
+            <GroupRow key={u.domain} icon={<SourceIcon id={u.domain} group="web" size={24} />} title={u.name && u.name !== u.domain ? u.name : u.domain}
+              subtitle={[u.name && u.name !== u.domain ? u.domain : '', evidenceLine(u)].filter(Boolean).join(' · ')}
+              trailing={<Button size="small" onClick={() => void api.action('*', 'choose-services', { domains: [u.domain] }).then((r) => {
+                onAdded?.(r.ids ?? []);
+                if (r.ids?.[0]) onOpen?.(r.ids[0]);
+              })}>Add</Button>} />
+          ))}
+        </Group>
+      )}
+      <div className="group-footer">Services come from JustDeleteMe and JustGetMyData, two community directories, plus the accounts the app reads itself. Can't find one?
+        {' '}<Button kind="plain" onClick={onAddOther} testAction="hub-add-other">Add it by name</Button></div>
+    </div>
+  );
+}
