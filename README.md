@@ -43,15 +43,25 @@ It reads, and changes only what you tell it to:
 - **A Mac with Apple silicon** (M1 or later). On an Intel Mac the iPhone backup step can't run.
 - **Python 3.14 from [python.org](https://www.python.org/downloads/macos/).** The iPhone backup step uses packages that come with Homecoming and are built for Python 3.14 only. The app looks for python.org's Python first (`/usr/local/bin/python3`).
 - **Node.js** ([nodejs.org](https://nodejs.org/)). Homecoming was built and tested with Node 24.
-- **git.** The first time you type `git` in Terminal, macOS offers to install it.
+- **git**, if you clone rather than download. The first time you type `git` in Terminal, macOS offers to install it.
 - **Optional: the Claude Code or Codex CLI**, signed in, to ask questions about your data.
+
+### Get the code
+
+The repository is private during the beta. Accept the invitation email from GitHub first, then do one of these:
+
+- **Download it.** On the repository page, click the green **Code** button, then **Download ZIP**. Unzip it, rename the folder (`homecoming-main`) to `homecoming`, and move it to a `Developer` folder in your home folder (`~/Developer/homecoming`). To update, download it again the same way.
+- **Clone it with git**, which makes updating a one-line command. Sign git in to GitHub first: install the [GitHub CLI](https://cli.github.com/), then run `gh auth login`, then `gh auth setup-git`. Then:
+
+  ```bash
+  git clone https://github.com/benshi34/homecoming.git ~/Developer/homecoming
+  ```
+
+Keep it out of Desktop and Documents. If iCloud syncs those folders, everything you collect would be uploaded to iCloud.
 
 ### Install and start
 
-Clone it somewhere outside Desktop and Documents. If iCloud syncs those folders, everything you collect would be uploaded to iCloud.
-
 ```bash
-git clone https://github.com/benshi34/homecoming.git ~/Developer/homecoming
 cd ~/Developer/homecoming
 /usr/local/bin/python3 -m pip install cryptography pypdf
 cd desktop
@@ -73,6 +83,8 @@ macOS keeps Messages, Mail, Photos, Notes and call history behind Full Disk Acce
 
 ### Updating
 
+If you cloned it:
+
 ```bash
 cd ~/Developer/homecoming
 git pull
@@ -80,6 +92,8 @@ cd desktop
 npm ci
 npm start
 ```
+
+If you downloaded the ZIP, download it again and put the new folder in place of the old one. Keep the old folder's `corpus/`: it's everything you've collected. Move it into the new folder first.
 
 ## Reporting a problem
 
