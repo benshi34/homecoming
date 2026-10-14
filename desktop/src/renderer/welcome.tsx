@@ -8,7 +8,8 @@ import type { AskEvent, AskTurn } from '../shared/ask.ts';
 import { BY_ID } from '../shared/catalog.ts';
 import { count, waitRange } from '../shared/format.ts';
 import { Turn } from './ask.tsx';
-import { EXAMPLES } from './examples.ts';
+import { EmbedSourceContext } from './embeds.tsx';
+import { EXAMPLES, exampleEmbed } from './examples.ts';
 import { ExplorePage, Num } from './explore.tsx';
 import { Glyph, GlyphTile, SourceIcon } from './icons.tsx';
 import { Checkmark, GroupRow, ProgressBar, reducedMotion, Spinner } from './ui.tsx';
@@ -181,7 +182,7 @@ function HomeDemo() {
 
 const LAST_YEAR = new Date().getFullYear() - 1; // the examples' last whole year, when this person moved to Chicago
 const QUESTION = 'Who did I talk to most the year I moved to Chicago?';
-const ANSWER = `Mostly **Maya Chen**: [4,212 messages](record:101) in ${LAST_YEAR}, almost twice anyone else. Then Jordan Reyes (2,180) and your [Climbing crew](record:102) group chat (1,544). August was your busiest month, the month you moved.`;
+const ANSWER = `Mostly **Maya Chen**: [4,212 messages](record:101) in ${LAST_YEAR}, almost twice anyone else. Then Jordan Reyes (2,180) and your [Climbing crew](record:102) group chat (1,544). August was your busiest month, the month you moved.\n\nThe evening Maya found the apartment:\n[[chat:202-206]]`;
 const LOOKUPS: { at: number; done: number; e: Extract<AskEvent, { t: 'tool' }>; text: string; seconds: number }[] = [
   { at: 500, done: 1300, seconds: 0.4, e: { t: 'tool', id: 'a', name: 'search', input: { query: 'moving to Chicago', source: 'imessage' } },
     text: `3 matches\n${LAST_YEAR}-08-02  Maya Chen: "first night in the Chicago apartment!!"\n${LAST_YEAR}-07-14  You: "the move is Aug 1, help me pack?"\n${LAST_YEAR}-06-30  Jordan Reyes: "so Chicago is really happening"` },
@@ -226,7 +227,13 @@ function ExploreDemo({ stop }: { stop: () => void }) {
 function AskDemo() {
   const t = useElapsed(TEXT_AT + TOKENS.length * PER_TOKEN + 200);
   const { turn, live } = turnAt(t);
-  return <div className="demo-ask"><Turn turn={turn} live={live} onRecord={() => {}} /></div>;
+  // The answer outgrows the stage once the conversation comes in: follow it down, the way Ask does.
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (el && el.scrollHeight > el.clientHeight) el.scrollTo({ top: el.scrollHeight, behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }, [Math.floor(t / 150), live]);
+  return <div className="demo-ask" ref={box}><EmbedSourceContext.Provider value={exampleEmbed}><Turn turn={turn} live={live} onRecord={() => {}} /></EmbedSourceContext.Provider></div>;
 }
 
 // The Explore page at a desktop size, scaled to fit, and a pointer that browses it: the home tiles, then into Your

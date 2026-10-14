@@ -3,9 +3,10 @@
 // "photo" is a drawn gradient (no rowid here is ever looked up). Dates are relative to today, like real data would be.
 
 import type {
-  FirstItem, FirstKind, GroupChat, GroupChats, JourneyPlace, Journeys, Leg, Made, MadeKind, OnThisDay, People, Person, PersonDetail, Places, Rhythm,
+  EmbedData, FirstItem, FirstKind, GroupChat, GroupChats, JourneyPlace, Journeys, Leg, Made, MadeKind, OnThisDay, People, Person, PersonDetail, Places, Rhythm,
   Rhythms, Stream, StreamEvent, Trip, YearStory,
 } from '../shared/explore.ts';
+import { count } from '../shared/format.ts';
 import type { ExampleSet } from './explore.tsx';
 
 // A small seeded random, so the examples are the same every time.
@@ -27,40 +28,78 @@ const STORY_YEAR = String(THIS_YEAR - 1); // a whole year, so its story runs Jan
 
 // ---------------------------------------------------------------- people
 
-const NAMES = ['Maya Chen', 'Jordan Reyes', 'Mom', 'Priya Patel', 'Sam Okafor', 'Dad', 'Leo Martins', 'Ana Souza', 'Kenji Watanabe', 'Zoe Fischer',
-  'Omar Haddad', 'Grace Kim', 'Noah Bennett', 'Lucia Romero', 'Ethan Brooks', 'Aisha Bello', 'Ines Duarte', 'Marcus Lee', 'Hana Sato', 'Ruby Walsh',
-  'Diego Alvarez', 'Chloe Martin', 'Felix Wagner', 'Nadia Rahman', 'Theo Laurent', 'Iris Novak', 'Luca Carter', 'Elena Petrova', 'Kai Nakamura',
-  'Sofia Rossi', 'Jamal Wright', 'Mei Lin', 'Oscar Silva', 'Lena Hoffmann', 'Tom Hughes', 'Ravi Kumar', 'Clara Jensen', 'Max Turner', 'Julia Costa'];
 const keyOf = (name: string) => name.toLowerCase().replace(/\s+/g, '-');
 
-const PEOPLE_LIST: Person[] = NAMES.map((name, i) => {
-  const messages = Math.round((14_000 / (i + 1) ** 0.95) * (0.85 + rand() * 0.3));
-  const since = Math.min(THIS_YEAR, THIS_YEAR - 6 + Math.floor(rand() * (i < 6 ? 2 : 6)));
+// The people this person was closest to, by year (YEARS order, oldest first): a college roommate and best friend
+// early on, then roommates in San Francisco, Maya from climbing (they moved to Chicago together last August, so they
+// text less now), new friends from trips and from Chicago. Who comes first changes from year to year, the way it does.
+// [messages each year, the month they first talked, apps besides Messages, calls]
+const CAST: Record<string, [number[], number, Partial<Record<'instagram' | 'phone_whatsapp', number>>, number]> = {
+  'Maya Chen': [[0, 0, 0, 640, 3480, 4212, 1290], 5, { instagram: 0.12 }, 120],
+  'Jordan Reyes': [[310, 980, 2860, 2410, 1890, 2180, 1240], 3, { instagram: 0.2 }, 40],
+  'Priya Patel': [[2240, 2910, 1780, 2620, 1210, 980, 820], 1, { instagram: 0.15 }, 34],
+  'Mom': [[1180, 1320, 1240, 1390, 1460, 1730, 1210], 1, { phone_whatsapp: 0.35 }, 140],
+  'Sam Okafor': [[3120, 2350, 940, 610, 480, 520, 290], 1, {}, 22],
+  'Ana Souza': [[860, 790, 1020, 880, 940, 1110, 760], 1, { phone_whatsapp: 0.4 }, 48],
+  'Leo Martins': [[0, 0, 0, 380, 1640, 1290, 410], 9, {}, 12],
+  'Ruby Walsh': [[0, 0, 0, 0, 0, 640, 1380], 9, { instagram: 0.3 }, 8],
+  'Grace Kim': [[0, 0, 0, 290, 1120, 860, 690], 5, { instagram: 0.25 }, 6],
+  'Dad': [[420, 380, 460, 510, 470, 640, 390], 1, { phone_whatsapp: 0.3 }, 64],
+  'Kenji Watanabe': [[140, 210, 180, 260, 320, 1180, 240], 2, { phone_whatsapp: 0.5 }, 9],
+  'Theo Laurent': [[0, 0, 0, 0, 0, 0, 980], 1, {}, 14],
+  'Zoe Fischer': [[0, 0, 120, 410, 620, 540, 380], 10, {}, 3],
+  'Noah Bennett': [[0, 0, 0, 180, 540, 610, 470], 6, { instagram: 0.2 }, 2],
+  'Omar Haddad': [[510, 460, 380, 300, 240, 160, 90], 1, { phone_whatsapp: 0.6 }, 5],
+  'Ines Duarte': [[0, 0, 0, 0, 0, 420, 210], 5, { phone_whatsapp: 0.5 }, 2],
+  'Lucia Romero': [[0, 0, 0, 0, 380, 290, 120], 11, { phone_whatsapp: 0.7 }, 1],
+  'Kai Nakamura': [[0, 0, 0, 0, 310, 280, 150], 2, { instagram: 0.4 }, 0],
+  'Hana Sato': [[0, 0, 0, 0, 0, 260, 140], 4, { instagram: 0.5 }, 0],
+  'Marcus Lee': [[0, 0, 0, 120, 260, 310, 220], 7, {}, 1],
+};
+// Everyone else: a few messages a year, from some year on.
+const OTHERS = ['Ethan Brooks', 'Aisha Bello', 'Diego Alvarez', 'Chloe Martin', 'Felix Wagner', 'Nadia Rahman', 'Iris Novak', 'Luca Carter', 'Elena Petrova',
+  'Sofia Rossi', 'Jamal Wright', 'Mei Lin', 'Oscar Silva', 'Lena Hoffmann', 'Tom Hughes', 'Ravi Kumar', 'Clara Jensen', 'Max Turner', 'Julia Costa'];
+for (const name of OTHERS) {
+  const from = int(0, 6), until = Math.min(6, from + int(1, 5));
+  CAST[name] = [YEARS.map((_, i) => (i >= from && i <= until ? int(20, 260) : 0)), int(1, 12), rand() < 0.3 ? { instagram: 0.5 } : {}, int(0, 3)];
+}
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+const PEOPLE_LIST: Person[] = Object.entries(CAST).map(([name, [counts, month, share, calls]]) => {
   const years: Record<string, number> = {};
-  const span = YEARS.filter((y) => Number(y) >= since);
-  span.forEach((y) => (years[y] = Math.round((messages / span.length) * (0.35 + rand() * 1.3)))); // closer some years than others
-  const ig = i % 3 === 1 ? Math.round(messages * 0.25) : 0, wa = i % 5 === 2 ? Math.round(messages * 0.3) : 0;
-  const apps: Record<string, number> = { imessage: messages - ig - wa };
-  if (ig) apps.instagram = ig;
-  if (wa) apps.phone_whatsapp = wa;
-  const calls = i < 8 ? int(20, 140) : int(0, 12);
+  YEARS.forEach((y, i) => counts[i] && (years[y] = counts[i]));
+  const messages = counts.reduce((a, b) => a + b, 0);
+  const apps: Record<string, number> = {};
+  for (const [app, f] of Object.entries(share)) apps[app] = Math.round(messages * f!);
+  apps.imessage = messages - Object.values(apps).reduce((a, b) => a + b, 0);
+  const since = YEARS[counts.findIndex((n) => n > 0)];
+  const lastYear = YEARS[counts.length - 1 - [...counts].reverse().findIndex((n) => n > 0)];
+  const recent = Number(lastYear) === THIS_YEAR;
   return {
     key: keyOf(name), name, messages, sent: Math.round(messages * (0.42 + rand() * 0.16)), apps, years,
-    first: { ts: `${since}-0${int(1, 9)}-1${int(0, 9)}T19:22:00Z`, rowid: row(), app: 'imessage' },
-    last: { ts: `${iso(new Date(TODAY.getTime() - int(0, 40) * 864e5))}T21:05:00Z`, rowid: row(), app: 'imessage' },
-    calls, call_minutes: calls * int(4, 22), photos: i < 10 ? int(12, 160) : int(0, 10), starts_me: int(80, 600), starts_them: int(80, 600),
+    first: { ts: `${since}-${pad2(Number(since) === THIS_YEAR ? Math.min(month, TODAY.getMonth() + 1) : month)}-1${int(0, 9)}T19:22:00Z`, rowid: row(), app: 'imessage' },
+    last: { ts: recent ? `${iso(new Date(TODAY.getTime() - int(0, 20) * 864e5))}T21:05:00Z` : `${lastYear}-${pad2(int(1, 12))}-0${int(1, 9)}T21:05:00Z`, rowid: row(), app: 'imessage' },
+    calls, call_minutes: calls * int(4, 22), photos: Math.round(messages / int(40, 120)), starts_me: int(80, 600), starts_them: int(80, 600),
   };
-});
+}).sort((a, b) => b.messages - a.messages);
 const circle: People['circle'] = {};
 for (const y of YEARS) {
   circle[y] = PEOPLE_LIST.filter((p) => p.years[y]).sort((a, b) => b.years[y] - a.years[y]).slice(0, 6).map((p) => ({ key: p.key, name: p.name, messages: p.years[y] }));
 }
 const PEOPLE: People = { people: PEOPLE_LIST, circle, total_messages: PEOPLE_LIST.reduce((a, p) => a + p.messages, 0) };
 
+// Maya's months follow her years: from the spring they met, busiest the summer of the move, quieter once they lived together.
 const months: PersonDetail['months'] = {};
+const MAYA = PEOPLE_LIST.find((p) => p.key === 'maya-chen')!;
+const mayaFrom = MAYA.first!.ts.slice(0, 7);
 for (const y of YEARS) for (let m = 1; m <= 12; m++) {
+  const ym = `${y}-${pad2(m)}`;
   if (Number(y) === THIS_YEAR && m > TODAY.getMonth() + 1) break;
-  months[`${y}-${String(m).padStart(2, '0')}`] = { imessage: int(40, 260) + (m === 8 ? 180 : 0), instagram: int(0, 40) };
+  if (ym < mayaFrom || !MAYA.years[y]) continue;
+  const left = Number(y) === THIS_YEAR ? TODAY.getMonth() + 1 : y === mayaFrom.slice(0, 4) ? 13 - Number(mayaFrom.slice(5)) : 12;
+  const busy = y === STORY_YEAR && m >= 6 && m <= 8 ? 1.7 : y === STORY_YEAR && m > 8 ? 0.55 : 1;
+  const n = Math.round((MAYA.years[y] / left) * busy * (0.75 + rand() * 0.5));
+  months[ym] = { imessage: Math.round(n * 0.88), instagram: Math.round(n * 0.12) };
 }
 const PERSON: PersonDetail = {
   key: 'maya-chen', name: 'Maya Chen', months,
@@ -225,10 +264,10 @@ function group(name: string, app: string, source: string, members: string[], mes
   };
 }
 const GROUP_LIST: GroupChat[] = [
-  group('Climbing crew', 'Messages', 'imessage', ['Maya Chen', 'Sam Okafor', 'Grace Kim', 'Noah Bennett'], 6210, 4, ['send', 'tonight', 'gym', 'beta', 'project'], ['🧗', '🔥', '😂', '💪']),
+  group('Climbing crew', 'Messages', 'imessage', ['Grace Kim', 'Noah Bennett', 'Maya Chen', 'Marcus Lee'], 6210, 3, ['send', 'tonight', 'gym', 'beta', 'project'], ['🧗', '🔥', '😂', '💪']),
   group('Family', 'WhatsApp', 'phone_whatsapp', ['Mom', 'Dad', 'Ana Souza'], 5480, 6, ['love', 'dinner', 'call', 'photos', 'home'], ['❤️', '😂', '🙏', '🎉']),
   group('Roommates', 'Messages', 'imessage', ['Jordan Reyes', 'Priya Patel'], 3920, 3, ['rent', 'dishes', 'pizza', 'tonight', 'keys'], ['😂', '🍕', '🙃']),
-  group(`Lisbon ${THIS_YEAR - 1}`, 'Messages', 'imessage', ['Maya Chen', 'Leo Martins', 'Ines Duarte'], 1210, 1, ['flight', 'pastéis', 'tram', 'beach'], ['✈️', '🌊', '😍']),
+  group(`Lisbon ${THIS_YEAR - 1}`, 'Messages', 'imessage', ['Leo Martins', 'Ines Duarte', 'Maya Chen'], 1210, 1, ['flight', 'pastéis', 'tram', 'beach'], ['✈️', '🌊', '😍']),
   group('Book club', 'Messages', 'imessage', ['Zoe Fischer', 'Hana Sato', 'Ruby Walsh', 'Clara Jensen'], 980, 2, ['chapter', 'ending', 'next', 'wine'], ['📚', '🍷']),
   group('Jordan, Priya and Sam', 'Instagram', 'instagram', ['Jordan Reyes', 'Priya Patel', 'Sam Okafor'], 740, 2, ['lol', 'reel', 'same'], ['😂', '💀'], false),
   group('Sunday soccer', 'WhatsApp', 'phone_whatsapp', ['Diego Alvarez', 'Omar Haddad', 'Luca Carter', 'Marcus Lee', 'Felix Wagner'], 610, 3, ['field', 'subs', 'rain'], ['⚽', '👏']),
@@ -243,7 +282,8 @@ const YEAR: YearStory = {
   year: STORY_YEAR, years: YEARS.slice(-3, -1), so_far: false, through: null,
   counts: { messages: 58_087, 'songs played': 9_412, 'searches': 6_208 },
   messages: { sent: 24_310, received: 33_777, apps: [{ app: 'Messages', messages: 41_020 }, { app: 'WhatsApp', messages: 9_840 }, { app: 'Instagram', messages: 7_227 }] },
-  people: { count: 214, top: top(STORY_YEAR, 5), new: 61, new_top: PEOPLE_LIST.slice(10, 18).map((p) => ({ key: p.key, name: p.name, messages: int(20, 300) })) },
+  people: { count: 214, top: top(STORY_YEAR, 5), new: 61,
+    new_top: PEOPLE_LIST.filter((p) => p.first?.ts.startsWith(STORY_YEAR)).map((p) => ({ key: p.key, name: p.name, messages: p.years[STORY_YEAR] ?? 0 })) },
   trips: TRIPS.filter((t) => t.start.startsWith(STORY_YEAR)).map((t) => ({ id: t.id, start: t.start, end: t.end, days: t.days, places: t.places, countries: t.countries, sample: t.sample })),
   trip_count: 6,
   travel: { km: storyLegs.reduce((a, l) => a + l.km, 0), flights: storyLegs.filter((l) => l.flew).length, countries: ['United States', 'Japan', 'Portugal'], new_countries: ['Japan', 'Portugal'], legs: storyLegs },
@@ -291,30 +331,65 @@ const STREAM_MONTH = (() => {
   const d = new Date(TODAY.getFullYear(), TODAY.getMonth() - 1, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 })();
+// Last month, in Chicago: who this person texts now and what about, the gym, the lake, work on the Mac, calls home.
+// Each day draws from these, more on weekends, so no two days read the same.
+const pick = <T,>(xs: T[]): T => xs[int(0, xs.length - 1)];
+const CHATS: [string, number, [string, string][]][] = [ // [who, how often, exchanges]
+  ['Ruby Walsh', 5, [['Ruby: trivia tonight? we need a fourth', 'You: in. same bar as last time?'], ['Ruby: did you see the lake this morning?? unreal', 'You: biked along it at lunch, so good'],
+    ['Ruby: the bakery on Milwaukee has cardamom buns today', 'You: omw'], ['Ruby: are you coming to the rooftop thing saturday', 'You: yes!! bringing Maya']]],
+  ['Maya Chen', 4, [['Maya: grabbing groceries, want anything?', 'You: limes and the good bread'], ['Maya: the landlord finally fixed the radiator 🙌', 'You: a miracle'],
+    ['Maya: leaving work now, climb or dinner?', 'You: climb then dinner'], ['Maya: look at this dog outside the cafe', 'You: I need him']]],
+  ['Mom', 3, [['Mom: How is the new job going?', 'You: Good! Busy week but good'], ['Mom: Call me this weekend ❤️', 'You: Sunday morning?'],
+    ['Mom: Did you get the package?', 'You: Yes!! the scarf is perfect, thank you']]],
+  ['Theo Laurent', 3, [['Theo: climbing thursday?', 'You: yes, 7:30 at First Ascent'], ['Theo: that overhang problem is finally going down', 'You: send it 🧗']]],
+  ['Jordan Reyes', 2, [['Jordan: SF misses you', 'You: Chicago is stealing me, sorry'], ['Jordan: visiting in October, couch free?', 'You: always']]],
+  ['Priya Patel', 2, [['Priya: sending the wedding photos tonight!', 'You: ahh can’t wait'], ['Priya: are you still doing the half marathon?', 'You: 6 weeks out, legs are confused']]],
+  ['Grace Kim', 1, [['Grace: new set at the gym is so good', 'You: going tomorrow after work']]],
+  ['Leo Martins', 2, [['Leo: can you look at my PR before standup?', 'You: on it'], ['Leo: lunch at the taco place?', 'You: 12:15']]],
+];
+const chatter = (): [string, [string, string]] => {
+  let n = int(1, CHATS.reduce((a, c) => a + c[1], 0));
+  const c = CHATS.find(([, w]) => (n -= w) <= 0)!;
+  return [c[0], pick(c[2])];
+};
+const SPOTS = ['at Montrose Beach', 'in Logan Square', 'at the Art Institute', 'along the Riverwalk', 'at the Green City Market', 'at Wicker Park'];
 function streamDay(date: string, quiet: boolean): StreamEvent[] {
   const at = (h: number, m = int(0, 59)) => `${date}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
   const ev = (start: string, kind: StreamEvent['kind'], app: string, title: string, more: Partial<StreamEvent> = {}): StreamEvent =>
     ({ start, end: null, kind, app, device: null, title, lines: [], people: [], count: 1, mine: 0, rowids: [row()], ...more });
-  const friend = NAMES[int(0, 9)];
+  const weekend = [0, 6].includes(new Date(`${date}T12:00:00`).getDay());
+  const texted = (h: number) => {
+    const [who, lines] = chatter(), n = int(3, 24);
+    return ev(at(h), 'conversation', 'Messages', `Texted with ${who} (${n} messages)`, { people: [who], count: n, lines });
+  };
   // Each count drawn once, so a title and its records agree.
-  const [mail, tracks, texts, pages, searches, photos] = [int(8, 40), int(6, 20), int(3, 12), int(8, 40), int(1, 4), int(3, 14)];
+  const [mail, tracks, pages, searches, photos] = [int(8, 40), int(6, 22), int(8, 40), int(1, 4), int(3, 14)];
   const out: StreamEvent[] = [
-    ev(`${date}T00:00:00`, 'health', 'Health', `You walked ${int(3, 14) * 1000 + int(0, 999)} steps`, { all_day: true }),
+    ev(`${date}T00:00:00`, 'health', 'Health', `You walked ${count(int(3, 16) * 1000 + int(0, 999))} steps`, { all_day: true }),
     ev(`${date}T00:00:00`, 'mail', 'Gmail', `${mail} newsletters and notifications in Gmail`, { all_day: true, count: mail }),
-    ev(at(int(7, 9)), 'listen', 'Spotify', `Listened to ${tracks} tracks on Spotify`, { count: tracks }),
-    ev(at(int(9, 11)), 'conversation', 'Messages', `Texted with ${friend} (${texts} messages)`, { people: [friend], count: texts,
-      lines: [`${friend.split(' ')[0]}: Are we still on for later?`, 'You: Yes! See you at 7'] }),
-    ev(at(int(11, 13)), 'browsing', 'Browser', `Browsed ${pages} pages and searched ${searches === 1 ? 'once' : searches === 2 ? 'twice' : `${searches} times`}`,
-      { device: 'Mac', count: pages + searches }),
+    ev(at(weekend ? int(9, 11) : int(7, 8)), 'listen', 'Spotify', `Listened to ${tracks} tracks on Spotify${weekend ? '' : ' on the way in'}`, { count: tracks }),
+    texted(int(9, 12)),
   ];
-  if (!quiet) {
+  if (!weekend) {
     out.push(
-      ev(at(int(13, 15)), 'app', 'Xcode', `Used Xcode for ${int(20, 90)} min on your Mac`, { device: 'Mac' }),
-      ev(at(int(15, 17)), 'calendar', 'Calendar', 'Coffee with the team'),
-      ev(at(int(18, 19)), 'photos', 'Photos', `Took ${photos} photos in Lisbon`, { count: photos, photos: Array.from({ length: Math.min(photos, 6) }, row) }),
-      ev(at(int(20, 22)), 'call', 'FaceTime', `Called ${NAMES[int(0, 5)]} (${int(5, 40)} min)`),
+      ev(at(9, int(30, 59)), 'calendar', 'Calendar', pick(['Standup', 'Design review', '1:1 with Leo', 'Planning'])),
+      ev(at(int(10, 16)), 'app', pick(['Xcode', 'Figma', 'VS Code']), `Worked in ${pick(['Xcode', 'Figma', 'VS Code'])} for ${int(40, 150)} min`, { device: 'Mac' }),
+      ev(at(int(12, 15)), 'browsing', 'Safari', `Browsed ${pages} pages and searched ${searches === 1 ? 'once' : searches === 2 ? 'twice' : `${searches} times`}`,
+        { device: 'Mac', count: pages + searches }),
     );
   }
+  if (!quiet || weekend) {
+    out.push(
+      rand() < 0.5
+        ? ev(at(weekend ? int(8, 10) : int(6, 7)), 'health', 'Strava', `Ran ${(int(40, 110) / 10).toFixed(1)} km along the Lakefront Trail`)
+        : ev(at(int(18, 20)), 'calendar', 'Calendar', pick(['Climbing at First Ascent', 'Dinner with Maya', 'Book club', 'Trivia at the Whirlaway', 'Pottery class'])),
+      ev(at(int(13, 19)), 'photos', 'Photos', `Took ${photos} photos ${pick(SPOTS)}`, { count: photos, photos: Array.from({ length: Math.min(photos, 6) }, row) }),
+      texted(int(17, 22)),
+    );
+    if (rand() < 0.5) out.push(ev(at(int(20, 22)), 'call', 'FaceTime', `${pick(['Called Mom', 'FaceTimed Priya', 'Called Dad', 'FaceTimed Ana'])} (${int(6, 48)} min)`));
+    else out.push(ev(at(int(21, 23)), 'watch', 'Netflix', `Watched ${pick(['2 episodes', 'a movie', 'an episode'])} on Netflix`));
+  }
+  if (rand() < 0.35) out.push(ev(at(int(11, 22)), 'search', 'Google', `Searched “${pick(['best deep dish near logan square', 'lake michigan water temperature', 'half marathon training plan', 'how to fix a radiator valve', 'cardamom bun recipe'])}”`));
   return out.sort((a, b) => Number(!!b.all_day) - Number(!!a.all_day) || a.start.localeCompare(b.start));
 }
 const STREAM_EVENTS: StreamEvent[] = (() => {
@@ -327,6 +402,35 @@ const STREAM: Stream = {
   months: [{ month: STREAM_MONTH, records: STREAM_EVENTS.reduce((a, e) => a + e.count, 0) }],
   records: STREAM_EVENTS.reduce((a, e) => a + e.count, 0), left_out: int(800, 2000), file: null, events: STREAM_EVENTS,
 };
+
+// ---------------------------------------------------------------- what Ask shows
+
+// The evening Maya found the Chicago apartment, and that summer by the lake: what the tour's (and the launch video's)
+// Ask answers show in place. Rowids here are the examples' own.
+const FOUND = `${STORY_YEAR}-06-14`;
+const said = (rowid: number, hm: string, me: boolean, text: string, image = false) => ({
+  rowid, ts: `${FOUND}T${hm}:00`, at: `${FOUND}T${hm}:00`, me, author: me ? 'me' : 'Maya Chen', kind: 'message' as const, text, files: image ? 1 : 0, image,
+  ...(image ? { thumb: thumb(rowid) } : {}),
+});
+const FOUND_IT = [
+  said(201, '18:42', false, '', true),
+  said(202, '18:42', false, 'ok I think I found it. 2 bedrooms in Logan Square, light everywhere'),
+  said(203, '18:44', true, 'WAIT that kitchen'),
+  said(204, '18:44', true, 'that’s the one. send it before someone else does'),
+  said(205, '18:51', false, 'application sent!!'),
+  said(206, '18:51', false, 'Chicago here we come 🥹'),
+];
+const chat = (from: number, to: number): EmbedData => ({ kind: 'chat', rowid: from, app: 'Messages', name: 'Maya Chen', group: false, one_sided: false,
+  anchors: [from, to], messages: FOUND_IT.filter((m) => m.rowid >= from && m.rowid <= to) });
+const EMBEDS: Record<string, EmbedData> = {
+  'chat:201-206': chat(201, 206), // with the photo of the place
+  'chat:202-206': chat(202, 206),
+  'photos:401,402,403': {
+    kind: 'photos', photos: [[401, '07-04T20:31'], [402, '07-19T19:58'], [403, '08-09T07:12']].map(([rowid, md]) => (
+      { rowid: rowid as number, ts: `${STORY_YEAR}-${md}:00`, place: 'Montrose Beach, Chicago', thumb: thumb(rowid as number) })),
+  },
+};
+export const exampleEmbed = async (key: string): Promise<EmbedData | { error: string }> => EMBEDS[key] ?? { error: 'no example of this' };
 
 export const EXAMPLES: ExampleSet = {
   data: { 'on-this-day': OTD, people: PEOPLE, person: PERSON, places: PLACES, rhythms: RHYTHMS, firsts: FIRSTS, made: MADE, groups: GROUPS, journeys: JOURNEYS, year: YEAR,

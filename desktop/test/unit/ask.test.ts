@@ -4,7 +4,7 @@ import { agentProfile, codexPermissions } from '../../src/main/ask.ts';
 import { resolvePaths } from '../../src/main/paths.ts';
 import { addEvent, answerOf, type AskTurn, DEFAULT_ASK, describeTool, followupPrompt, modelLabel, PROVIDERS, RECHECK_DAYS, RETENTION,
   retentionOk, titleOf } from '../../src/shared/ask.ts';
-import { blocks } from '../../src/shared/markdown.ts';
+import { blocks, embedKey, embedOf, partialEmbed } from '../../src/shared/markdown.ts';
 
 const turn = (question: string, answer: string): AskTurn => ({ question, answer, provider: 'anthropic', model: 'm', startedAt: '', events: [] });
 
@@ -87,6 +87,23 @@ test('markdown blocks', () => {
   assert.deepEqual(b[4].lines, ['| a | b |', '| 1 | 2 |']);
   assert.deepEqual(b[5].lines, ['code']);
   assert.deepEqual(blocks('| not a table |\nplain'), [{ t: 'p', lines: ['| not a table |', 'plain'] }]);
+});
+
+test('conversations and photos an answer shows, on lines of their own', () => {
+  assert.deepEqual(embedOf('[[chat:1234]]'), { kind: 'chat', from: 1234, to: null });
+  assert.deepEqual(embedOf('  [[ chat: 12 - 18 ]] '), { kind: 'chat', from: 12, to: 18 });
+  assert.deepEqual(embedOf('[[photos:5, 6,5,7]]'), { kind: 'photos', ids: [5, 6, 7] });
+  assert.deepEqual(embedOf('[[photo:9]]'), { kind: 'photos', ids: [9] });
+  assert.equal((embedOf('[[photos:1,2,3,4,5,6,7,8]]') as { ids: number[] }).ids.length, 6, 'six at most');
+  assert.equal(embedOf('[[chat:abc]]'), null);
+  assert.equal(embedOf('see [[chat:12]] here'), null, 'not mid-sentence');
+  assert.equal(embedKey(embedOf('[[chat:12-18]]')!), 'chat:12-18');
+  const b = blocks('The night you moved:\n[[chat:40-44]]\nAnd the beach:\n\n[[photos:7,8]]');
+  assert.deepEqual(b.map((x) => x.t), ['p', 'embed', 'p', 'embed']);
+  assert.deepEqual(b[0].lines, ['The night you moved:'], 'an embed ends the paragraph before it');
+  assert.deepEqual(b[3].embed, { kind: 'photos', ids: [7, 8] });
+  for (const s of ['[[', '[[ch', '[[chat:12', '[[chat:12-1', '[[photos:3,4]']) assert.ok(partialEmbed(s), s);
+  for (const s of ['[[chat:12]] done', 'plain text', '[[chat:12]]x']) assert.ok(!partialEmbed(s), s);
 });
 
 test('the agents are kept away from the corpus and the app data', () => {

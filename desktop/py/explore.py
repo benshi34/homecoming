@@ -1445,6 +1445,16 @@ def thread(rowid, direction=None, edge=None, limit=60):
             rows = day
         else:
             rows = take("ts < ?", (lo,), "desc", 12) + day + take("ts >= ?", (hi,), "asc", 12)
+    out = _messages(rows)
+    first, last = (rows[0][1], rows[-1][1]) if rows else (ts, ts)
+    more = lambda op, t: con.execute(f"select 1 from records where source = ? and thread = ? and kind in ('message', 'reaction') "
+                                     f"and ts {op} ? limit 1", (source, th, t)).fetchone() is not None
+    return {"rowid": int(rowid), **_who(con, source, th, thread_name, participants, meta), "messages": out,
+            "more_before": more("<", first), "more_after": more(">", last)}
+
+
+def _messages(rows):
+    """Rows of (rowid, ts, is_me, author, kind, text, meta) as a chat app shows them."""
     out = []
     for rid, ts_, is_me, author, kind, text, m in rows:
         files = [f for f in (meta_of(m).get("files") or []) if isinstance(f, str)]
@@ -1453,17 +1463,71 @@ def thread(rowid, direction=None, edge=None, limit=60):
         out.append({"rowid": rid, "ts": lt.isoformat() if lt else ts_, "at": ts_, "me": str(is_me) == "1", "author": author,
                     "kind": kind, "text": body, "files": len(files),
                     "image": any(Path(f).suffix.lower() in IMAGE_EXT for f in files)})
-    first, last = (rows[0][1], rows[-1][1]) if rows else (ts, ts)
-    more = lambda op, t: con.execute(f"select 1 from records where source = ? and thread = ? and kind in ('message', 'reaction') "
-                                     f"and ts {op} ? limit 1", (source, th, t)).fetchone() is not None
-    mine = me_names()
+    return out
+
+
+def _who(con, source, th, thread_name, participants, meta):
+    """Which app a conversation is in, who it's with (no one name for a group), and whether only your side is kept."""
     m = meta_of(meta) if source == "imessage" else {}
-    who = chat_partner(source, thread_name, participants, m, mine)
+    who = chat_partner(source, thread_name, participants, m, me_names())
     others = con.execute("select 1 from records where source = ? and thread = ? and kind = 'message' and is_me != '1' limit 1",
                          (source, th)).fetchone()
-    return {"rowid": int(rowid), "app": app_label(source, con), "name": who or thread_name or "A conversation",
-            "group": who is None, "messages": out, "more_before": more("<", first), "more_after": more(">", last),
+    return {"app": app_label(source, con), "name": who or thread_name or "A conversation", "group": who is None,
             "one_sided": source in ONE_SIDED or others is None}
+
+
+SNIPPET = 16  # most messages one snippet shows
+
+
+def embed(kind, spec):
+    """What an Ask answer shows rather than cites. "chat" with "ROWID": that message with two before it and three
+    after, in its conversation; with "FROM-TO": those two messages and every one between them (the first SNIPPET).
+    "photos" with "ROWID,ROWID": each photo (or message with an image) and where and when it was taken, with its
+    thumbnail. Read from corpus.db on this Mac; nothing here goes to the model."""
+    con = connect()
+    if kind == "chat":
+        ids = [int(x) for x in re.findall(r"\d+", spec)][:2]
+        if not ids:
+            return {"error": "no message"}
+        q = "select rowid, source, kind, thread, thread_name, participants, ts, meta from records where rowid = ?"
+        ends = [con.execute(q, (i,)).fetchone() for i in ids]
+        if any(not r or r[2] not in ("message", "reaction") or not r[3] or not r[6] for r in ends):
+            return {"error": "not a message in a conversation"}
+        if len(ends) == 2 and (ends[0][1], ends[0][3]) != (ends[1][1], ends[1][3]):
+            return {"error": "those messages are in different conversations"}
+        _, source, _, th, thread_name, participants, ts, meta = ends[0]
+        base = ("select rowid, ts, is_me, author, kind, text, meta from records where source = ? and thread = ? "
+                "and kind in ('message', 'reaction') and ts is not null")
+        if len(ends) == 2:
+            lo, hi = sorted([ends[0][6], ends[1][6]])
+            rows = con.execute(f"{base} and ts >= ? and ts <= ? order by ts, rowid limit {SNIPPET}", (source, th, lo, hi)).fetchall()
+            anchors = ids
+        else:
+            before = con.execute(f"{base} and (ts < ? or (ts = ? and rowid < ?)) order by ts desc, rowid desc limit 2",
+                                 (source, th, ts, ts, ids[0])).fetchall()[::-1]
+            after = con.execute(f"{base} and (ts > ? or (ts = ? and rowid >= ?)) order by ts, rowid limit 4",
+                                (source, th, ts, ts, ids[0])).fetchall()
+            rows, anchors = before + after, ids
+        out = _messages(rows)
+        pics = thumbs([m["rowid"] for m in out if m["image"]], 360)
+        for m in out:
+            if str(m["rowid"]) in pics:
+                m["thumb"] = pics[str(m["rowid"])]
+        return {"kind": "chat", "rowid": ids[0], **_who(con, source, th, thread_name, participants, meta), "messages": out, "anchors": anchors}
+    if kind in ("photos", "photo"):
+        ids = list(dict.fromkeys(int(x) for x in re.findall(r"\d+", spec)))[:6]
+        pics = thumbs(ids, 480)
+        out = []
+        for rowid in ids:
+            r = con.execute("select ts, text, meta from records where rowid = ?", (rowid,)).fetchone()
+            if not r or str(rowid) not in pics:
+                continue
+            mt = meta_of(r[2])
+            t = parse(r[0], mt.get("timezone") or mt.get("tz"))
+            place = next((ln.split(":", 1)[1].strip() for ln in (r[1] or "").splitlines() if ln.startswith("Place:")), None)
+            out.append({"rowid": rowid, "ts": t.isoformat(timespec="seconds") if t else None, "place": place, "thumb": pics[str(rowid)]})
+        return {"kind": "photos", "photos": out} if out else {"error": "no photos to show"}
+    return {"error": f"can't show {kind}"}
 
 
 # ---------------------------------------------------------------- summary and thumbnails
@@ -1620,6 +1684,8 @@ def main(argv):
         out = records_brief([int(x) for x in rest[0].split(",") if x.strip().isdigit()][:2000])
     elif cmd == "thread":
         out = thread(rest[0], *(rest[1:3] if len(rest) >= 3 else ()))
+    elif cmd == "embed":
+        out = embed(rest[0] if rest else "", rest[1] if len(rest) > 1 else "")
     elif cmd == "thumbs":
         out = thumbs([int(x) for x in rest[0].split(",") if x.strip().isdigit()][:60], int(rest[1]) if len(rest) > 1 else 360)
     else:

@@ -49,3 +49,13 @@ Lookups are quick, so be thorough. Run several, from different angles, and check
 2. Then **How I know**: 2 to 6 bullets, each with the source, the local date and a short quote or number, citing the record as a link: `[label](record:ROWID)`, with the rowid search shows (or `rowid` from SQL).
 3. Say how sure you are, and keep what the data shows apart from what you're inferring.
 4. If the data doesn't cover it, say so and say what's missing. Never make up details.
+
+## Showing a conversation or photos
+
+When the answer is a conversation or a picture, show it, on a line of its own, instead of only citing it. The app draws it from their data on this Mac:
+
+- `[[chat:ROWID]]`: that message in its conversation, with two messages before it and three after, the way Messages shows it.
+- `[[chat:FROM-TO]]`: two messages of one conversation and every message between them (16 at most): the exchange that matters, start to end.
+- `[[photos:ROWID,ROWID,ROWID]]`: up to six photos side by side (photo records, or messages with an image attached), with where and when they were taken.
+
+The rowids are the ones search and sql give you. Show one or two of these where they say more than words would (the night of the move, the photos from a trip), not one for every citation, and never in place of **How I know**. Look at what you show first (search or sql for the messages; a photo's labels or view_image), so it's what you say it is.

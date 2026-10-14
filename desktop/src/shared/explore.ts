@@ -203,6 +203,10 @@ export interface YearStory {
 // asking for more before or after it.
 export interface ThreadMessage { rowid: number; ts: string; at: string; me: boolean; author: string | null; kind: 'message' | 'reaction'; text: string; files: number; image: boolean }
 export interface Thread { rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: ThreadMessage[]; more_before: boolean; more_after: boolean }
+// What an Ask answer shows rather than cites (py/explore.py embed): a stretch of a conversation, or a few photos.
+export interface ChatEmbed { kind: 'chat'; rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: (ThreadMessage & { thumb?: string })[]; anchors: number[] }
+export interface PhotosEmbed { kind: 'photos'; photos: { rowid: number; ts: string | null; place: string | null; thumb: string }[] }
+export type EmbedData = ChatEmbed | PhotosEmbed;
 
 // "imessage" -> "Messages": the apps a person's messages came from, in plain words.
 export const APP_LABEL: Record<string, string> = {

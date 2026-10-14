@@ -901,6 +901,43 @@ button.hbar:hover { background: var(--fill); }
 .msg-row.anchor .bubble, .msg-row.anchor .msg-image { box-shadow: 0 0 0 2.5px var(--group-box), 0 0 0 4.5px var(--orange); }
 .convo-reaction.anchor { color: var(--orange); }
 
+/* What an Ask answer shows in place (embeds.tsx): a few messages as Messages draws them, and photos. The bubbles come
+   in one after another; the photos settle in. */
+.embed-chat { max-width: 440px; margin: 10px 0 12px; background: var(--group-box); border-radius: 18px; overflow: hidden;
+  box-shadow: 0 0 0 0.5px var(--separator), 0 6px 22px rgba(0, 0, 0, 0.06); animation: rise 0.4s var(--ease) both; user-select: text; }
+.embed-chat-head { width: 100%; display: flex; align-items: center; gap: 9px; padding: 9px 12px 8px; font: inherit; text-align: left; color: var(--label);
+  background: transparent; border: none; border-bottom: 0.5px solid var(--separator); cursor: pointer; }
+.embed-chat-head:hover { background: var(--fill); }
+.embed-chat-who { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
+.embed-chat-who b { font-size: 13px; font-weight: 600; }
+.embed-chat-who span { font-size: 11px; color: var(--secondary); }
+.embed-chat-head .row-chevron { color: var(--tertiary); flex: none; }
+.embed-chat-body { padding: 4px 12px 12px; }
+.embed-chat-body .bubble { max-width: 82%; }
+.embed-chat-body .msg-image { width: 180px; height: 135px; }
+.embed-msg { animation: bubble-in 0.5s var(--spring-pop) backwards; }
+.embed-msg.me { transform-origin: 100% 100%; }
+.embed-msg.them { transform-origin: 0 100%; }
+@keyframes bubble-in { from { opacity: 0; transform: translateY(8px) scale(0.9); } }
+.embed-chat-body .bubble.attachment { display: inline-flex; align-items: center; gap: 6px; }
+.embed-chat-body .bubble.them.attachment { color: var(--secondary); }
+.bubble-emoji { font-size: 34px; line-height: 1.15; padding: 0 2px; }
+.embed-chat-foot { font-size: 11px; color: var(--tertiary); padding: 0 14px 10px; }
+.embed-photos { margin: 10px 0 12px; max-width: 440px; }
+.embed-photos-grid { display: grid; gap: 3px; border-radius: 16px; overflow: hidden; grid-template-columns: repeat(3, 1fr); }
+.embed-photos.n1 .embed-photos-grid { grid-template-columns: 1fr; max-width: 320px; }
+.embed-photos.n2 .embed-photos-grid { grid-template-columns: 1fr 1fr; }
+.embed-photos-grid button { border: 0; padding: 0; aspect-ratio: 1; background: var(--fill); overflow: hidden; cursor: pointer; animation: photo-in 0.7s var(--spring) backwards; }
+.embed-photos.n1 .embed-photos-grid button { aspect-ratio: 4 / 3; }
+.embed-photos-grid img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.4s var(--ease); }
+.embed-photos-grid button:hover img { transform: scale(1.04); }
+@keyframes photo-in { from { opacity: 0; transform: scale(0.94); } }
+.embed-photos-cap { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--secondary); margin: 6px 2px 0; }
+.embed-loading { margin: 10px 0 12px; max-width: 440px; border-radius: 16px; background: var(--fill); }
+.embed-loading.chat { height: 150px; }
+.embed-loading.photos { height: 120px; }
+.embed-missing { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--tertiary); margin: 6px 0 10px; }
+
 /* Explore's newer artifacts: your year as a story, journeys on a night map, group chats. */
 @keyframes drift { from { transform: translate(-12%, 8%) rotate(0deg); } to { transform: translate(12%, -8%) rotate(35deg); } }
 @keyframes bar-fill { to { width: 100%; } }
@@ -1171,7 +1208,8 @@ button.hbar:hover { background: var(--fill); }
 .demo-phases button.on { background: var(--group-box); color: var(--label); box-shadow: 0 0.5px 2px rgba(0, 0, 0, 0.12); }
 .demo-phases button svg { color: var(--accent); }
 .demo-phase { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: fade-in 0.45s var(--ease); }
-.demo-ask { width: 100%; max-width: 760px; margin: auto; padding: 14px 16px; border-radius: 12px; background: var(--group-box); box-shadow: 0 0 0 0.5px var(--separator); }
+.demo-ask { width: 100%; max-width: 760px; margin: auto; padding: 14px 16px; border-radius: 12px; background: var(--group-box); box-shadow: 0 0 0 0.5px var(--separator);
+  max-height: 100%; overflow-y: auto; scrollbar-width: none; }
 .demo-ask .q-row .q { max-width: 70%; }
 .demo-ask .cite { cursor: default; }
 /* The Explore window: the real page at a desktop width, scaled down, with the pointer that browses it. */

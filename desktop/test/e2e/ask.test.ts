@@ -14,13 +14,16 @@ let sb: Sandbox;
 let run: Running;
 let env: Record<string, string>;
 let dinner: number;
+let photo: number;
 const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 const plan = (who: 'claude' | 'codex', p: unknown) => fs.writeFileSync(path.join(sb.root, `${who}-plan.json`), JSON.stringify(p));
 
 before(async () => {
   sb = sandbox({ identity: true });
   execFileSync(PY, [path.join(DESKTOP, 'test/fixtures/make_fixtures.py'), 'ask-corpus', sb.corpus]);
-  dinner = Number(execFileSync(PY, ['-c', `import sqlite3; print(sqlite3.connect(${JSON.stringify(path.join(sb.corpus, 'corpus.db'))}).execute("select rowid from records where text like '%Tasca%'").fetchone()[0])`]).toString());
+  const rowid = (where: string) => Number(execFileSync(PY, ['-c', `import sqlite3; print(sqlite3.connect(${JSON.stringify(path.join(sb.corpus, 'corpus.db'))}).execute("select rowid from records where ${where}").fetchone()[0])`]).toString());
+  dinner = rowid("text like '%Tasca%'");
+  photo = rowid("source = 'photos'");
   env = sandboxEnv(sb, {
     UMP_NO_AUTORUN: '1', UMP_ASK_ANTHROPIC_KEY: 'sk-ant-test',
     UMP_CLAUDE_CMD: path.join(DESKTOP, 'test/fakes/fake_claude.py'), FAKE_CLAUDE_PLAN: path.join(sb.root, 'claude-plan.json'),
@@ -90,6 +93,32 @@ test('Codex on a local model answers with no confirmation, shows its lookups, an
   await shot(p, 'ask-record');
   await p.locator('[data-testid=ask-record] button', { hasText: 'Done' }).click();
   assert.equal(await p.locator('[data-testid=ask-row]').count(), 1);
+});
+
+test('an answer can show the conversation and the photo it means, and the conversation opens whole', async () => {
+  const p = run.page;
+  plan('codex', { notes: false, steps: [{ tool: 'search', input: { query: 'Tasca' } }],
+    answer: `You booked Tasca for Friday:\n[[chat:${dinner}]]\nThe photo from that dinner:\n\n[[photos:${photo}]]\n\nOr see [[chat:${dinner}]] again.` });
+  await p.locator('[data-testid=ask-input]').fill('Show me the dinner plans');
+  await p.locator('[data-testid=ask-input]').press('Enter');
+  const chat = p.locator('[data-testid=ask-turn]').nth(1).locator('[data-testid=ask-chat-card]');
+  await chat.waitFor({ timeout: 30_000 });
+  assert.deepEqual(await chat.locator('.bubble').allInnerTexts(), ['Are we still on for dinner at Tasca on Friday?', 'Yes! 7:30, I booked a table.'], 'both sides, in order');
+  assert.equal(await chat.locator('.msg-row.me .bubble').innerText(), 'Yes! 7:30, I booked a table.');
+  assert.match(await chat.locator('.embed-chat-who').innerText(), /Grace Hopper\s*Messages · March 2, 2026/);
+  const photos = p.locator('[data-testid=ask-turn]').nth(1).locator('[data-testid=ask-photos]');
+  await photos.locator('img').waitFor();
+  assert.match(await photos.innerText(), /Lisbon · March 7, 2026/);
+  assert.equal(await p.locator('[data-testid=ask-turn]').nth(1).locator('[data-testid=ask-cite]', { hasText: 'the conversation' }).count(), 1, 'mid-sentence, a citation');
+  await shot(p, 'ask-embeds');
+  await chat.locator('[data-testid=ask-chat-open]').click();
+  await p.locator('[data-testid=convo]').waitFor();
+  assert.match(await p.locator('[data-testid=convo]').innerText(), /I booked a table/);
+  await p.locator('[data-testid=conversation] button', { hasText: 'Done' }).click();
+  await photos.locator('button').first().click();
+  await p.locator('[data-testid=ask-record] h2').waitFor();
+  assert.match(await p.locator('[data-testid=ask-record]').innerText(), /Place: Lisbon, Portugal/);
+  await p.locator('[data-testid=ask-record] button', { hasText: 'Done' }).click();
 });
 
 test('Claude Code with an API key waits for its data settings to be confirmed, then sends the question', async () => {

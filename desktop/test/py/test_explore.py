@@ -131,6 +131,28 @@ class Explore(unittest.TestCase):
         self.assertTrue(all(m["at"] < first["at"] for m in earlier["messages"]))
         self.assertIn("error", self.run_explore("thread", str(self.run_explore("places")["points"][0]["rowid"])), "a photo isn't a conversation")
 
+    def test_what_an_answer_shows(self):
+        """A few messages around one, an exchange from one message to another, and photos with where and when."""
+        day = next(d for d in self.run_explore("person", "gracehopper")["busiest_days"] if d["date"] == "2025-03-12")
+        t = self.run_explore("thread", str(day["rowid"]))
+        at = next(i for i, m in enumerate(t["messages"]) if m["rowid"] == day["rowid"])
+        one = self.run_explore("embed", "chat", str(day["rowid"]))
+        self.assertEqual((one["kind"], one["name"], one["app"], one["group"]), ("chat", "Grace H", "Messages", False))
+        self.assertEqual([m["rowid"] for m in one["messages"]], [m["rowid"] for m in t["messages"][max(0, at - 2):at + 4]],
+                         "two before it and three after, in order")
+        a, b = t["messages"][1]["rowid"], t["messages"][4]["rowid"]
+        span = self.run_explore("embed", "chat", f"{b}-{a}")
+        self.assertEqual([m["rowid"] for m in span["messages"]], [m["rowid"] for m in t["messages"][1:5]], "either way round")
+        self.assertIn("error", self.run_explore("embed", "chat", "999999"))
+        photo = self.run_explore("places")["points"][0]["rowid"]
+        self.assertIn("error", self.run_explore("embed", "chat", str(photo)), "a photo isn't a conversation")
+        convo = self.run_explore("groups")["groups"][0]["first"]["rowid"]
+        self.assertIn("different conversations", self.run_explore("embed", "chat", f"{day['rowid']}-{convo}")["error"])
+        ph = self.run_explore("embed", "photos", f"{photo},{day['rowid']},{photo}")
+        self.assertEqual([p["rowid"] for p in ph["photos"]], [photo], "only photos, once each")
+        self.assertTrue(ph["photos"][0]["thumb"].startswith("data:image/jpeg;base64,"))
+        self.assertIn("error", self.run_explore("embed", "photos", str(day["rowid"])))
+
     def test_progress_while_building(self):
         """An artifact being built says its steps and how far it has got, on stderr, for the loading screen."""
         env = {**self.env, "UMP_EXPLORE_CACHE": str(Path(self.tmp.name) / "fresh-cache")}

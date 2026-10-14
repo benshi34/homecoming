@@ -1,6 +1,7 @@
 // Ask: questions about your own data, answered by the model you pick, which looks things up with the corpus tools.
 // Laid out like Messages: conversations on the left, the chosen one on the right with the composer under it. Every
-// answer shows what was looked up, and cites the records it rests on; a citation opens the record.
+// answer shows what was looked up, and cites the records it rests on; a citation opens the record. An answer can also
+// show a stretch of a conversation or a few photos in place (embeds.tsx).
 
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -9,10 +10,12 @@ import {
 } from '../shared/ask.ts';
 import { CATALOG } from '../shared/catalog.ts';
 import { ago } from '../shared/format.ts';
-import { type Block, blocks } from '../shared/markdown.ts';
+import { type Block, blocks, embedOf, partialEmbed } from '../shared/markdown.ts';
 import { PHONE_SOURCES } from '../shared/phone.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api, type AskRecord } from './api.ts';
+import { EmbedBlock } from './embeds.tsx';
+import { ConversationSheet } from './explore.tsx';
 import { Glyph } from './icons.tsx';
 import { Banner, Button, Group, GroupRow, Sheet, Spinner } from './ui.tsx';
 
@@ -30,6 +33,7 @@ export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode 
   const [running, setRunning] = useState(false);
   const [sheet, setSheet] = useState<null | 'provider' | { retention: AskProvider; then?: string }>(null);
   const [record, setRecord] = useState<number | null>(null);
+  const [conversation, setConversation] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const selRef = useRef(sel);
@@ -148,7 +152,7 @@ export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode 
           {sel && <button className="icon-btn no-drag" onClick={() => remove(sel)} title="Delete Conversation" aria-label="Delete Conversation" data-testid="ask-delete"><Glyph name="trash" size={16} /></button>}
           {toolbar}
         </div>
-        <Chat conv={conv} running={running} onRecord={setRecord} onExample={(q) => void send(q)} />
+        <Chat conv={conv} running={running} onRecord={setRecord} onConversation={setConversation} onExample={(q) => void send(q)} />
         {error && <div className="ask-error"><Banner kind="error">{error}</Banner></div>}
         <Composer text={draft} setText={setDraft} running={running} onSend={send} onStop={() => sel && void api.ask({ op: 'stop', id: sel })} snap={snap}
           onRetention={() => setSheet({ retention: s.provider })} />
@@ -162,6 +166,7 @@ export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode 
             if (then) void send(then, true);
           })} />
       )}
+      {conversation !== null && <ConversationSheet rowid={conversation} onClose={() => setConversation(null)} onRecord={setRecord} />}
       {record !== null && <RecordSheet rowid={record} onClose={() => setRecord(null)} />}
     </>
   );
@@ -169,7 +174,7 @@ export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode 
 
 // ---------------------------------------------------------------- the conversation
 
-function Chat({ conv, running, onRecord, onExample }: { conv: AskConversation | null; running: boolean; onRecord: (n: number) => void; onExample: (q: string) => void }) {
+function Chat({ conv, running, onRecord, onConversation, onExample }: { conv: AskConversation | null; running: boolean; onRecord: (n: number) => void; onConversation: (n: number) => void; onExample: (q: string) => void }) {
   const end = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const last = conv?.turns[conv.turns.length - 1];
@@ -196,14 +201,14 @@ function Chat({ conv, running, onRecord, onExample }: { conv: AskConversation | 
   return (
     <div className="scroll" ref={box} data-testid="ask-chat">
       <div className="ask-turns">
-        {conv.turns.map((t, i) => <Turn key={i} turn={t} live={running && i === conv.turns.length - 1} onRecord={onRecord} />)}
+        {conv.turns.map((t, i) => <Turn key={i} turn={t} live={running && i === conv.turns.length - 1} onRecord={onRecord} onConversation={onConversation} />)}
         <div ref={end} />
       </div>
     </div>
   );
 }
 
-export function Turn({ turn, live, onRecord }: { turn: AskTurn; live: boolean; onRecord: (n: number) => void }) {
+export function Turn({ turn, live, onRecord, onConversation }: { turn: AskTurn; live: boolean; onRecord: (n: number) => void; onConversation?: (n: number) => void }) {
   const answer = (live ? '' : turn.answer) || answerOf(turn.events);
   const secs = turn.endedAt ? Math.max(0, (Date.parse(turn.endedAt) - Date.parse(turn.startedAt)) / 1000) : null;
   const notices = turn.events.filter((e): e is Extract<AskEvent, { t: 'notice' | 'error' }> => e.t === 'notice' || e.t === 'error');
@@ -212,7 +217,7 @@ export function Turn({ turn, live, onRecord }: { turn: AskTurn; live: boolean; o
       <div className="q-row"><div className="q selectable">{turn.question}</div></div>
       <div className="a">
         <Lookups events={turn.events} live={live} />
-        {answer && <div className="answer selectable" data-testid="ask-answer"><Markdown text={answer} onRecord={onRecord} /></div>}
+        {answer && <div className="answer selectable" data-testid="ask-answer"><Markdown text={answer} live={live} onRecord={onRecord} onConversation={onConversation} /></div>}
         {live && !answer && <div className="thinking"><Spinner size={13} /> {turn.events.some((e) => e.t === 'tool') ? 'Looking things up…' : 'Thinking…'}</div>}
         {notices.map((n, i) => <div key={i} className={`notice ${n.t}`}>{n.text}</div>)}
         {turn.error && <Banner kind="error">{turn.error}</Banner>}
@@ -325,13 +330,17 @@ function Composer({ text, setText, running, onSend, onStop, snap, onRetention }:
 
 // ---------------------------------------------------------------- answers, as Markdown
 
-export function Markdown({ text, onRecord }: { text: string; onRecord: (n: number) => void }) {
-  return <>{blocks(text).map((b, i) => renderBlock(b, i, onRecord))}</>;
+export function Markdown({ text, live, onRecord, onConversation }: { text: string; live?: boolean; onRecord: (n: number) => void; onConversation?: (n: number) => void }) {
+  // While it streams in, a conversation or photos still being named shows nothing yet, not half its name.
+  const lines = text.split('\n');
+  const shown = live && partialEmbed(lines[lines.length - 1]) ? lines.slice(0, -1).join('\n') : text;
+  return <>{blocks(shown).map((b, i) => renderBlock(b, i, onRecord, onConversation))}</>;
 }
 
-function renderBlock(b: Block, key: number, onRecord: (n: number) => void): ReactNode {
+function renderBlock(b: Block, key: number, onRecord: (n: number) => void, onConversation?: (n: number) => void): ReactNode {
   const inl = (s: string) => inline(s, onRecord);
   switch (b.t) {
+    case 'embed': return <EmbedBlock key={`${key}:${b.lines[0]}`} embed={b.embed!} onRecord={onRecord} onConversation={onConversation} />;
     case 'code': return <pre key={key} className="md-code">{b.lines.join('\n')}</pre>;
     case 'h': return b.level === 1 ? <h3 key={key}>{inl(b.lines[0])}</h3> : <h4 key={key}>{inl(b.lines[0])}</h4>;
     case 'quote': return <blockquote key={key}>{inl(b.lines.join(' '))}</blockquote>;
@@ -360,10 +369,10 @@ function renderBlock(b: Block, key: number, onRecord: (n: number) => void): Reac
 }
 
 // Inline Markdown: `code`, **bold**, *italic*, [label](record:123) citations, [label](https://…) links (shown,
-// not opened: they come from the data).
+// not opened: they come from the data). A [[chat:…]] or [[photos:…]] inside a sentence is a citation of its first record.
 export function inline(s: string, onRecord: (n: number) => void): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s][^*]*?)\*(?!\w)|\[([^\]]+)\]\(([^)\s]+)\)|\b(record:|#)(\d{3,})\b/g;
+  const re = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s][^*]*?)\*(?!\w)|(\[\[\s*(?:chat|photos?)\s*:[\d\s,–-]+\]\])|\[([^\]]+)\]\(([^)\s]+)\)|\b(record:|#)(\d{3,})\b/g;
   let at = 0;
   let m: RegExpExecArray | null;
   let k = 0;
@@ -373,13 +382,19 @@ export function inline(s: string, onRecord: (n: number) => void): ReactNode[] {
     else if (m[2] !== undefined || m[3] !== undefined) out.push(<strong key={k++}>{inline(m[2] ?? m[3], onRecord)}</strong>);
     else if (m[4] !== undefined) out.push(<em key={k++}>{inline(m[4], onRecord)}</em>);
     else if (m[5] !== undefined) {
-      const rec = /^record:(\d+)$/.exec(m[6]);
+      const e = embedOf(m[5]);
+      const first = e && (e.kind === 'chat' ? e.from : e.ids[0]);
+      out.push(first
+        ? <button key={k++} className="cite" onClick={() => onRecord(first)} data-testid="ask-cite">{e.kind === 'chat' ? 'the conversation' : 'the photos'}</button>
+        : m[5]);
+    } else if (m[6] !== undefined) {
+      const rec = /^record:(\d+)$/.exec(m[7]);
       out.push(rec
-        ? <button key={k++} className="cite" onClick={() => onRecord(Number(rec[1]))} data-testid="ask-cite">{inline(m[5], onRecord)}</button>
-        : <span key={k++} className="md-link" title={m[6]}>{inline(m[5], onRecord)}</span>);
-    } else if (m[7] === 'record:') {
-      const n = Number(m[8]);
-      out.push(<button key={k++} className="cite" onClick={() => onRecord(n)} data-testid="ask-cite">#{m[8]}</button>);
+        ? <button key={k++} className="cite" onClick={() => onRecord(Number(rec[1]))} data-testid="ask-cite">{inline(m[6], onRecord)}</button>
+        : <span key={k++} className="md-link" title={m[7]}>{inline(m[6], onRecord)}</span>);
+    } else if (m[8] === 'record:') {
+      const n = Number(m[9]);
+      out.push(<button key={k++} className="cite" onClick={() => onRecord(n)} data-testid="ask-cite">#{m[9]}</button>);
     } else out.push(m[0]); // "#1234" in prose stays text
     at = m.index + m[0].length;
   }

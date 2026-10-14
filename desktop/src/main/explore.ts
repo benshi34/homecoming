@@ -10,9 +10,9 @@ import path from 'node:path';
 import { childEnv, type Paths } from './paths.ts';
 
 const OPS = new Set(['summary', 'on-this-day', 'people', 'person', 'places', 'rhythms', 'firsts', 'made', 'groups', 'journeys', 'year',
-  'stream', 'stream-build', 'thumbs', 'thread', 'records']);
+  'stream', 'stream-build', 'thumbs', 'thread', 'records', 'embed']);
 // Quick lookups, never behind an artifact being built.
-const QUICK = new Set(['thumbs', 'thread', 'records']);
+const QUICK = new Set(['thumbs', 'thread', 'records', 'embed']);
 
 export type ExploreProgressSink = (key: string, data: Record<string, unknown>) => void;
 

@@ -333,7 +333,7 @@ function initials(name: string) {
   if (!w.length) return '';
   return ([...w[0]][0] + (w.length > 1 ? [...w[w.length - 1]][0] : '')).toUpperCase();
 }
-function Avatar({ name, size = 32 }: { name: string; size?: number }) {
+export function Avatar({ name, size = 32 }: { name: string; size?: number }) {
   const ini = initials(name);
   return (
     <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.4, ...tone(toneOf(name)) }} aria-hidden>
@@ -2180,7 +2180,7 @@ function GroupView({ ctx, k }: { ctx: Ctx; k: string }) {
 // The conversation a message is in, the way Messages shows it: your messages on the right, theirs on the left, the
 // day's whole exchange and a little either side, with earlier and later a click away. The message you came from is
 // marked and scrolled to.
-function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number; onClose: () => void; onRecord: (n: number) => void }) {
+export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number; onClose: () => void; onRecord: (n: number) => void }) {
   const [t, setT] = useState<Thread | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<'before' | 'after' | null>(null);
