@@ -88,7 +88,7 @@ export function progress(views: SourceView[], now: Date): Progress {
 
 // ---------------------------------------------------------------- Setup Assistant
 
-export type StepKind = 'welcome' | 'identity' | 'access' | 'library' | 'keep' | 'mac' | 'iphone' | 'accounts' | 'exports' | 'export' | 'mail' | 'extras' | 'done';
+export type StepKind = 'welcome' | 'identity' | 'access' | 'library' | 'keep' | 'mac' | 'iphone' | 'accounts' | 'ai' | 'exports' | 'export' | 'mail' | 'extras' | 'done';
 
 export interface Step {
   id: string;
@@ -97,7 +97,7 @@ export interface Step {
   sourceId?: string;
 }
 
-export const STEP_GROUPS = ['Welcome', 'Access', 'Library', 'Mac', 'iPhone', 'Accounts', 'Exports', 'Extras', 'You', 'Keep History', 'Done'];
+export const STEP_GROUPS = ['Welcome', 'Access', 'Library', 'Mac', 'iPhone', 'Accounts', 'AI', 'Exports', 'Extras', 'You', 'Keep History', 'Done'];
 
 // Where the library lives and whether it fits; and the settings that decide how much future history survives.
 export const LIBRARY_SOURCES = ['corpus_location', 'disk_space', 'python_env'];
@@ -170,6 +170,8 @@ export function assistantSteps(views: SourceView[], chosen?: string[]): Step[] {
     { id: 'mac', kind: 'mac', group: 'Mac' },
     { id: 'iphone', kind: 'iphone', group: 'iPhone', sourceId: 'iphone_backup' },
     { id: 'accounts', kind: 'accounts', group: 'Accounts' },
+    // Before the exports, whose pages offer Do It for Me once it's on.
+    { id: 'ai', kind: 'ai', group: 'AI' },
   ];
   // A list of them first, so you can start with the ones you care about most, then a page each.
   const picked = accountChoices(views).filter((v) => pick.has(v.id));

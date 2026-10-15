@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import electron from 'electron';
+import { devElectron } from './dev_app.mjs';
 
 const DESKTOP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = path.dirname(DESKTOP);
@@ -95,5 +95,5 @@ Object.assign(env, {
 });
 console.log(`Fresh run in ${SANDBOX}`);
 execFileSync('open', [SANDBOX]);
-const child = spawn(electron, [DESKTOP], { env, stdio: 'inherit' });
+const child = spawn(devElectron(), [DESKTOP], { env, stdio: 'inherit' });
 child.on('exit', (code) => process.exit(code ?? 0));

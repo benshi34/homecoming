@@ -2,7 +2,7 @@
 
 import type { SourceView } from './types.ts';
 
-export type Nav = 'overview' | 'ask' | 'explore' | 'needs' | 'working' | 'done' | 'unavailable' | 'setup' | 'found' | 'hub';
+export type Nav = 'overview' | 'ask' | 'explore' | 'ai' | 'needs' | 'working' | 'done' | 'unavailable' | 'setup' | 'found' | 'hub';
 
 const SETUP_ORDER = ['identity', 'fda', 'python_env', 'corpus_location', 'disk_space', 'retention_messages', 'retention_safari', 'retention_claude',
   'retention_codex', 'retention_shell', 'retention_iphone_messages', 'retention_maps', 'retention_google', 'iphone_notifications'];

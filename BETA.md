@@ -6,14 +6,14 @@ Thanks for testing. This is the order that finds the most problems. When somethi
 
 1. **Install it** from the [README](README.md#download-the-app): the app from the latest release (or from source, if you'd rather). If any step fails or isn't clear, that's the first thing to report.
 2. **Go through the Setup Assistant** from the welcome page to the end. Turn on Full Disk Access when it asks.
-3. **Request at least three exports:** Google, plus the two services you use most. The app opens each download page in your browser and shows the steps beside it. Note any step that didn't match what you saw.
+3. **Request at least three exports:** Google, plus the two services you use most. Try **Do It for Me** on at least one (it needs Claude Code and the Claude in Chrome extension): say where it got stuck, or picked the wrong options. For the others, the app opens each download page in your browser and shows the steps beside it. Note any step that didn't match what you saw.
 4. **Your iPhone**, if you have one: make the encrypted backup when the app asks. Say how long it took.
 5. **"Which of these are you?"**: check that the names, emails and usernames it found are really yours.
 
 ## While you wait for exports (a few days)
 
-- **Leave the app open**, or open it every day or two. It refreshes only while it's open.
-- **When an export's email arrives,** download the file and leave it in Downloads. The app should pick it up, file it, and read it. Tell us if it didn't, or if it asked about a file it should have recognized.
+- **Closing the window is fine:** Homecoming keeps working in the menu bar, and opens at login. (Run from source, leave it open instead.)
+- **When an export's email arrives,** the app should notice it in Apple Mail and say it's ready. With Do It for Me on, it downloads it by itself; otherwise download the file and leave it in Downloads. Either way the app should pick it up, file it, and read it. Tell us if it didn't, or if it asked about a file it should have recognized.
 - **Look at what came in:** each source's numbers and dates. Do they look about right for you?
 
 ## Explore and Ask

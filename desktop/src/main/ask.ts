@@ -279,6 +279,11 @@ export class Ask {
     return this.running.has(id);
   }
 
+  // Every answer under way (AI turned off).
+  stopAll() {
+    for (const c of this.running.values()) c.abort();
+  }
+
   stop(id: string) {
     this.running.get(id)?.abort();
   }
@@ -394,6 +399,9 @@ export class Ask {
   private agent(cmd: string, args: string[], input: string, run: Run, onLine: (o: Record<string, unknown>) => void, cwd: string,
     env: Record<string, string> = {}): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Stopped while the answer was getting ready (the lookups starting): there's nothing to start. An abort before
+      // the listener below is added would never reach it.
+      if (run.signal.aborted) return resolve();
       const p = spawn(cmd, args, { cwd, env: this.agentEnv(env), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
       let err = '';
       const kill = () => {

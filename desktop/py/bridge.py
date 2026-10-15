@@ -670,6 +670,12 @@ MAC_EPOCH = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 # Words of a data request, not just "ready": a chat in the service's own app saying "is it ready?" isn't one.
 READY = re.compile(r"\b(download|archive|your (\w+ )?(data|information|files)|copy of your|data (package|export|request)|"
                    r"export(ed)?|request (is |has been )?(complete|completed|processed|fulfilled))\b", re.I)
+# "We got your request" isn't "it's ready": the confirmation a service sends when you ask (Google's "Archive of Google
+# data requested") says so, and says nothing about being ready.
+PENDING = re.compile(r"\b(requested|received your request|we('ve| have) received|preparing|being prepared|in progress|"
+                     r"we('ll| will) (email|let you know|notify|send))\b", re.I)
+READY_NOW = re.compile(r"\b(ready|available|is here|can now download|now download|has (been )?(completed?|finished|processed))\b", re.I)
+ready_text = lambda t: bool(READY.search(t)) and not (PENDING.search(t) and not READY_NOW.search(t))
 APP_NAMES = {"com.apple.mail": "Mail", "com.apple.mobilesms": "Messages", "com.apple.safari": "Safari",
              "com.google.chrome": "Chrome", "com.microsoft.outlook": "Outlook", "com.readdle.smartemail-mac": "Spark"}
 
@@ -722,33 +728,146 @@ def _text(x):
     return x if isinstance(x, str) else ""
 
 
+# ---------------------------------------------------------------- mail
+# Apple Mail keeps an index of every message (sender, subject, the first lines) in one SQLite database, and each
+# message as an .emlx file. A service's "your data is ready" email is the surest sign there is, and it holds the
+# download link. Read on this Mac, from a copy; only the matches for exports you asked for leave here.
+
+def mail_db():
+    if os.environ.get("UMP_MAIL_DB"):
+        return Path(os.environ["UMP_MAIL_DB"])
+    dbs = sorted((LIB / "Mail").glob("V*/MailData/Envelope Index"), key=lambda x: int(re.sub(r"\D", "", x.parts[-3]) or 0))
+    return dbs[-1] if dbs else None
+
+
+def mail_messages(since):
+    """(when, rowid, sender address, sender name, subject, first lines, mailbox url) of each message received since
+    `since`, newest first, or None if there's no Mail database or it can't be read."""
+    db = mail_db()
+    if not db or not db.exists():
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for suffix in ("", "-wal", "-shm"):
+                if Path(f"{db}{suffix}").exists():
+                    shutil.copy2(f"{db}{suffix}", Path(tmp) / f"db{suffix}")
+            con = sqlite3.connect(f"file:{tmp}/db?mode=ro", uri=True)
+            try:
+                rows = con.execute(
+                    "select m.date_received, m.ROWID, a.address, a.comment, s.subject, su.summary, mb.url from messages m "
+                    "left join addresses a on a.ROWID = m.sender left join subjects s on s.ROWID = m.subject "
+                    "left join summaries su on su.ROWID = m.summary left join mailboxes mb on mb.ROWID = m.mailbox "
+                    "where m.date_received >= ? and m.deleted = 0 order by m.date_received desc limit 5000",
+                    (int(since.timestamp()),)).fetchall()
+            finally:
+                con.close()
+    except (OSError, sqlite3.Error):
+        return None
+    return [(dt.datetime.fromtimestamp(w or 0, dt.timezone.utc), rid, addr or "", name or "", subj or "", summ or "", url or "")
+            for w, rid, addr, name, subj, summ, url in rows]
+
+
+def mail_file(rowid, mailbox_url):
+    """The .emlx (or .partial.emlx) holding a message, under its account's folder."""
+    db = mail_db()
+    if not db:
+        return None
+    account = urlparse(mailbox_url).netloc
+    root = db.parent.parent / account if account and (db.parent.parent / account).is_dir() else db.parent.parent
+    for name in (f"{rowid}.emlx", f"{rowid}.partial.emlx"):
+        for f in root.rglob(name):
+            return f
+    return None
+
+
+LINK_WORDS = re.compile(r"download|takeout|dyi|export|archive|your[-_]?data|data[-_]?request|privacy", re.I)
+
+
+def mail_link(rowid, mailbox_url, domains):
+    """The link in a message most likely to be the download: on the service's own domains, with download-ish words."""
+    f = mail_file(rowid, mailbox_url)
+    if not f:
+        return None
+    try:
+        raw = f.read_bytes()
+        n = int(raw.split(b"\n", 1)[0].strip())
+        import email
+        from email import policy
+        msg = email.message_from_bytes(raw.split(b"\n", 1)[1][:n], policy=policy.default)
+        texts = []
+        for part in msg.walk():
+            if part.get_content_type() in ("text/plain", "text/html"):
+                try:
+                    texts.append(part.get_content())
+                except Exception:
+                    continue
+    except (OSError, ValueError, IndexError):
+        return None
+    regs = {registrable(d) for d in domains if d}
+    best = None
+    for t in texts:
+        for u in re.findall(r"https?://[^\s\"'<>()]+", t):
+            u = u.replace("&amp;", "&").rstrip(".,;")
+            host = urlparse(u).hostname or ""
+            if regs and registrable(host) not in regs:
+                continue
+            score = (2 if LINK_WORDS.search(u) else 0) + (1 if "unsubscribe" not in u.lower() and "help" not in u.lower() else -3)
+            if best is None or score > best[0]:
+                best = (score, u)
+    return best[1] if best and best[0] > 0 else None
+
+
 def export_signals(asked):
-    """Notifications that look like a service saying an export you asked for is ready: one that names the service (or
-    comes from its app, or from a sender by that name) and sounds ready. A guess, shown as "looks ready".
-    asked: [{"id", "names": [...], "since": ISO time}]."""
+    """Signs that an export you asked for is ready: an email (Apple Mail) or a notification that names the service
+    (or comes from its domains, its app, or a sender by that name) and sounds ready. A guess, shown as "looks ready";
+    an email from the service's own domain is a strong one, and carries the download link when there is one.
+    asked: [{"id", "names": [...], "domains": [...], "since": ISO time, "seen": ISO time of the last sign already known}]."""
     if not asked:
-        return {"readable": True, "matches": []}
-    start = min(dt.datetime.fromisoformat(a["since"].replace("Z", "+00:00")) for a in asked)
+        return {"readable": True, "mail": False, "matches": []}
+    when_of = lambda x: dt.datetime.fromisoformat(x.replace("Z", "+00:00"))
+    start = min(when_of(a["since"]) for a in asked)
     found = notifications(start)
-    if found is None:
-        return {"readable": False, "matches": []}
+    mails = mail_messages(start)
     best = {}
-    for when, ident, title, subtitle, body in found:
+
+    def named(a, text, sender=""):
+        names = [n.lower() for n in a["names"] if n.strip()]
+        hit = any(sender.strip().lower() == n for n in names)  # a mail from "X", a notification titled "Reddit"
+        return hit or any(len(n) >= 3 and re.search(rf"(?<![a-z0-9]){re.escape(n)}(?![a-z0-9])", text.lower()) for n in names)
+
+    def keep(a, when, via, text, **more):
+        if when < when_of(a["since"]) or (a.get("seen") and when <= when_of(a["seen"])):
+            return
+        cur = best.get(a["id"])
+        # An email in Mail's index beats a notification about the same thing (it has the link); then the newest wins.
+        if cur is None or ("mail" in more, when) > ("mail" in cur, cur["when"]):
+            best[a["id"]] = {"when": when, "via": via, "text": re.sub(r"\s+", " ", text)[:200], **more}
+
+    for when, ident, title, subtitle, body in found or []:
         text = " ".join(x for x in (title, subtitle, body) if x)
-        if not READY.search(text):
+        if not ready_text(text):
             continue
         for a in asked:
-            if when < dt.datetime.fromisoformat(a["since"].replace("Z", "+00:00")):
-                continue
-            names = [n.lower() for n in a["names"] if n.strip()]
-            hit = any(title.strip().lower() == n for n in names)  # a mail from "X", a notification titled "Reddit"
-            hit = hit or any(len(n) >= 3 and re.search(rf"(?<![a-z0-9]){re.escape(n)}(?![a-z0-9])", f"{text} {ident}".lower()) for n in names)
-            if hit and (a["id"] not in best or when > best[a["id"]]["when"]):
+            if named(a, f"{text} {ident}", title):
                 via = APP_NAMES.get(ident.lower()) or next((v for k, v in APP_NAMES.items() if ident.lower().startswith(k)), None) \
                     or ident.split(".")[-1].replace("-", " ").title()
-                best[a["id"]] = {"when": when, "via": via, "text": re.sub(r"\s+", " ", text)[:200]}
-    return {"readable": True, "matches": [{"source": k, "at": v["when"].isoformat(timespec="milliseconds"), "via": v["via"], "text": v["text"]}
-                                          for k, v in best.items()]}
+                keep(a, when, via, text)
+    for when, rowid, addr, name, subject, summary, mailbox in mails or []:
+        text = f"{subject} {summary}"
+        if not ready_text(text):
+            continue
+        sender_domain = registrable(addr.rsplit("@", 1)[-1]) if "@" in addr else ""
+        for a in asked:
+            ours = sender_domain and sender_domain in {registrable(d) for d in a.get("domains") or [] if d}
+            if ours or named(a, f"{subject} {name}", name):
+                keep(a, when, "Mail", subject or summary, subject=subject, sender=name or addr, mail=rowid, mailbox=mailbox)
+    out = []
+    for k, v in best.items():
+        a = next(x for x in asked if x["id"] == k)
+        link = mail_link(v["mail"], v["mailbox"], (a.get("domains") or [])) if "mail" in v else None
+        out.append({"source": k, "at": v["when"].isoformat(timespec="milliseconds"), "via": v["via"], "text": v["text"],
+                    **({"link": link} if link else {}), **({"sender": v["sender"]} if v.get("sender") else {})})
+    return {"readable": found is not None or mails is not None, "mail": mails is not None, "matches": out}
 
 
 def notification_access():

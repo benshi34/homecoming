@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   settings: (patch: unknown) => ipcRenderer.invoke('settings', patch),
   jobLog: (sourceId: string) => ipcRenderer.invoke('job-log', sourceId),
   directory: () => ipcRenderer.invoke('directory'),
+  aiChrome: () => ipcRenderer.invoke('ai-chrome'),
   icons: () => ipcRenderer.invoke('icons'),
   onboarding: (patch: unknown) => ipcRenderer.invoke('onboarding', patch),
   ask: (op: unknown) => ipcRenderer.invoke('ask', op),
@@ -41,8 +42,9 @@ contextBridge.exposeInMainWorld('api', {
   },
   // Menu commands: Settings…, Setup Assistant…, Overview.
   onMenu: (cb: (cmd: string) => void) => {
-    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub'].map((ch) => {
-      const h = () => cb(ch);
+    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub', 'open-source'].map((ch) => {
+      // open-source carries the source to open: a notification about it was clicked.
+      const h = (_e: unknown, id?: string) => cb(ch === 'open-source' ? `open-source:${id}` : ch);
       ipcRenderer.on(ch, h);
       return [ch, h] as const;
     });

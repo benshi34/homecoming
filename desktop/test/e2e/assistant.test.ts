@@ -72,7 +72,7 @@ test('opens on the welcome page with the step timeline', async () => {
   assert.equal(await step(), 'welcome');
   assert.match(await run.page.locator('.hero h1').innerText(), /Welcome to Homecoming/);
   assert.match(await run.page.locator('[data-testid=sb-Welcome]').getAttribute('class') ?? '', /current/);
-  assert.equal(await run.page.locator('[data-testid=steps-bar] .sb-item').count(), 11);
+  assert.equal(await run.page.locator('[data-testid=steps-bar] .sb-item').count(), 12);
   // The tour: three steps on made-up data, labeled as such. Picking one stops it moving on by itself.
   const stage = run.page.locator('[data-testid=tour-stage]');
   assert.equal(await run.page.locator('.tour-timer').count(), 1, 'it moves on by itself until you pick a step');
@@ -198,7 +198,22 @@ test('choosing accounts skips the rest and builds one page per account', async (
   assert.deepEqual(await ids('accounts'), ['reddit', 'discord'], 'the common ones keep their most-used-first order');
   assert.match(await run.page.locator('button[data-action=assistant-continue]').innerText(), /Continue with 2/);
   await cont();
+  // AI, asked once: what it's for, and which agent. Not Now moves on with it off.
+  assert.equal(await step(), 'ai');
+  assert.match(await run.page.locator('[data-testid=ai-agreement]').innerText(), /Do It for Me/);
+  assert.match(await run.page.locator('button[data-action=assistant-continue]').innerText(), /Turn On AI/);
+  await run.page.locator('[data-testid=ai-settings] [data-testid^=ai-provider-]').first().waitFor();
+  await shot(run.page, 'assistant-07b-ai');
+  await go('button[data-action=ai-not-now]');
+  assert.equal((await snap(run.page)).settings.aiOn, false);
   // A list of the chosen ones first: start anywhere, and come back to it from any of them.
+  assert.equal(await step(), 'exports');
+  // Back to AI: Not Now agreed to nothing, so the choice is there again.
+  await go('button[data-action=assistant-back]');
+  assert.equal(await step(), 'ai');
+  await run.page.locator('[data-testid=ai-agreement]').waitFor();
+  assert.match(await run.page.locator('button[data-action=assistant-continue]').innerText(), /Turn On AI/);
+  await go('button[data-action=ai-not-now]');
   assert.equal(await step(), 'exports');
   const rows = await run.page.locator('[data-testid=exports-list] [data-testid^=exports-]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
   assert.deepEqual(rows, ['exports-discord', 'exports-reddit']);

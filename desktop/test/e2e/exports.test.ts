@@ -209,6 +209,9 @@ test('another service: add it by name, drop its download in any format, and ever
   assert.match(await prompt.innerText(), /"title": "text \(up to 21 characters\)"/);
   assert.doesNotMatch(await prompt.innerText(), /Difference Engine/, 'no content without permission');
   await shot(run.page, 'mapping-ask');
+  // AI isn't on yet: nothing is sent until it is.
+  assert.equal(await run.page.locator('[data-action=ask-claude]').count(), 0);
+  await run.page.click('[data-action=mapping-ai-on]');
   await run.page.click('[data-action=ask-claude]');
   await run.page.locator('[data-testid=mapping-preview]', { hasText: 'Stories you wrote' }).waitFor({ timeout: 30_000 });
   assert.match(await run.page.locator('[data-testid=mapping-preview]').innerText(), /2 found, 100% with a time/);

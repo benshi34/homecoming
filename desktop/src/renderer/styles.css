@@ -922,6 +922,13 @@ button.hbar:hover { background: var(--fill); }
 .embed-chat-body .bubble.attachment { display: inline-flex; align-items: center; gap: 6px; }
 .embed-chat-body .bubble.them.attachment { color: var(--secondary); }
 .bubble-emoji { font-size: 34px; line-height: 1.15; padding: 0 2px; }
+.agent-reply { padding: 0 14px 4px 42px; }
+/* AI: its mark, and the primary button in its gradient (as Gemini marks what's generated). */
+.ai-mark { flex: none; display: inline-block; vertical-align: -2px; }
+.btn-ai { gap: 5px; }
+.btn-primary.btn-ai { background: linear-gradient(100deg, #3f7cf4 0%, #7d5ef5 55%, #c75aa8 100%); }
+.btn-primary.btn-ai .ai-mark path { fill: #fff; }
+.agent-reply input { width: 100%; }
 .embed-chat-foot { font-size: 11px; color: var(--tertiary); padding: 0 14px 10px; }
 .embed-photos { margin: 10px 0 12px; max-width: 440px; }
 .embed-photos-grid { display: grid; gap: 3px; border-radius: 16px; overflow: hidden; grid-template-columns: repeat(3, 1fr); }
@@ -1269,3 +1276,15 @@ button.hbar:hover { background: var(--fill); }
 @keyframes face-draw { to { stroke-dashoffset: 0; } }
 /* "I've Requested It" becomes a checkmark for a beat before the assistant moves on. */
 .btn.is-done, .btn.is-done:disabled { background: var(--green); color: #fff; opacity: 1; gap: 6px; display: inline-flex; align-items: center; animation: pop-in 0.4s var(--spring-pop); }
+
+/* ---------------------------------------------------------------- AI */
+.ai-page { max-width: 640px; margin: 0 auto; padding: 18px 28px 36px; }
+.ai-settings > .ai-agree { margin-top: 18px; }
+.ai-hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 8px 0 4px; }
+.ai-hero h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; margin-top: 10px; }
+.ai-hero p { font-size: 13px; color: var(--secondary); margin-top: 4px; max-width: 440px; line-height: 1.5; }
+.ai-agree { padding: 14px 16px 12px; }
+.ai-agree-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.ai-agree ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.45; color: var(--label); }
+.ai-agree li::marker { color: var(--tertiary, var(--secondary)); }
+.ai-agree .sheet-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 12px; }

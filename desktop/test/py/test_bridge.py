@@ -315,6 +315,74 @@ def notification_db(path, items):
     con.close()
 
 
+def mail_index(root, items):
+    """An Apple Mail store like macOS's: MailData/Envelope Index (sender, subject, first lines, mailbox) and each
+    message as an .emlx under its account's folder. items: (when, address, name, subject, first lines, html body)."""
+    (root / "MailData").mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(root / "MailData/Envelope Index")
+    con.executescript("""create table messages (ROWID integer primary key, sender integer, subject integer, summary integer,
+                         date_received integer, mailbox integer, deleted integer default 0);
+                         create table addresses (ROWID integer primary key, address text, comment text);
+                         create table subjects (ROWID integer primary key, subject text);
+                         create table summaries (ROWID integer primary key, summary text);
+                         create table mailboxes (ROWID integer primary key, url text);
+                         insert into mailboxes values (1, 'imap://ACCOUNT-1/INBOX');""")
+    box = root / "ACCOUNT-1/INBOX.mbox/1F2E3D4C/Data/Messages"
+    box.mkdir(parents=True, exist_ok=True)
+    for i, (when, addr, name, subject, summary, html) in enumerate(items, 1):
+        con.execute("insert into addresses values (?, ?, ?)", (i, addr, name))
+        con.execute("insert into subjects values (?, ?)", (i, subject))
+        con.execute("insert into summaries values (?, ?)", (i, summary))
+        con.execute("insert into messages (ROWID, sender, subject, summary, date_received, mailbox) values (?, ?, ?, ?, ?, 1)",
+                    (i, i, i, i, int(when.timestamp())))
+        msg = (f"From: {name} <{addr}>\r\nSubject: {subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{html}\r\n").encode()
+        (box / f"{i}.emlx").write_bytes(f"{len(msg)}\n".encode() + msg + b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>")
+    con.commit()
+    con.close()
+    return root / "MailData/Envelope Index"
+
+
+class MailTests(Sandbox):
+    def test_a_ready_email_with_its_download_link(self):
+        t = lambda d, h=12: dt.datetime(2026, 10, d, h, tzinfo=dt.timezone.utc)
+        db = mail_index(self.tmp / "Mail/V10", [
+            (t(6), "noreply-takeout@google.com", "Google Takeout", "Archive of Google data requested", "We're preparing your archive",
+             '<a href="https://takeout.google.com/settings/takeout">Manage</a>'),
+            (t(8), "no-reply@mail.instagram.com", "Instagram", "Your Instagram information is ready to download", "Hi ada_l, your information is ready",
+             '<a href="https://help.instagram.com/1234">Help</a> <a href="https://accountscenter.instagram.com/info_and_permissions/dyi/?entry=email&amp;id=99">Download your information</a>'
+             ' <a href="https://www.instagram.com/emails/unsubscribe/?x=1">Unsubscribe</a>'),
+            (t(9), "noreply-takeout@google.com", "Google Takeout", "Your Google data is ready to download", "Your Google data is ready",
+             '<a href="https://support.google.com/accounts">Learn more</a> <a href="https://takeout.google.com/settings/takeout/downloads?user=1">Download your files</a>'),
+            (t(9), "no-reply@spotify.com", "Spotify", "Your Wrapped is ready", "Your year in music is ready to share", '<a href="https://open.spotify.com/wrapped">See it</a>'),
+            (t(10), "ada@example.com", "Ada Lovelace", "dinner?", "are we still on", "<p>see you at 7</p>"),
+        ])
+        asked = [{"id": "instagram", "names": ["Instagram"], "domains": ["instagram.com"], "since": "2026-10-05T00:00:00Z"},
+                 {"id": "google_takeout", "names": ["Google"], "domains": ["google.com", "takeout.google.com"], "since": "2026-10-05T00:00:00Z"},
+                 {"id": "spotify", "names": ["Spotify"], "domains": ["spotify.com"], "since": "2026-10-05T00:00:00Z"}]
+        env = {"UMP_MAIL_DB": str(db), "UMP_NOTIFICATIONS_DB": str(self.tmp / "missing/db")}
+        d = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps(asked), extra_env=env))
+        by = {m["source"]: m for m in d["matches"]}
+        self.assertTrue(d["mail"])
+        self.assertEqual(set(by), {"instagram", "google_takeout"}, "Spotify's Wrapped mail is ready, but isn't about your data")
+        self.assertEqual((by["instagram"]["via"], by["instagram"]["sender"]), ("Mail", "Instagram"))
+        self.assertEqual(by["instagram"]["link"], "https://accountscenter.instagram.com/info_and_permissions/dyi/?entry=email&id=99", "the download, not help or unsubscribe")
+        self.assertEqual(by["google_takeout"]["at"], "2026-10-09T12:00:00.000+00:00", "the ready mail, not the \"requested\" one before it")
+        self.assertEqual(by["google_takeout"]["link"], "https://takeout.google.com/settings/takeout/downloads?user=1")
+        self.assertNotIn("dinner", json.dumps(d), "nothing else leaves")
+        asked[0]["seen"] = by["instagram"]["at"]
+        again = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps(asked), extra_env=env))
+        self.assertNotIn("instagram", {m["source"] for m in again["matches"]}, "a sign already known isn't news")
+
+    def test_an_email_beats_a_notification_about_the_same_export(self):
+        t = lambda d, h=12: dt.datetime(2026, 10, d, h, tzinfo=dt.timezone.utc)
+        db = mail_index(self.tmp / "Mail/V10", [(t(8), "noreply@discord.com", "Discord", "Your Discord data package is ready", "Download it below",
+                                                 '<a href="https://click.discord.com/ls/click?upn=abc">Download data package</a>')])
+        notification_db(self.tmp / "db2/db", [("com.hnc.discord", t(9), "Discord", "", "Your data package is ready")])
+        d = jsonout(bridge(["export-signals"], self.home, self.corpus, extra_env={"UMP_MAIL_DB": str(db), "UMP_NOTIFICATIONS_DB": str(self.tmp / "db2/db")},
+                           stdin=json.dumps([{"id": "discord", "names": ["Discord"], "domains": ["discord.com"], "since": "2026-10-05T00:00:00Z"}])))
+        self.assertEqual([(m["via"], m["link"]) for m in d["matches"]], [("Mail", "https://click.discord.com/ls/click?upn=abc")])
+
+
 class NotificationTests(Sandbox):
     def test_a_ready_notification_for_an_export_you_asked_for(self):
         t = lambda d, h=12: dt.datetime(2026, 10, d, h, tzinfo=dt.timezone.utc)
@@ -344,7 +412,7 @@ class NotificationTests(Sandbox):
     def test_unreadable_without_access(self):
         d = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps([{"id": "spotify", "names": ["Spotify"], "since": "2026-10-05T00:00:00Z"}]),
                            extra_env={"UMP_NOTIFICATIONS_DB": str(self.tmp / "missing/db")}))
-        self.assertEqual(d, {"readable": False, "matches": []})
+        self.assertEqual(d, {"readable": False, "mail": False, "matches": []})
 
     def test_iphone_notifications_on_this_mac(self):
         prefs = self.home / "Library/Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist"

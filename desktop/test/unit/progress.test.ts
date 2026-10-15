@@ -123,6 +123,7 @@ describe('Setup Assistant steps', () => {
     const steps = assistantSteps(vs, ['instagram', 'discord', 'reddit']);
     const ids = steps.map((s) => s.id);
     assert.equal(ids[ids.indexOf('export:discord') - 1], 'exports', 'the list comes right before the pages');
+    assert.deepEqual(ids.slice(ids.indexOf('accounts'), ids.indexOf('accounts') + 3), ['accounts', 'ai', 'exports'], 'AI is decided before the export pages, which offer Do It for Me');
     assert.ok(!assistantSteps(vs, []).some((s) => s.kind === 'exports'), 'no accounts, no list');
     const order = steps.filter((s) => s.kind === 'export').map((s) => s.sourceId);
     // From the list: the first not yet asked for. Jumping to the last and asking: back round to the first.

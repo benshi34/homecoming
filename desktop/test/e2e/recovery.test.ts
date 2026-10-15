@@ -27,14 +27,16 @@ test('killed mid-read, the next launch finishes the job', async () => {
   await new Promise((r) => setTimeout(r, 500));
 
   run = await launch(env);
-  // Read again, not just idle: right after launch there's a moment before the read is queued.
+  // Read again, not just idle: right after launch there's a moment before the read is queued, when what the killed
+  // run read already shows as done. The index, built last, says the job was finished.
   const ids = ['ai_coding', 'documents', 'git_commits']; // what this fake Mac has
-  const s = await until(run.page, 'everything read', (x) => !x.jobs.length && ids.every((id) => find(x, id).section === 'done'), 120_000);
+  const db = path.join(sb.corpus, 'corpus.db');
+  const s = await until(run.page, 'everything read', (x) => !x.jobs.length && ids.every((id) => find(x, id).section === 'done') && fs.existsSync(db), 120_000);
   for (const id of ids) {
     assert.equal(find(s, id).section, 'done', `${id} read after the restart`);
     assert.ok((find(s, id).records ?? 0) > 0, `${id} has its records`);
   }
   const manifest = readJson(path.join(sb.corpus, 'manifest.json')); // whole, not half-written
   assert.ok(manifest.documents?.count > 0);
-  assert.ok(fs.existsSync(path.join(sb.corpus, 'corpus.db')));
+  assert.ok(fs.existsSync(db));
 });

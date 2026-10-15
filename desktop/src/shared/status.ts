@@ -429,6 +429,29 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const job = jobFor(src.id, jobs);
   if (job) return { ...v, section: 'working', ...jobStatus(job, now), actions: [] };
 
+  // Do It for Me: Claude Code in Chrome, requesting or downloading it. With AI off, what it was doing is set aside.
+  const ag = isWeb && inp.state.settings?.aiOn !== false ? st?.agent : undefined;
+  if (ag && (ag.status === 'running' || ag.status === 'queued')) {
+    return { ...v, section: 'working', priority: 30, steps: undefined, actions: [{ id: 'agent-stop', label: 'Stop' }],
+      status: ag.status === 'queued' ? 'Waiting for another service to finish' : ag.step ?? `${ag.mode === 'request' ? 'Requesting' : 'Downloading'} it in Chrome…`,
+      detail: `Claude is ${ag.mode === 'request' ? 'requesting your export' : 'downloading your export'} in Chrome. It stops if it needs you to sign in or enter a code.` };
+  }
+  const fresh = (at: string) => now.getTime() - Date.parse(at) < 2 * DAY && later(at, st?.importedAt);
+  if (ag && fresh(ag.at) && ag.status === 'needs_you') {
+    return { ...v, section: 'needs', priority: 8, steps: undefined, status: `Needs you: ${ag.note || 'have a look in Chrome'}`,
+      detail: 'Do it in Chrome, or answer below, then click Continue: Claude carries on from where it stopped.',
+      actions: [{ id: 'agent-continue', label: 'Continue', primary: true, ai: true }, { id: 'agent-dismiss', label: 'I\'ll Do It Myself' }] };
+  }
+  if (ag && fresh(ag.at) && ag.status === 'failed' && !(ag.mode === 'request' && st?.requestedAt && later(st.requestedAt, ag.at))) {
+    return { ...v, section: 'needs', priority: 12, steps: undefined, status: `Claude couldn't finish: ${ag.note || 'something went wrong'}`,
+      actions: [{ id: ag.mode === 'request' ? 'agent-request' : 'agent-download', label: 'Try Again', primary: true, ai: true },
+        ag.mode === 'request' ? { ...open, primary: false } : { id: 'open-ready', label: 'Open the download page' }, { id: 'agent-dismiss', label: 'Dismiss' }] };
+  }
+  if (ag?.status === 'downloading' && now.getTime() - Date.parse(ag.at) < 45 * 60_000 && !later(st?.lastFileAt, ag.at)) {
+    return { ...v, section: 'working', priority: 30, steps: undefined, status: 'Downloading in Chrome', actions: [addFile],
+      detail: 'The app reads it as soon as it lands in Downloads.' };
+  }
+
   const found = foundActions(inp, src.id);
   if (found) {
     return { ...v, section: 'needs', priority: 9, status: `Found ${found.files.length > 1 ? `${found.files.length} files` : 'the export'} in Downloads`,
@@ -448,17 +471,27 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     const reqText = `Requested ${ago(st!.requestedAt, now)}`;
     const getIt: Action[] = [
       src.downloadUrl ? { id: 'open-download', label: 'Open the download page', primary: true } : { id: 'open', label: 'Open the export page', primary: true },
+      { id: 'agent-download', label: 'Look for It', ai: true },
       addFile,
       { id: 'unrequest', label: 'Not requested yet' },
     ];
+    // Do It for Me looked for it (in the service's page or the inbox) and it wasn't there yet.
+    const looked = st!.agent?.mode === 'download' && st!.agent.status === 'not_ready' && later(st!.agent.at, st!.requestedAt) ? st!.agent : null;
+    if (looked) v.notes!.push(`Claude looked for it ${ago(looked.at, now)}: not ready yet.${looked.note ? ` ${looked.note}` : ''} It looks again every few hours.`);
     if (src.expiresDays) v.notes!.push(`The download link stays valid for ${src.expiresDays} day${src.expiresDays === 1 ? '' : 's'}.`);
-    v.notes!.push(`While you wait, the app watches this Mac's notifications for ${src.name} saying your data is ready. It can miss one or guess wrong, so keep an eye on your email and ${src.name} too.`);
+    v.notes!.push(`While you wait, the app watches Apple Mail and this Mac's notifications for ${src.name} saying your data is ready. It can miss one, so keep an eye on your email and ${src.name} too.`);
     // A notification that looked like the service saying it's ready: a guess, so it's "looks ready", with the words.
     const signal = st!.readySignal && later(st!.readySignal.at, st!.requestedAt) ? st!.readySignal : null;
     if (signal && !(src.expiresDays && since > hi * HOUR + src.expiresDays * DAY)) {
+      const ready: Action[] = [{ id: 'agent-download', label: 'Download It for Me', primary: true, ai: true },
+        { id: 'open-ready', label: signal.link ? 'Open the download link' : 'Open the download page' }, addFile, { id: 'unrequest', label: 'Not requested yet' }];
+      if (signal.sender) { // an email from the service, in Mail's index: surer than a notification
+        return { ...v, section: 'needs', priority: 10, status: `Ready: ${signal.sender ?? src.name} emailed you ${ago(signal.at, now)}`,
+          detail: `"${signal.text}"`, actions: ready, steps: undefined };
+      }
       return { ...v, section: 'needs', priority: 10, status: `Looks ready: a notification from ${signal.via} ${ago(signal.at, now)}`,
         detail: `"${signal.text}"\nThe app guessed this from a notification, so check your email or ${src.name} to be sure, then download it.`,
-        actions: getIt, steps: undefined };
+        actions: ready, steps: undefined };
     }
     if (since < lo * HOUR) {
       return { ...v, section: 'working', waiting: true, priority: 50, status: `${reqText}. Usually ready in ${waitRange([lo, hi])}.`, actions: getIt.map((a) => ({ ...a, primary: false })), steps: undefined };
@@ -507,7 +540,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     v.priority = (src.optional ? 70 : 20) + (1 - Math.min(hi, 720) / 720) * 5;
     v.status = 'Not requested yet';
     v.detail = src.waitHours ? `Takes ${waitRange(src.waitHours)} after you request it.` : undefined;
-    v.actions = [open, { id: 'mark-requested', label: 'I\'ve requested it' }, addFile, skip];
+    v.actions = [{ id: 'agent-request', label: 'Do It for Me', primary: true, ai: true }, { ...open, primary: false }, { id: 'mark-requested', label: 'I\'ve requested it' }, addFile, skip];
     if (src.custom) {
       v.detail = 'Most services answer in a day or two; by law they have about 30 days.';
       v.actions = [open, { id: 'mark-requested', label: 'I\'ve requested it' }, addFile,
@@ -534,12 +567,18 @@ function withContents(v: SourceView, src: Source, stats: Stats | null): SourceVi
 
 export function computeSources(inp: StatusInput): SourceView[] {
   setServices(inp.state.services ?? []);  // services you added are sources too
+  // AI turned off on the AI page: no AI actions anywhere.
+  const noAi = inp.state.settings?.aiOn === false;
   const views = CATALOG.map((src) => {
     const v = src.group === 'setup' ? setupView(src, inp)
       : src.group === 'mac' ? withContents(macView(src, inp), src, inp.stats)
         : src.custom ? withContents(exportView(src, inp), src, inp.stats)
         : src.group === 'iphone' ? iphoneView(src, inp)
           : exportView(src, inp);
+    if (noAi && v.actions.some((a) => a.ai)) {
+      v.actions = v.actions.filter((a) => !a.ai);
+      if (v.actions.length && !v.actions.some((a) => a.primary)) v.actions[0] = { ...v.actions[0], primary: true };
+    }
     return v;
   });
   // A source that waits on a setup item that's already resolved isn't blocked.

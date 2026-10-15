@@ -26,6 +26,13 @@ export function fileKey(p: string, size: number): string {
 }
 
 // Fill in anything an older or hand-edited file is missing, and drop what doesn't belong.
+// Do It for Me, turned on before AI had its own switch, was agreeing to AI: it stays on.
+function settingsFrom(d: AppState['settings'], r: unknown): AppState['settings'] {
+  const s = { ...d, ...(r && typeof r === 'object' ? r : {}) } as AppState['settings'];
+  if (s.agentExports && s.aiOn === undefined) Object.assign(s, { aiOn: true, aiAgreedAt: s.aiAgreedAt ?? new Date().toISOString() });
+  return s;
+}
+
 export function normalize(raw: unknown): AppState {
   const d = defaultState();
   if (!raw || typeof raw !== 'object') return d;
@@ -36,7 +43,7 @@ export function normalize(raw: unknown): AppState {
     found: Array.isArray(r.found) ? r.found : [],
     ignoredFiles: Array.isArray(r.ignoredFiles) ? r.ignoredFiles : [],
     importedFiles: Array.isArray(r.importedFiles) ? r.importedFiles : [],
-    settings: { ...d.settings, ...(r.settings && typeof r.settings === 'object' ? r.settings : {}) },
+    settings: settingsFrom(d.settings, r.settings),
     lastAutoRefresh: typeof r.lastAutoRefresh === 'string' ? r.lastAutoRefresh : undefined,
     onboarding: r.onboarding && typeof r.onboarding === 'object'
       ? { done: !!r.onboarding.done, step: typeof r.onboarding.step === 'string' ? r.onboarding.step : undefined,

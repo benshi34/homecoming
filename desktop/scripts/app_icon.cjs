@@ -1,4 +1,4 @@
-// Renders build/icon.svg into build/icon.icns: drawn once at 1024 px by Electron's own renderer, scaled to every size
+// Renders build/icon.svg into build/icon.icns (and data/appIcon.png, the Dock icon run from source): drawn once at 1024 px by Electron's own renderer, scaled to every size
 // macOS asks for by sips, packed by iconutil. Run with: npx electron scripts/app_icon.cjs
 const { app, BrowserWindow } = require('electron');
 const { execFileSync } = require('node:child_process');
@@ -28,6 +28,8 @@ app.whenReady().then(async () => {
     }
   }
   execFileSync('iconutil', ['-c', 'icns', set, '-o', path.join(BUILD, 'icon.icns')]);
+  // The Dock icon when it runs from source (main.ts), where the bundle is Electron's.
+  execFileSync('sips', ['-Z', '512', full, '--out', path.join(BUILD, '..', 'data', 'appIcon.png')], { stdio: 'ignore' });
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`wrote ${path.join(BUILD, 'icon.icns')}`);
   app.quit();

@@ -8,16 +8,17 @@ import { accountChoices, assistantSteps, commonAccounts, defaultChosen, exportHa
 import type { Action, FoundService, Snapshot, SourceView } from '../shared/types.ts';
 import { api } from './api.ts';
 import { Glyph, GlyphTile, SourceIcon } from './icons.tsx';
+import { AiAgreement, AiSettings } from './ai.tsx';
 import { Hub, type HubFilter } from './hub.tsx';
 import { Timeline } from './main_window.tsx';
-import { AccountForm, AddServiceSheet, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, Steps, vt } from './parts.tsx';
-import { animate, Banner, Button, Checkmark, Group, GroupRow, ProgressBar, reducedMotion, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
+import { AccountForm, AddServiceSheet, AgentButton, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, Steps, vt } from './parts.tsx';
+import { AiMark, animate, Banner, Button, Checkmark, Group, GroupRow, ProgressBar, reducedMotion, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
 import { Tick, WaitClock } from './moments.tsx';
 import { Welcome } from './welcome.tsx';
 
 interface PageSpec {
   body: ReactNode;
-  primary?: { label: string; onClick: () => void; disabled?: boolean; done?: boolean };
+  primary?: { label: string; onClick: () => void; disabled?: boolean; done?: boolean; ai?: boolean };
   secondary?: ReactNode;
   wide?: boolean;
 }
@@ -70,7 +71,7 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
         <div className="spacer" />
         <span className="where">{i + 1} of {steps.length}</span>
         {page.secondary}
-        {page.primary && <Button kind="primary" size="large" onClick={page.primary.onClick} disabled={page.primary.disabled || page.primary.done} testAction="assistant-continue"
+        {page.primary && <Button kind="primary" size="large" onClick={page.primary.onClick} disabled={page.primary.disabled || page.primary.done} testAction="assistant-continue" ai={page.primary.ai}
           className={page.primary.done ? 'is-done' : ''}>{page.primary.done && <Tick size={13} />}{page.primary.label}</Button>}
       </div>
     </div>
@@ -141,6 +142,7 @@ function renderStep(step: Step, ctx: Ctx): PageSpec {
       const n = [...ctx.draft].length;
       return { body: <AccountsPage ctx={ctx} />, primary: { label: n ? `Continue with ${n}` : 'Continue', onClick: apply } };
     }
+    case 'ai': return ai(ctx);
     case 'exports': return exportsList(ctx);
     case 'export': return exportPage(ctx, step.sourceId!);
     case 'mail': return mail(ctx);
@@ -540,8 +542,10 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
       </div>
       {view.section !== 'done' && (
         <div className="actions">
+          {/* Claude in the person's Chrome (Do It for Me): request it, carry on, stop, try again. */}
+          {view.actions.filter((a) => a.id.startsWith('agent-')).map((a) => <AgentButton key={a.id} snap={ctx.snap} id={id} action={a} />)}
           {/* In the person's own browser: signed in already, with their passwords. */}
-          <Button kind="primary" onClick={() => void api.action(id, view.requestedAt && src.downloadUrl ? 'open-download' : 'open')} testAction="open">
+          <Button kind={view.actions.some((a) => a.id.startsWith('agent-') && a.primary) ? 'default' : 'primary'} onClick={() => void api.action(id, view.requestedAt && src.downloadUrl ? 'open-download' : 'open')} testAction="open">
             {view.requestedAt && src.downloadUrl ? `Open the Download Page in ${ctx.snap.defaultBrowser}` : `Open ${view.name} in ${ctx.snap.defaultBrowser}`}
           </Button>
           <Button onClick={() => void api.action(id, 'add-file')} testAction="add-file">Add the Download…</Button>
@@ -558,6 +562,27 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
         {view.section !== 'done' && <div className="group-footer">When the download lands in Downloads, the app takes it from there: this page turns green.</div>}
         {view.steps && view.section !== 'done' && <Group title="Steps"><Steps view={view} /></Group>}
         {view.notes && view.notes.length > 0 && <div style={{ marginTop: 12 }}>{view.notes.map((n, k) => <div key={k} className="note"><Glyph name="info" size={13} /><span>{n}</span></div>)}</div>}
+      </>
+    ),
+  };
+}
+
+// Use AI or not, said once, and which agent: Ask, Do It for Me and making sense of new downloads all use it.
+function ai(ctx: Ctx): PageSpec {
+  const s = ctx.snap.settings;
+  const decided = s.aiOn !== undefined && !!s.aiAgreedAt;
+  const decide = (on: boolean) => void api.settings(on ? { aiOn: true, aiAgreedAt: s.aiAgreedAt ?? new Date().toISOString() } : { aiOn: false }).then(ctx.next);
+  return {
+    primary: decided ? { label: 'Continue', onClick: ctx.next } : { label: 'Turn On AI', onClick: () => decide(true), ai: true },
+    secondary: decided ? undefined : <Button onClick={() => decide(false)} testAction="ai-not-now">Not Now</Button>,
+    body: (
+      <>
+        <Hero icon={<AiMark size={64} />} title="AI in Homecoming">
+          It's up to you. With it on, you can ask questions about your data, have Do It for Me request and download your exports, and make sense of downloads the app doesn't know yet. Everything that uses AI has this mark.
+        </Hero>
+        <div style={{ marginTop: decided ? 4 : 22 }}>
+          {decided ? <AiSettings snap={ctx.snap} /> : <><AiAgreement snap={ctx.snap} actions={false} /><AiSettings snap={ctx.snap} only="agents" /></>}
+        </div>
       </>
     ),
   };

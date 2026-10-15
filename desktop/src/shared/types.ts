@@ -93,10 +93,18 @@ export interface Identified {
 }
 
 // Per-source memory the app keeps between launches (userData/state.json). Never holds passwords.
+// "Do It for Me" (main/export_agent.ts): Claude Code requesting or downloading an export in the person's Chrome.
+export type AgentMode = 'request' | 'download';
+export type AgentStatus = 'queued' | 'running' | 'needs_you' | 'failed' | 'requested' | 'downloading' | 'not_ready';
+export interface AgentState { mode: AgentMode; status: AgentStatus; at: string; step?: string; note?: string; session?: string }
+
 export interface SourceState {
   requestedAt?: string;
   openedAt?: string; // its export page was last opened from the app
-  readySignal?: { at: string; via: string; text: string }; // a notification that looked like the service saying it's ready
+  // A notification or an email that looked like the service saying it's ready; an email from it carries the link.
+  readySignal?: { at: string; via: string; text: string; link?: string; sender?: string };
+  agent?: AgentState;
+  notifyEmail?: string; // where the service said it would email the download link (Do It for Me saw it when requesting)
   stepsDone?: number[];
   skipped?: string; // reason
   doneAt?: string; // guided sources marked done by hand
@@ -118,6 +126,15 @@ export interface FoundFile extends Identified {
 export interface Settings {
   autoRefresh: boolean;
   watchDownloads: boolean;
+  // "Do It for Me" is on (the person said yes once), and downloads start by themselves once an export is ready.
+  agentExports?: boolean;
+  agentDownloads?: boolean;
+  // Closing the window leaves the app in the menu bar, reading and watching; it opens at login (the packaged app).
+  background?: boolean;
+  // AI as a whole (the AI page, agreed to once): undefined until the person decides; off stops Ask, Do It for Me and the
+  // download helper. Which agent does the work is the Ask provider (AskSettings.provider), shared by all of them.
+  aiOn?: boolean;
+  aiAgreedAt?: string;
 }
 
 export interface AppState {
@@ -160,6 +177,7 @@ export interface Action {
   id: string;
   label: string;
   primary?: boolean;
+  ai?: boolean; // done by an AI agent: drawn with the AI mark
   // Extra input the renderer collects before calling the action.
   input?: 'password' | 'identity' | 'account' | 'skip-reason' | 'file';
   confirm?: string;
@@ -226,7 +244,7 @@ export interface Snapshot {
   // corpus/mappings/<folder>.json: how a service's export is read (connectors/mapped_exports.py).
   mappings: Record<string, { service: string; items: { describe: string; kind: string }[] }>;
   // How the app can ask Claude to write a mapping: the Claude CLI, the API (ANTHROPIC_API_KEY), or neither (copy and paste).
-  claude: 'cli' | 'api' | null;
+  claude: 'cli' | 'api' | 'codex' | null; // what can write a mapping for a download it doesn't know
   // Found in your data and not yet in the app: built-in accounts and services already added are left out.
   discovery: Discovery | null;
   defaultBrowser: string; // where export pages open: "Safari", "Google Chrome"

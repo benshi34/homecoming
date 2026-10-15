@@ -1,11 +1,12 @@
 // The main window, laid out like Mail or Notes: a vibrant sidebar of sections (with counts), the sources in
 // the chosen section, and the selected source on the right. Overview holds the progress timeline.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { ago, count } from '../shared/format.ts';
 import { type Phase, progress, readyIn } from '../shared/progress.ts';
 import { countFor, listFor, listSummary, type Nav, navOf } from '../shared/lists.ts';
 import type { Snapshot, SourceView } from '../shared/types.ts';
+import { AiAgreement, AiPage } from './ai.tsx';
 import { api } from './api.ts';
 import { Glyph, SourceIcon } from './icons.tsx';
 import { AskPage } from './ask.tsx';
@@ -13,7 +14,7 @@ import { ExplorePage, Num } from './explore.tsx';
 import { Hub } from './hub.tsx';
 import { ArrivalBanners, RowCount, useArrivals, WaitClock } from './moments.tsx';
 import { AddServiceSheet, Detail, vt } from './parts.tsx';
-import { animate, Button, Checkmark, Group, GroupRow, ProgressBar, ProgressRing, Sheet, Spinner, Toggle } from './ui.tsx';
+import { AiMark, animate, Button, Checkmark, Group, GroupRow, ProgressBar, ProgressRing, Sheet, Spinner, Toggle } from './ui.tsx';
 
 export type { Nav } from '../shared/lists.ts';
 
@@ -24,9 +25,9 @@ const NAV: { id: Nav; label: string; glyph: string }[] = [
   { id: 'unavailable', label: 'Not Available', glyph: 'minusCircle' },
 ];
 
-export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, nav, setNav, adding, setAdding }: {
+export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, nav, setNav, adding, setAdding, focus }: {
   snap: Snapshot; settingsOpen: boolean; setSettingsOpen: (v: boolean) => void; onAssistant: () => void; nav: Nav; setNav: (n: Nav) => void;
-  adding: boolean; setAdding: (v: boolean) => void;
+  adding: boolean; setAdding: (v: boolean) => void; focus?: { id: string; n: number } | null;
 }) {
   const [selected, setSelected] = useState<Partial<Record<Nav, string>>>({});
   const all = snap.sources;
@@ -70,13 +71,18 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
     const v = all.find((s) => s.id === id);
     if (v) go(navOf(v), v.id);
   };
+  // A notification about a source was clicked: show it.
+  useEffect(() => {
+    if (focus) jump(focus.id);
+  }, [focus?.n]);
+
   const pick = (id: string) => {
     if (follow.current?.id !== id) follow.current = null;
     animate(() => setSelected((s) => ({ ...s, [nav]: id })));
   };
 
   const counts: Record<Nav, number> = {
-    overview: 0, ask: 0, explore: 0, needs: countFor('needs', all), working: countFor('working', all),
+    overview: 0, ask: 0, ai: 0, explore: 0, needs: countFor('needs', all), working: countFor('working', all),
     done: countFor('done', all), unavailable: countFor('unavailable', all),
     setup: countFor('setup', all),
     found: snap.discovery?.found.length ?? 0,
@@ -89,12 +95,13 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
   };
 
   return (
-    <div className={`window ${nav === 'overview' || nav === 'found' || nav === 'hub' || nav === 'explore' ? 'wide' : ''}`}>
+    <div className={`window ${nav === 'overview' || nav === 'found' || nav === 'hub' || nav === 'explore' || nav === 'ai' || (nav === 'ask' && snap.settings.aiOn !== true) ? 'wide' : ''}`}>
       <nav className="sidebar drag" data-testid="sidebar">
         <div className="no-drag">
           <SideItem id="overview" label="Overview" glyph="gauge" nav={nav} onClick={() => go('overview')} />
           <SideItem id="ask" label="Ask" glyph="bubble" nav={nav} onClick={() => go('ask')} />
           <SideItem id="explore" label="Explore" glyph="compass" nav={nav} onClick={() => go('explore')} />
+          <SideItem id="ai" label="AI" glyph="sparkle" icon={<AiMark size={16} />} nav={nav} onClick={() => go('ai')} />
           <div className="sidebar-section">Sources</div>
           {NAV.map((n) => <SideItem key={n.id} id={n.id} label={n.label} glyph={n.glyph} nav={nav} count={counts[n.id]} alert={n.id === 'needs'} onClick={() => go(n.id)} />)}
           <div className="sidebar-section">This Mac</div>
@@ -115,8 +122,18 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
           <Toolbar title="Overview" onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
           <div className="scroll"><Overview snap={snap} onJump={jump} onAssistant={onAssistant} /></div>
         </div>
+      ) : nav === 'ask' && snap.settings.aiOn !== true ? (
+        <div className="column grouped">
+          <Toolbar title="Ask" onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
+          {snap.settings.aiOn === false ? (
+            <div className="scroll"><div className="empty" data-testid="ask-ai-off"><AiMark size={30} /><h2>AI is off</h2>Ask uses an AI agent to look things up in your data.
+              <div style={{ marginTop: 12 }}><Button ai onClick={() => go('ai')} testAction="open-ai">Turn It On in AI…</Button></div></div></div>
+          ) : <div className="scroll"><div className="ai-page"><AiAgreement snap={snap} /></div></div>}
+        </div>
       ) : nav === 'ask' ? (
         <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
+      ) : nav === 'ai' ? (
+        <AiPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
       ) : nav === 'explore' ? (
         <ExplorePage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
       ) : nav === 'found' || nav === 'hub' ? (
@@ -161,10 +178,10 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
   );
 }
 
-function SideItem({ id, label, glyph, nav, count: n, alert, onClick }: { id: Nav; label: string; glyph: string; nav: Nav; count?: number; alert?: boolean; onClick: () => void }) {
+function SideItem({ id, label, glyph, icon, nav, count: n, alert, onClick }: { id: Nav; label: string; glyph: string; icon?: ReactNode; nav: Nav; count?: number; alert?: boolean; onClick: () => void }) {
   return (
     <div className={`side-item ${nav === id ? 'selected' : ''}`} onClick={onClick} data-testid={`nav-${id}`}>
-      <Glyph name={glyph} size={16} />
+      {icon ?? <Glyph name={glyph} size={16} />}
       <span>{label}</span>
       {n !== undefined && n > 0 && <span className={`count ${alert ? 'alert' : ''}`}>{n}</span>}
     </div>
@@ -333,7 +350,10 @@ function SettingsSheet({ snap, onClose, onAssistant }: { snap: Snapshot; onClose
           trailing={<Toggle checked={s.autoRefresh} onChange={(v) => void api.settings({ autoRefresh: v })} label="Read this Mac every day" />} />
         <GroupRow title="Watch Downloads for exports" subtitle="Finished exports are recognized and imported."
           trailing={<Toggle checked={s.watchDownloads} onChange={(v) => void api.settings({ watchDownloads: v })} label="Watch Downloads" />} />
+        <GroupRow title="Keep working when the window is closed" subtitle="Homecoming stays in the menu bar, reading this Mac and watching for exports, and opens at login."
+          trailing={<Toggle checked={!!s.background} onChange={(v) => void api.settings({ background: v })} label="Keep working when closed" testId="toggle-background" />} />
       </div>
+
       <div className="group-box" style={{ marginTop: 12 }}>
         <GroupRow title="Corpus" subtitle={<code className="selectable">{snap.corpusPath}</code>} />
       </div>

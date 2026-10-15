@@ -52,6 +52,14 @@ describe('store', () => {
     assert.equal(fileKey('/a/b.zip', 10), '/a/b.zip|10');
   });
 
+  test('Do It for Me turned on before AI had its own switch keeps AI on; otherwise AI waits to be agreed to', () => {
+    const was = normalize({ settings: { agentExports: true } }).settings;
+    assert.equal(was.aiOn, true);
+    assert.ok(was.aiAgreedAt);
+    assert.equal(normalize({ settings: {} }).settings.aiOn, undefined);
+    assert.equal(normalize({ settings: { agentExports: true, aiOn: false } }).settings.aiOn, false, 'turned off stays off');
+  });
+
   test('a service saved with the old account link loses it', () => {
     const n = normalize({ services: [{ id: 'svc_tumblr', slug: 'tumblr', name: 'Tumblr', folder: 'tumblr', domains: ['tumblr.com'],
       account: 'https://www.tumblr.com/account/delete', addedAt: '2026-10-09T19:36:00Z', from: 'found' }] });

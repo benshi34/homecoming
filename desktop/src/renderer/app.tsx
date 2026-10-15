@@ -22,6 +22,7 @@ function App() {
   const [adding, setAdding] = useState(false);
   const [nav, setNav] = useState<Nav>('overview');
   const [dragging, setDragging] = useState(false);
+  const [focus, setFocus] = useState<{ id: string; n: number } | null>(null); // a source to show (its notification was clicked)
   const layout = useRef('');
 
   useEffect(() => {
@@ -50,6 +51,7 @@ function App() {
       if (cmd === 'show-hub') animate(() => { setAssistant(false); setNav('hub'); });
       if (cmd === 'show-assistant') animate(() => setAssistant(true));
       if (cmd === 'show-overview') animate(() => { setAssistant(false); setNav('overview'); });
+      if (cmd.startsWith('open-source:')) animate(() => { setAssistant(false); setFocus({ id: cmd.slice(12), n: Date.now() }); });
     });
     return () => {
       off();
@@ -101,7 +103,7 @@ function App() {
     <div style={{ height: '100%', ...style }} data-testid="app" data-mode={showAssistant ? 'assistant' : 'main'}>
       {showAssistant
         ? <Assistant snap={snap} onFinish={finish} onExit={finish} />
-        : <MainWindow snap={snap} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen} nav={nav} setNav={setNav}
+        : <MainWindow snap={snap} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen} nav={nav} setNav={setNav} focus={focus}
           adding={adding} setAdding={setAdding} onAssistant={() => animate(() => setAssistant(true))} />}
       <div className="toasts" data-testid="toasts">
         {toasts.map((t) => (

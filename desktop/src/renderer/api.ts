@@ -13,6 +13,7 @@ export interface Api {
   onboarding(patch: Partial<Onboarding>): Promise<Onboarding>;
   jobLog(sourceId: string): Promise<string[]>;
   directory(): Promise<DirectoryEntry[]>;
+  aiChrome(): Promise<'connected' | 'not connected' | 'no claude code'>; // Do It for Me's Claude in Chrome, there or not
   icons(): Promise<Record<string, [string, string]>>; // brand logos: slug or source id -> [hex, svg path]
   ask: AskApi;
   explore<T = unknown>(op: string, args?: unknown[]): Promise<T | { error: string }>; // shared/explore.ts has the shapes

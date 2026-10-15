@@ -8,7 +8,7 @@ import { BY_ID } from '../shared/catalog.ts';
 import { api } from './api.ts';
 import { Glyph, SourceIcon } from './icons.tsx';
 import { PHONE_SOURCES, phoneGroups } from '../shared/phone.ts';
-import { Banner, Button, Group, GroupRow, ProgressBar, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
+import { AiMark, Banner, Button, Group, GroupRow, ProgressBar, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
 import { WaitClock } from './moments.tsx';
 
 export const vt = (name: string): CSSProperties => ({ viewTransitionName: name } as CSSProperties);
@@ -84,7 +84,7 @@ export function MakeSenseOfIt({ snap, view }: { snap: Snapshot; view: SourceView
           <GroupRow title="Read as generic records" subtitle={`${count(view.records)} kept so far`} />
         )}
         <div className="kv">
-          <Button kind="plain" onClick={() => setOpen(true)} testAction="open-mapping">{m ? 'Remake the Mapping…' : 'Ask Claude to Make Sense of It…'}</Button>
+          <Button kind="plain" ai onClick={() => setOpen(true)} testAction="open-mapping">{m ? 'Remake the Mapping…' : `Ask ${snap.claude === 'codex' ? 'Codex' : 'Claude'} to Make Sense of It…`}</Button>
           {m ? <Button kind="plain" onClick={() => void api.action(view.id, 'remove-mapping')} testAction="remove-mapping">Stop Using It</Button> : <span />}
         </div>
       </Group>
@@ -128,7 +128,11 @@ function MappingSheet({ snap, view, onClose }: { snap: Snapshot; view: SourceVie
             {examples ? ', apart from one example value per field' : ''}. This is everything that would be sent:</p>
           <pre className="prompt" data-testid="mapping-prompt">{prompt ?? 'Reading the download…'}</pre>
           <label className="check"><input type="checkbox" checked={examples} onChange={(e) => setExamples(e.target.checked)} /> Include one example value per field (a better mapping; those values leave this Mac)</label>
-          {snap.claude ? null : <p style={{ marginTop: 10 }}>There's no Claude on this Mac to ask directly. Copy the request into any Claude chat, then paste its reply here.</p>}
+          {!snap.claude ? <p style={{ marginTop: 10 }}>There's no Claude on this Mac to ask directly. Copy the request into any Claude chat, then paste its reply here.</p>
+            : snap.settings.aiOn !== true && (
+              <div className="note" style={{ marginTop: 10 }} data-testid="mapping-ai-off"><AiMark size={13} /><span>AI is off in Homecoming, so nothing is sent from here. Turn it on to ask {snap.claude === 'codex' ? 'Codex' : 'Claude'}, or copy the request into any chat.</span>
+                <Button size="small" ai onClick={() => void api.settings({ aiOn: true, aiAgreedAt: snap.settings.aiAgreedAt ?? new Date().toISOString() })} testAction="mapping-ai-on">Turn On AI</Button></div>
+            )}
           <textarea className="reply" placeholder="Claude's reply (the mapping)" value={reply} onChange={(e) => setReply(e.target.value)} data-testid="mapping-reply" />
           {busy && <div className="note"><Spinner size={12} /><span>{busy}</span></div>}
           {err && <div className="form-error error" data-testid="mapping-error">{err}</div>}
@@ -136,7 +140,7 @@ function MappingSheet({ snap, view, onClose }: { snap: Snapshot; view: SourceVie
             <Button onClick={onClose}>Cancel</Button>
             <Button onClick={() => prompt && void navigator.clipboard.writeText(prompt)} disabled={!prompt} testAction="copy-request">Copy Request</Button>
             {reply.trim() ? <Button kind="primary" onClick={() => check(reply)} disabled={!!busy} testAction="check-mapping">Check It</Button>
-              : snap.claude && <Button kind="primary" onClick={ask} disabled={!prompt || !!busy} testAction="ask-claude">Ask Claude</Button>}
+              : snap.claude && snap.settings.aiOn === true && <Button kind="primary" ai onClick={ask} disabled={!prompt || !!busy} testAction="ask-claude">{snap.claude === 'codex' ? 'Ask Codex' : 'Ask Claude'}</Button>}
           </div>
         </>
       ) : (
@@ -371,9 +375,48 @@ export function AccountForm({ view }: { view: SourceView }) {
 
 // ---------------------------------------------------------------- detail
 
+// Do It for Me, the first time: Claude Code works in the person's Chrome, where they're signed in, and stops only for
+// what's theirs to do.
+export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: () => void; onOn: () => void }) {
+  const [downloads, setDownloads] = useState(snap.settings.agentDownloads !== false);
+  const installed = snap.ask.installed['claude-code'];
+  return (
+    <Sheet onClose={onClose} testId="agent-opt-in" width={480}>
+      <h2 style={{ display: 'flex', alignItems: 'center', gap: 7 }}><AiMark size={16} />Let Claude request and download your exports?</h2>
+      <p>Claude Code opens each service's export page in your Chrome, where you're signed in, picks the right options and requests your data. When the service says it's ready, Claude downloads it, and the app reads it from Downloads.</p>
+      <p>It stops and tells you when it needs you to sign in, enter a code, or prove you're not a robot. It uses the Claude in Chrome extension and your Claude account.</p>
+      {snap.settings.aiOn !== true && <p data-testid="agent-ai-note">This turns on AI in Homecoming, so Ask can use it too. You can turn it off on the AI page.</p>}
+      {!installed && <div style={{ marginTop: 10 }}><Banner kind="warning">Claude Code isn't on this Mac yet. Install it, and turn on the Claude in Chrome extension.</Banner></div>}
+      <label className="check" style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.5, marginTop: 12 }}>
+        <input type="checkbox" checked={downloads} onChange={(e) => setDownloads(e.target.checked)} data-testid="agent-downloads" />
+        <span>Download exports by themselves when they're ready</span>
+      </label>
+      <div className="sheet-actions">
+        <Button onClick={onClose}>Not Now</Button>
+        <Button kind="primary" ai testAction="agent-on" onClick={() => void api.settings({ aiOn: true, aiAgreedAt: snap.settings.aiAgreedAt ?? new Date().toISOString(), agentExports: true, agentDownloads: downloads }).then(onOn)}>Turn On</Button>
+      </div>
+    </Sheet>
+  );
+}
+
+// A Do It for Me button anywhere (the Setup Assistant's export pages): asks the first time, like the detail page does.
+export function AgentButton({ snap, id, action }: { snap: Snapshot; id: string; action: Action }) {
+  const [optIn, setOptIn] = useState(false);
+  const go = () => void api.action(id, action.id);
+  const needsOptIn = (action.id === 'agent-request' || action.id === 'agent-download') && !snap.settings.agentExports;
+  return (
+    <>
+      <Button kind={action.primary ? 'primary' : 'default'} ai={action.ai} onClick={() => (needsOptIn ? setOptIn(true) : go())} testAction={action.id}>{action.label}</Button>
+      {optIn && <AgentOptIn snap={snap} onClose={() => setOptIn(false)} onOn={() => { setOptIn(false); go(); }} />}
+    </>
+  );
+}
+
 export function Detail({ snap, view, onActed }: { snap: Snapshot; view: SourceView; onActed?: (id: string) => void }) {
   const [form, setForm] = useState<Action | null>(null);
   const [confirm, setConfirm] = useState<Action | null>(null);
+  const [optIn, setOptIn] = useState<Action | null>(null);
+  const [reply, setReply] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
@@ -398,8 +441,10 @@ export function Detail({ snap, view, onActed }: { snap: Snapshot; view: SourceVi
     else setForm(null);
   }, [view.id, view.section, view.status]);
 
-  const run = async (a: Action, payload?: unknown) => {
+  const run = async (a: Action, payload?: unknown, optedIn = false) => {
     if (a.confirm && !(payload as { confirmed?: boolean })?.confirmed) return setConfirm(a);
+    // Do It for Me asks once: what it does, and whether downloads should start by themselves.
+    if ((a.id === 'agent-request' || a.id === 'agent-download') && !snap.settings.agentExports && !optedIn) return setOptIn(a);
     if ((a.input === 'password' || a.input === 'identity' || a.input === 'skip-reason') && payload === undefined) return setForm(a);
     setBusy(true);
     setError(null);
@@ -430,9 +475,17 @@ export function Detail({ snap, view, onActed }: { snap: Snapshot; view: SourceVi
             {view.section === 'working' && !view.waiting && <ProgressBar value={view.progress} small />}
           </div>
         </div>
+        {/* Claude asked something: what you write here goes back to it with Continue. */}
+        {view.actions.some((a) => a.id === 'agent-continue') && (
+          <div className="agent-reply">
+            <input type="text" value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Answer Claude here, or leave it empty once you've done it in Chrome"
+              onKeyDown={(e) => e.key === 'Enter' && void run(view.actions.find((a) => a.id === 'agent-continue')!, { reply }).then(() => setReply(''))} data-testid="agent-reply" />
+          </div>
+        )}
         {view.actions.length > 0 && (
           <div className="actions" data-testid="actions">
-            {view.actions.map((a) => <Button key={a.id} kind={a.primary ? 'primary' : 'default'} disabled={busy} onClick={() => void run(a)} testAction={a.id}>{a.label}</Button>)}
+            {view.actions.map((a) => <Button key={a.id} kind={a.primary ? 'primary' : 'default'} ai={a.ai} disabled={busy}
+              onClick={() => void (a.id === 'agent-continue' ? run(a, { reply }).then(() => setReply('')) : run(a))} testAction={a.id}>{a.label}</Button>)}
           </div>
         )}
         {error && <div style={{ padding: '0 14px 12px 42px' }}><Banner kind="error"><span data-testid="error">{error}</span></Banner></div>}
@@ -481,6 +534,8 @@ export function Detail({ snap, view, onActed }: { snap: Snapshot; view: SourceVi
           Drop the {view.name} download here, or <Button kind="plain" onClick={() => void run({ id: 'add-file', label: '' })}>choose it…</Button>
         </div>
       )}
+
+      {optIn && <AgentOptIn snap={snap} onClose={() => setOptIn(null)} onOn={() => { const a = optIn; setOptIn(null); void run(a, undefined, true); }} />}
 
       {confirm && (
         <Sheet onClose={() => setConfirm(null)} testId="confirm">

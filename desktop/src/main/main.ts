@@ -7,16 +7,17 @@ import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, powerSaveBlocker, safeStorage, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, shell, systemPreferences, Tray } from 'electron';
 import { LOCAL_SERVERS, PROVIDER, RETENTION, retentionOk, type AskProvider, type AskSettings } from '../shared/ask.ts';
 import { BY_ID, CATALOG, IMPORT_PARSER_SOURCES, KIND_TO_SOURCE, MAC_CONNECTORS, refreshServices, reservedFolders, serviceKey, setServices, type Source } from '../shared/catalog.ts';
 import { bytes } from '../shared/format.ts';
 import { computeSources, later, nextUp, summarize, totals } from '../shared/status.ts';
 import { identityKeys } from '../shared/identity.ts';
-import type { AppState, Candidate, DirectoryEntry, Discovery, FoundService, Identified, Identity, MappingPreview, Probe, ServiceEntry, Snapshot, SourceView, Stats } from '../shared/types.ts';
+import type { AgentMode, AppState, Candidate, DirectoryEntry, Discovery, FoundService, Identified, Identity, MappingPreview, Probe, ServiceEntry, Snapshot, SourceView, Stats } from '../shared/types.ts';
 import { Ask, findClaude, findCodex } from './ask.ts';
 import { Bridge } from './bridge.ts';
 import { exploreRunner } from './explore.ts';
+import { agentPrompt, type AgentOutcome, type AgentRun, runAgent } from './export_agent.ts';
 import { FolderWatcher, importDirFor, moveInto } from './downloads.ts';
 import { errorsBySource, JobQueue, labelFor, type Runner } from './jobs.ts';
 import { adoptFolder, resolvePaths, urlOverrides } from './paths.ts';
@@ -125,7 +126,7 @@ queue.onFinish(({ job, result, cancelled }) => {
   if (cancelled) toast(`Stopped: ${job.label}`);
   else if (bad.length) toast(`${names(bad)}: couldn't ${job.kind === 'import' ? 'import' : 'read'} ${bad.length > 1 ? 'them' : 'it'}. See the row for why.`, 'error');
   // An export or the iPhone coming home gets the window's own banner (moments.tsx) rather than a toast.
-  else if (job.kind !== 'import' && job.kind !== 'iphone') toast(good.length > 3 ? `Read ${good.length} sources on this Mac` : `Read ${names(good)}`);
+  else if (job.kind === 'connectors') toast(good.length > 3 ? `Read ${good.length} sources on this Mac` : `Read ${names(good)}`);
   const settling = { id: job.id, kind: job.kind, label: job.label, sourceIds: job.sourceIds, connectors: job.connectors, state: 'running' as const,
     current: 'build_index', startedAt: job.startedAt, lastLine: 'Updating the counts…' };
   finishing.push(settling);
@@ -210,9 +211,42 @@ function mappings(): Snapshot['mappings'] {
 
 // The Claude CLI if there is one, else the API.
 const CLAUDE_CLI = findClaude(P.home);
-const claudeKind = (): Snapshot['claude'] => (CLAUDE_CLI ? 'cli' : process.env.ANTHROPIC_API_KEY ? 'api' : null);
+// Not decided yet counts as off: nothing goes to an AI until it's turned on (the AI page, the Setup Assistant, Ask's
+// first page, or Do It for Me's sheet).
+const aiOff = () => store.state.settings.aiOn !== true;
+// What writes a mapping: the agent picked on the AI page if it's on this Mac (Codex, or Claude Code), else whichever is.
+const wantsCodex = () => PROVIDER[store.state.ask.provider]?.harness === 'codex';
+const claudeKind = (): Snapshot['claude'] => (wantsCodex() && findCodex() ? 'codex' : CLAUDE_CLI ? 'cli' : process.env.ANTHROPIC_API_KEY ? 'api' : findCodex() ? 'codex' : null);
+
+// Codex with your ChatGPT sign-in, for text in, text out: no tools needed, run from an empty folder, nothing kept.
+async function askCodex(prompt: string): Promise<string> {
+  const bin = findCodex();
+  if (!bin) throw new Error('Codex isn\'t on this Mac');
+  const cwd = fs.mkdtempSync(path.join(app.getPath('temp'), 'ump-codex-'));
+  return await new Promise((resolve, reject) => {
+    const p = spawn(bin, ['--ask-for-approval', 'never', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never',
+      '-c', 'analytics.enabled=false', '-c', 'web_search="disabled"', '-'], { stdio: ['pipe', 'pipe', 'pipe'], cwd });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => p.kill(), 300_000);
+    p.stdout.on('data', (d) => (out += d));
+    p.stderr.on('data', (d) => (err += d));
+    p.on('error', reject);
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      fs.rmSync(cwd, { recursive: true, force: true });
+      const said = out.split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .filter((e) => e?.type === 'item.completed' && e.item?.type === 'agent_message').map((e) => String(e.item.text ?? ''));
+      if (said.length) return resolve(said[said.length - 1]);
+      reject(new Error(err.trim().split('\n').pop() || `codex exited with ${code}`));
+    });
+    p.stdin.end(prompt);
+  });
+}
 
 async function askClaude(prompt: string): Promise<string> {
+  if (aiOff()) throw new Error('AI is off. Turn it on in the AI page.');
+  if (claudeKind() === 'codex') return askCodex(prompt);
   if (CLAUDE_CLI) {
     return await new Promise((resolve, reject) => {
       // Writing a mapping needs no tools, settings, MCP servers or saved session (a saved session would be read back
@@ -337,6 +371,30 @@ async function refresh() {
   push();
   void recheckFound();
   maybeAutoRefresh();
+  maybeReindex(); // unless a read was just queued, which builds the index last
+}
+
+// A read killed after its connectors but before the index (a crash, a forced quit) leaves the data newer than the
+// search index, and the next launch sees it as freshly read: rebuild the index, or what it read can't be searched or
+// explored. Every run that writes the manifest builds the index last, so an older index means one was cut short.
+// Once for each manifest: an index that won't build (it says why in the log) isn't retried after every job.
+let reindexedFor = 0;
+function maybeReindex() {
+  if (READONLY || NO_AUTORUN || queue.list().length) return;
+  const manifest = path.join(P.corpus, 'manifest.json');
+  const db = path.join(P.corpus, 'corpus.db');
+  let at: number;
+  try {
+    if (!fs.existsSync(manifest)) return;
+    at = fs.statSync(manifest).mtimeMs;
+    if (fs.existsSync(db) && fs.statSync(db).mtimeMs >= at) return;
+  } catch {
+    return;
+  }
+  if (reindexedFor === at) return;
+  reindexedFor = at;
+  log('The search index is older than what was read: rebuilding it.');
+  queue.add({ kind: 'index', label: 'Rebuilding the search index', sourceIds: [], connectors: [] });
 }
 
 function pruneFound() {
@@ -381,7 +439,8 @@ function snapshot(): Snapshot {
   const summary = summarize(views, stats);
   return {
     sources: views, summary, next: probe ? nextUp(views) : null, jobs,
-    settings: store.state.settings, probeTime: probe?.time, corpusPath: P.corpus, readOnly: READONLY, label: LABEL,
+    // Running in the background is on by default for the packaged app.
+    settings: { ...store.state.settings, background: store.state.settings.background ?? app.isPackaged }, probeTime: probe?.time, corpusPath: P.corpus, readOnly: READONLY, label: LABEL,
     identity: probe?.identity ?? null, identitySuggestion: probe?.identity_suggestion ?? null,
     onboarding: store.state.onboarding, accent: accentColor(), identityCandidates: candidates, identityCandidatesReady: candidatesReady, identityDismissed: store.state.identityDismissed,
     services: store.state.services, discovery: newDiscoveries(), mappings: mappings(), claude: claudeKind(),
@@ -398,6 +457,13 @@ let installed: { at: number; v: Snapshot['ask']['installed'] } | null = null;
 
 function askView(): Snapshot['ask'] {
   if (!installed || Date.now() - installed.at > 30_000) installed = { at: Date.now(), v: { 'claude-code': !!findClaude(P.home), codex: !!findCodex() } };
+  // Until AI is decided on, the agent picked is one this Mac has: Codex, if that's the one there.
+  const has = installed.v;
+  const harness = PROVIDER[store.state.ask.provider]?.harness;
+  if (!store.state.settings.aiAgreedAt && harness && !has[harness]) {
+    const other = harness === 'codex' ? 'claude-code' : 'codex';
+    if (has[other]) store.update((s) => (s.ask.provider = other));
+  }
   return { settings: store.state.ask, installed: installed.v, keys: { anthropic: ask.hasKey('anthropic'), openai: ask.hasKey('openai') } };
 }
 
@@ -409,6 +475,7 @@ async function askOp(a: AskOp): Promise<unknown> {
     case 'list': return ask.list();
     case 'get': return a.id ? { conversation: ask.get(a.id), running: ask.isRunning(a.id) } : null;
     case 'ask': {
+      if (aiOff()) return { error: 'AI is off. Turn it on in the AI page to ask.' };
       const s = store.state.ask;
       // A cloud provider is used only once the person has confirmed its data settings (see RETENTION).
       if (!retentionOk(s, s.provider)) return { error: 'confirm-retention', provider: s.provider };
@@ -465,6 +532,7 @@ function push() {
   if (pushTimer) return;
   pushTimer = setTimeout(() => {
     pushTimer = null;
+    updateTray();
     if (!win || win.isDestroyed()) return;
     const snap = snapshot();
     win.webContents.send('snapshot', snap);
@@ -601,7 +669,16 @@ function serviceNamed(fileName: string): Source | undefined {
     .map(norm).some((k) => k.length >= 4 && name.includes(k)));
 }
 
-async function onDownloadsFile(p: string, size: number) {
+// One file at a time: two copies of one download arriving together (a link followed twice) are then told apart,
+// the second found already imported.
+let downloadsChain: Promise<unknown> = Promise.resolve();
+function onDownloadsFile(p: string, size: number) {
+  const next = downloadsChain.then(() => handleDownloadsFile(p, size));
+  downloadsChain = next.catch(() => undefined);
+  return next;
+}
+
+async function handleDownloadsFile(p: string, size: number) {
   if (!store.state.settings.watchDownloads) return;
   const key = fileKey(p, size);
   const s = store.state;
@@ -639,7 +716,7 @@ async function onDownloadsFile(p: string, size: number) {
 // ---------------------------------------------------------------- actions
 
 type Payload = { dismissed?: string[]; password?: string; reason?: string; identity?: Identity; name?: string; index?: number; paths?: string[]; confirmed?: boolean; key?: string; value?: unknown;
-  slugs?: string[]; domains?: string[]; url?: string; slug?: string; examples?: boolean; prompt?: string; text?: string; mapping?: unknown; share?: boolean };
+  slugs?: string[]; domains?: string[]; url?: string; slug?: string; examples?: boolean; prompt?: string; text?: string; mapping?: unknown; share?: boolean; reply?: string };
 
 // The browser export pages open in ("Open in Safari"): the Mac's default for web links.
 let browserName: string | null = null;
@@ -662,7 +739,7 @@ async function openExternal(url: string) {
   await shell.openExternal(url);
 }
 
-const MUTATING = new Set(['add-service', 'choose-services', 'remove-service', 'save-mapping', 'remove-mapping', 'run', 'run-all-mac', 'iphone-run', 'save-identity', 'exclude-icloud', 'fix-claude-retention', 'fix-shell-retention', 'import-found', 'add-file', 'reimport']);
+const MUTATING = new Set(['agent-request', 'agent-download', 'agent-continue', 'add-service', 'choose-services', 'remove-service', 'save-mapping', 'remove-mapping', 'run', 'run-all-mac', 'iphone-run', 'save-identity', 'exclude-icloud', 'fix-claude-retention', 'fix-shell-retention', 'import-found', 'add-file', 'reimport']);
 
 const NOT_USED = 'I don\'t use it';
 
@@ -920,6 +997,23 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       await openExternal(`mailto:${encodeURIComponent(e?.email ?? '')}?subject=${encodeURIComponent('Request for a copy of my personal data')}&body=${encodeURIComponent(body)}`);
       break;
     }
+    // Do It for Me: Claude Code in the person's Chrome. One run at a time, since they share the browser.
+    case 'agent-request':
+    case 'agent-download':
+      if (aiOff()) return { ok: false, error: 'AI is off. Turn it on in the AI page.' };
+      if (!store.state.settings.agentExports) return { ok: false, error: 'Turn on Do It for Me first.' };
+      startAgent(sourceId, action === 'agent-request' ? 'request' : 'download');
+      break;
+    case 'agent-continue':
+      if (!st().agent) return { ok: false, error: 'nothing to continue' };
+      startAgent(sourceId, st().agent!.mode, true, typeof payload.reply === 'string' ? payload.reply : undefined);
+      break;
+    case 'agent-stop':
+      stopAgent(sourceId);
+      break;
+    case 'agent-dismiss':
+      store.update(() => delete st().agent);
+      break;
     case 'mark-requested':
       store.update(() => {
         st().requestedAt = new Date().toISOString();
@@ -934,6 +1028,13 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       break;
     // Export pages open in the person's own browser, where they're signed in and their passwords are; what they
     // download lands in Downloads, and the watcher takes it from there.
+    case 'open-ready': {
+      // The link in the service's "it's ready" email, or its download page.
+      const url = store.state.sources[sourceId]?.readySignal?.link ?? urlFor(src, 'downloadUrl');
+      if (!url) return { ok: false, error: 'no page for this source' };
+      await openExternal(url);
+      break;
+    }
     case 'open':
     case 'open-external':
     case 'open-download': {
@@ -985,19 +1086,26 @@ let signalsBusy = false;
 async function checkSignals() {
   if (READONLY || signalsBusy) return;
   const label = (d: string) => d.split('.').slice(-2)[0];
+  const host = (u?: string) => (u ? (() => { try { return new URL(u).hostname; } catch { return ''; } })() : '');
   const asked = CATALOG.filter((s) => s.group === 'web' && store.state.sources[s.id]?.requestedAt && expecting(s.id)).map((s) => ({
-    id: s.id, since: store.state.sources[s.id]!.requestedAt!,
+    id: s.id, since: store.state.sources[s.id]!.requestedAt!, seen: store.state.sources[s.id]!.readySignal?.at,
     names: [...new Set([s.name, ...s.name.split(/\s*[/(),]\s*/), ...(s.domains ?? []).map(label)].map((n) => n.trim()).filter(Boolean))],
+    domains: [...new Set([...(s.domains ?? []), host(s.url), host(s.downloadUrl)].filter(Boolean))],
   }));
   if (!asked.length) return;
   signalsBusy = true;
   try {
-    const r = await bridge.json<{ readable: boolean; matches: { source: string; at: string; via: string; text: string }[] }>(['export-signals'], JSON.stringify(asked), 60_000);
+    const r = await bridge.json<{ readable: boolean; matches: { source: string; at: string; via: string; text: string; link?: string; sender?: string }[] }>(
+      ['export-signals'], JSON.stringify(asked), 60_000);
     for (const m of r.matches) {
       const st = store.state.sources[m.source];
       if (!st || (st.readySignal && !later(m.at, st.readySignal.at))) continue;
-      store.update((s) => (s.sources[m.source]!.readySignal = { at: m.at, via: m.via, text: m.text }));
-      notify(`Your ${BY_ID[m.source]?.name ?? m.source} data looks ready`, `A notification from ${m.via} said: "${m.text}". Check it, then download it.`);
+      store.update((s) => (s.sources[m.source]!.readySignal = { at: m.at, via: m.via, text: m.text, link: m.link, sender: m.sender }));
+      const name = BY_ID[m.source]?.name ?? m.source;
+      const auto = !aiOff() && store.state.settings.agentExports && store.state.settings.agentDownloads !== false && !agentBusy(m.source);
+      if (auto) startAgent(m.source, 'download');
+      notify(m.sender ? `Your ${name} data is ready` : `Your ${name} data looks ready`,
+        `${m.sender ? `An email from ${m.sender}` : `A notification from ${m.via}`} said: "${m.text}". ${auto ? 'Downloading it for you.' : 'Download it, and the app reads it from there.'}`, m.source);
     }
     if (r.matches.length) push();
   } catch (e) {
@@ -1007,10 +1115,165 @@ async function checkSignals() {
   }
 }
 
-function notify(title: string, body: string) {
+// ---------------------------------------------------------------- do it for me
+
+function chromeStatus(): Promise<'connected' | 'not connected' | 'no claude code'> {
+  const bin = process.env.UMP_AGENT_CMD || findClaude(P.home);
+  if (!bin) return Promise.resolve('no claude code');
+  return new Promise((resolve) => {
+    const cwd = fs.mkdtempSync(path.join(app.getPath('temp'), 'ump-chrome-'));
+    const p = spawn(bin, ['-p', '--chrome', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }),
+      '--setting-sources', 'project', '--tools', '', '--no-session-persistence'], { cwd, stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
+    let buf = '';
+    let done = false;
+    const finish = (r: 'connected' | 'not connected') => {
+      if (done) return;
+      done = true;
+      p.kill('SIGKILL');
+      fs.rmSync(cwd, { recursive: true, force: true });
+      resolve(r);
+    };
+    const timer = setTimeout(() => finish('not connected'), 30_000);
+    p.stdout.on('data', (d) => {
+      buf += d;
+      for (const line of buf.split('\n')) {
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === 'system' && ev.subtype === 'init') {
+            clearTimeout(timer);
+            finish((ev.mcp_servers ?? []).some((s: { name: string; status: string }) => s.name === 'claude-in-chrome' && s.status === 'connected') ? 'connected' : 'not connected');
+          }
+        } catch { /* a line still arriving */ }
+      }
+    });
+    p.on('close', () => finish('not connected'));
+    p.stdin.end('ok'); // killed at its first event, before this is sent anywhere
+  });
+}
+
+let agentRun: { sourceId: string; run: AgentRun } | null = null;
+const agentQueue: { sourceId: string; mode: AgentMode; resume: boolean; reply?: string }[] = [];
+const agentBusy = (id: string) => agentRun?.sourceId === id || agentQueue.some((q) => q.sourceId === id);
+
+function startAgent(sourceId: string, mode: AgentMode, resume = false, reply?: string) {
+  if (!BY_ID[sourceId] || agentBusy(sourceId)) return;
+  store.update(() => {
+    const st = store.source(sourceId);
+    st.agent = { mode, status: 'queued', at: new Date().toISOString(), session: resume ? st.agent?.session : undefined };
+  });
+  agentQueue.push({ sourceId, mode, resume, reply });
+  push();
+  pumpAgents();
+}
+
+function stopAgent(sourceId: string) {
+  const i = agentQueue.findIndex((q) => q.sourceId === sourceId);
+  if (i >= 0) {
+    agentQueue.splice(i, 1);
+    store.update(() => delete store.source(sourceId).agent);
+    push();
+  }
+  if (agentRun?.sourceId === sourceId) agentRun.run.stop();
+}
+
+function pumpAgents() {
+  if (agentRun || !agentQueue.length) return;
+  const next = agentQueue.shift()!;
+  const src = BY_ID[next.sourceId]!;
+  const st = store.source(next.sourceId);
+  const bin = process.env.UMP_AGENT_CMD || findClaude(P.home);
+  if (!bin) {
+    finishAgent(next.sourceId, next.mode, { status: 'failed', note: 'Claude Code isn\'t on this Mac.' });
+    return pumpAgents();
+  }
+  store.update(() => (st.agent = { ...st.agent!, status: 'running', at: new Date().toISOString(), step: next.resume ? 'Carrying on…' : `Opening ${src.name} in Chrome…` }));
+  push();
+  const here = { ...src, url: urlFor(src), downloadUrl: urlFor(src, 'downloadUrl') };
+  const run = runAgent({
+    bin, prompt: agentPrompt(here, next.mode, next.mode === 'download' ? st.readySignal?.link : undefined, st.requestedAt,
+      { mine: probe?.identity?.emails ?? [], names: probe?.identity?.usernames ?? [], to: st.notifyEmail }),
+    resume: next.resume ? st.agent?.session : undefined, reply: next.reply,
+    model: store.state.ask?.models?.['claude-code'] || undefined, log,
+    onStep: (line) => {
+      store.update(() => st.agent && (st.agent.step = line.length > 120 ? `${line.slice(0, 117)}…` : line));
+      push();
+    },
+  });
+  agentRun = { sourceId: next.sourceId, run };
+  void run.done.then((out) => {
+    agentRun = null;
+    if (out.stopped) { // you stopped it: back to where it was, no news
+      store.update(() => delete store.source(next.sourceId).agent);
+      push();
+    } else finishAgent(next.sourceId, next.mode, out);
+    pumpAgents();
+  });
+}
+
+// While an export is on its way, Claude looks for it now and then (Do It for Me with downloads on): first once the
+// service's usual wait has passed, then every few hours, until a sign of it turns up or the link would have expired.
+// Apple Mail and notifications are checked far more often and cost nothing; this catches what they can't see (an
+// inbox that isn't in Mail, a download button on the service's own page).
+const CHECK_EVERY = Number(process.env.UMP_AGENT_CHECK_MS || 6 * HOUR);
+function maybeCheckExports() {
+  const s = store.state.settings;
+  if (READONLY || aiOff() || !s.agentExports || s.agentDownloads === false || agentRun || agentQueue.length) return;
+  const now = Date.now();
+  for (const src of CATALOG.filter((x) => x.group === 'web' && x.waitHours)) {
+    const st = store.state.sources[src.id];
+    if (!st?.requestedAt || !expecting(src.id) || (st.readySignal && later(st.readySignal.at, st.requestedAt))) continue;
+    const ag = st.agent;
+    if (ag && ['running', 'queued', 'needs_you', 'downloading'].includes(ag.status) && later(ag.at, st.requestedAt)) continue;
+    const since = now - Date.parse(st.requestedAt);
+    const first = process.env.UMP_AGENT_CHECK_AFTER_MS ? Number(process.env.UMP_AGENT_CHECK_AFTER_MS) : src.waitHours![0] * HOUR;
+    const last = ag?.mode === 'download' && later(ag.at, st.requestedAt) ? Date.parse(ag.at) : 0;
+    const over = src.waitHours![1] * HOUR + (src.expiresDays ?? 7) * 24 * HOUR;
+    if (since < first || since > over || now - last < CHECK_EVERY) continue;
+    startAgent(src.id, 'download');
+    return; // one at a time: the next one on a later tick
+  }
+}
+
+function finishAgent(sourceId: string, mode: AgentMode, out: AgentOutcome) {
+  const src = BY_ID[sourceId];
+  const now = new Date().toISOString();
+  store.update(() => {
+    const st = store.source(sourceId);
+    st.agent = { mode, status: out.status, at: now, note: out.note || undefined, session: out.session };
+    if (out.email) st.notifyEmail = out.email;
+    if (out.status === 'requested' && mode === 'request') { // a download run saying "requested" doesn't restart the clock
+      st.requestedAt = now;
+      st.notified = [];
+      delete st.readySignal;
+    }
+  });
+  const name = src?.name ?? sourceId;
+  if (out.status === 'not_ready') log(`${name}: not ready yet (Claude checked).`); // quiet: it checks again later
+  else if (out.status === 'requested') notify(`Requested your ${name} data`, `It's usually ready in ${src?.waitHours ? `${src.waitHours[0]} to ${src.waitHours[1]} hours` : 'a day or two'}. The app watches for it.`, sourceId);
+  else if (out.status === 'downloading') notify(`Downloading your ${name} data`, 'The app reads it once it lands in Downloads.', sourceId);
+  // Claude's question to the person: the notification opens the export, where they answer and it carries on.
+  else if (out.status === 'needs_you') notify(`Claude needs you for ${name}`, out.note || 'Open Chrome to see what it needs.', sourceId);
+  else notify(`Couldn't finish ${name}`, out.note || 'Open Homecoming to try again.', sourceId);
+  push();
+}
+
+// A notification about one source opens it when clicked.
+function notify(title: string, body: string, sourceId?: string) {
   log(`${title}. ${body}`);
   if (process.env.UMP_EXTERNAL_LOG) return fs.appendFileSync(process.env.UMP_EXTERNAL_LOG, `notify: ${title}\n`); // tests: no real notifications
-  if (Notification.isSupported()) new Notification({ title, body }).show();
+  if (!Notification.isSupported()) return;
+  const n = new Notification({ title, body });
+  if (sourceId) n.on('click', () => openSource(sourceId));
+  n.show();
+}
+
+// The window, on one source's page.
+function openSource(sourceId: string) {
+  const fresh = !win || win.isDestroyed();
+  showWindow();
+  const send = () => win?.webContents.send('open-source', sourceId);
+  if (fresh) win?.webContents.once('did-finish-load', () => setTimeout(send, 300));
+  else send();
 }
 
 function checkReminders() {
@@ -1062,6 +1325,69 @@ function buildMenu() {
   ]));
 }
 
+// ---------------------------------------------------------------- the menu bar
+
+// Closing the window leaves the app running in the menu bar (the packaged app, unless the person turned it off), so the
+// daily read, the Downloads watcher and the ready checks keep going; it opens at login the same way, with no window.
+let tray: Tray | null = null;
+// Tests run hidden, so never in the background, unless one is about it (UMP_BACKGROUND=1).
+const inBackground = () => (!HIDDEN || process.env.UMP_BACKGROUND === '1') && (store.state.settings.background ?? app.isPackaged);
+
+function trayStatus(): string {
+  if (agentRun) {
+    const st = store.state.sources[agentRun.sourceId];
+    return `${BY_ID[agentRun.sourceId]?.name}: ${st?.agent?.step ?? 'working…'}`;
+  }
+  const job = queue.list()[0];
+  if (job) return job.label;
+  const at = store.state.lastAutoRefresh;
+  if (!at) return 'Homecoming';
+  const d = new Date(at);
+  const today = d.toDateString() === new Date().toDateString();
+  return `Read this Mac ${today ? 'today' : d.toLocaleDateString(undefined, { weekday: 'long' })} at ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+function updateTray() {
+  if (!tray || tray.isDestroyed()) return;
+  const status = trayStatus();
+  tray.setToolTip(`Homecoming: ${status}`);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: status.length > 60 ? `${status.slice(0, 57)}…` : status, enabled: false },
+    { type: 'separator' },
+    { label: 'Open Homecoming', click: showWindow },
+    { label: 'Read This Mac Now', enabled: !READONLY, click: () => void act('*', 'run-all-mac') },
+    { type: 'separator' },
+    { label: 'Quit Homecoming', click: () => app.quit() },
+  ]));
+}
+
+function toBackground() {
+  if (!tray || tray.isDestroyed()) {
+    const icon = nativeImage.createFromPath(path.join(app.getAppPath(), 'data', 'trayTemplate.png'));
+    icon.setTemplateImage(true);
+    tray = new Tray(icon);
+  }
+  updateTray();
+  if (process.platform === 'darwin') app.dock?.hide();
+}
+
+function showWindow() {
+  if (process.platform === 'darwin') void app.dock?.show();
+  if (!win || win.isDestroyed()) createWindow();
+  else {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+}
+
+// Open at login: the packaged app only (a development copy would add Electron itself), and only while it runs in the background.
+function syncLoginItem() {
+  if (!app.isPackaged || HIDDEN || process.platform !== 'darwin') return;
+  const want = store.state.settings.background ?? true;
+  if (app.getLoginItemSettings().openAtLogin !== want) app.setLoginItemSettings({ openAtLogin: want });
+}
+
 // ---------------------------------------------------------------- window
 
 function createWindow() {
@@ -1103,11 +1429,20 @@ function wireIpc() {
   });
   ipcMain.handle('settings', (_e, patch: Partial<Snapshot['settings']>) => {
     store.update((s) => Object.assign(s.settings, patch));
+    if ('background' in patch) syncLoginItem();
+    // AI turned off: nothing more goes to one, including what Do It for Me is in the middle of.
+    if (patch.aiOn === false) {
+      for (const id of [...agentQueue.map((q) => q.sourceId), ...(agentRun ? [agentRun.sourceId] : [])]) stopAgent(id);
+      ask.stopAll();
+    }
     push();
     maybeAutoRefresh();
     return store.state.settings;
   });
   ipcMain.handle('directory', () => directory());
+  // Is the Claude in Chrome extension there for Do It for Me? Claude Code says so as it starts, before asking the
+  // model anything: read that, and stop it.
+  ipcMain.handle('ai-chrome', () => chromeStatus());
   ipcMain.handle('ask', (_e, a: AskOp) => askOp(a));
   const explore = exploreRunner(P, app.getAppPath(), path.join(app.getPath('userData'), 'explore-cache'),
     (key, data) => win?.webContents.send('explore-progress', { key, ...data }));
@@ -1139,12 +1474,8 @@ function wireIpc() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
-  });
+  app.on('second-instance', () => showWindow());
+  app.on('activate', () => showWindow());
   app.whenReady().then(async () => {
     store = new Store(path.join(app.getPath('userData'), 'state.json'));
     ask = new Ask({
@@ -1158,7 +1489,18 @@ if (!app.requestSingleInstanceLock()) {
     wireIpc();
     buildMenu();
     if (process.platform === 'darwin') systemPreferences.on('accent-color-changed', push);
-    createWindow();
+    // Run from source, the app is Electron's own bundle, with Electron's icon in the Dock: show Homecoming's.
+    if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(nativeImage.createFromPath(path.join(app.getAppPath(), 'data', 'appIcon.png')));
+    // A run of Do It for Me the app was quit in the middle of: say so, and keep its session to carry on from.
+    store.update((s) => {
+      for (const st of Object.values(s.sources)) {
+        if (st.agent && (st.agent.status === 'running' || st.agent.status === 'queued')) Object.assign(st.agent, { status: 'needs_you', note: 'Homecoming quit before it finished.' });
+      }
+    });
+    syncLoginItem();
+    // Opened at login: straight to the menu bar.
+    if (inBackground() && app.getLoginItemSettings().wasOpenedAtLogin) toBackground();
+    else createWindow();
     log(`Corpus: ${P.corpus}${READONLY ? ' (read-only)' : ''}`);
     await refresh();
     void refreshCandidates();
@@ -1173,13 +1515,14 @@ if (!app.requestSingleInstanceLock()) {
     void checkSignals();
     setInterval(() => void refreshStats().then(push), 5 * 60_000);
     setInterval(() => maybeAutoRefresh(), HOUR);
+    setInterval(() => maybeCheckExports(), Number(process.env.UMP_AGENT_TICK_MS || 10 * 60_000));
     setInterval(() => {
       checkReminders();
       push(); // keeps "Requested 2 h ago" and waiting states current
     }, 60_000);
     checkReminders();
   });
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', () => (inBackground() ? toBackground() : app.quit()));
   app.on('before-quit', () => {
     queue.cancelAll(); // don't leave a connector (or iLEAPP under it) running without the app
     ask?.close();

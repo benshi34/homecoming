@@ -44,6 +44,10 @@ const askState = async () => (await snap(run.page)).ask;
 test('Ask starts empty, and says the default (Claude Code) needs its data settings checked', async () => {
   const p = run.page;
   await p.locator('[data-testid=nav-ask]').click();
+  // AI is agreed to once, here or on the AI page, before anything goes to one.
+  await p.locator('[data-testid=ai-agreement]').waitFor();
+  await shot(p, 'ask-ai-agreement');
+  await p.locator('button[data-action=ai-on]').click();
   await p.locator('[data-testid=ask-empty]').waitFor();
   assert.match(await p.locator('[data-testid=ask-privacy]').innerText(), /check that it won't be kept/);
   await shot(p, 'ask-empty');

@@ -1,7 +1,7 @@
 // Controls drawn to look and move like AppKit's: push buttons, switches, the spoked spinner, grouped forms,
 // sheets. Animations go through the View Transitions API and respect Reduce Motion.
 
-import { type CSSProperties, type ReactNode, useEffect, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useId, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Glyph } from './icons.tsx';
 
@@ -27,12 +27,26 @@ export function animate(change: () => void, direction?: 'forward' | 'back' | 'mo
   });
 }
 
-export function Button({ children, kind = 'default', size = 'regular', onClick, disabled, type = 'button', testAction, title, ariaLabel, className = '' }: {
+// The mark on everything AI does (a four-pointed sparkle in a blue-to-pink gradient), so it's never mistaken for
+// the app doing something by itself.
+export function AiMark({ size = 13, className = '' }: { size?: number; className?: string }) {
+  const id = useId();
+  return (
+    <svg className={`ai-mark ${className}`} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <defs><linearGradient id={id} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#4f8ef7" /><stop offset="0.55" stopColor="#9b6cf6" /><stop offset="1" stopColor="#ee6aa7" /></linearGradient></defs>
+      <path d="M12 1.6c.6 5 3.2 9.2 10.4 10.4-7.2 1.2-9.8 5.4-10.4 10.4-.6-5-3.2-9.2-10.4-10.4C8.8 10.8 11.4 6.6 12 1.6Z" fill={`url(#${id})`} />
+    </svg>
+  );
+}
+
+export function Button({ children, kind = 'default', size = 'regular', onClick, disabled, type = 'button', testAction, title, ariaLabel, className = '', ai }: {
   children: ReactNode; kind?: 'primary' | 'default' | 'plain' | 'destructive'; size?: 'regular' | 'large' | 'small';
   onClick?: () => void; disabled?: boolean; type?: 'button' | 'submit'; testAction?: string; title?: string; ariaLabel?: string; className?: string;
+  ai?: boolean; // done by AI: the sparkle, and a gradient when it's the primary button
 }) {
   return (
-    <button type={type} className={`btn btn-${kind} btn-${size} ${className}`} onClick={onClick} disabled={disabled} data-action={testAction} title={title} aria-label={ariaLabel}>
+    <button type={type} className={`btn btn-${kind} btn-${size} ${ai ? 'btn-ai' : ''} ${className}`} onClick={onClick} disabled={disabled} data-action={testAction} title={title} aria-label={ariaLabel}>
+      {ai && <AiMark size={size === 'small' ? 11 : 13} />}
       {children}
     </button>
   );

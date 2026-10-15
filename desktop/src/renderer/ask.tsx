@@ -405,7 +405,7 @@ export function inline(s: string, onRecord: (n: number) => void): ReactNode[] {
 // ---------------------------------------------------------------- sheets
 
 // Who answers: Claude Code or Codex, and how it's signed in.
-function ProviderSheet({ snap, onClose, onRetention }: { snap: Snapshot; onClose: () => void; onRetention: (p: AskProvider) => void }) {
+export function ProviderSheet({ snap, onClose, onRetention }: { snap: Snapshot; onClose: () => void; onRetention: (p: AskProvider) => void }) {
   const s = snap.ask.settings;
   const p = s.provider;
   const info = PROVIDER[p];
@@ -510,7 +510,7 @@ function ProviderSheet({ snap, onClose, onRetention }: { snap: Snapshot; onClose
 }
 
 // Before a cloud provider's first use (and every few months): what it keeps, and the setting that keeps it least.
-function RetentionSheet({ provider, confirmed, onClose, onConfirm }: { provider: AskProvider; confirmed: boolean; onClose: () => void; onConfirm: () => void }) {
+export function RetentionSheet({ provider, confirmed, onClose, onConfirm }: { provider: AskProvider; confirmed: boolean; onClose: () => void; onConfirm: () => void }) {
   const r = RETENTION[provider]!;
   const [checked, setChecked] = useState(false);
   const company = provider === 'claude-code' || provider === 'anthropic' ? 'Anthropic' : 'OpenAI';

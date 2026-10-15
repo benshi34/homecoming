@@ -327,11 +327,12 @@ describe('iPhone backup', () => {
 });
 
 describe('web exports', () => {
-  test('not requested: open the page in your browser, or say it is already requested', () => {
+  test('not requested: Claude does it for you, or open the page in your browser, or say it is already requested', () => {
     const v = view('discord');
     assert.equal(v.section, 'needs');
     assert.equal(v.status, 'Not requested yet');
-    assert.deepEqual(actionIds(v), ['open', 'mark-requested', 'add-file', 'skip']);
+    assert.deepEqual(actionIds(v), ['agent-request', 'open', 'mark-requested', 'add-file', 'skip']);
+    assert.deepEqual(v.actions.filter((a) => a.primary).map((a) => a.id), ['agent-request']);
     assert.equal(v.detail, 'Takes 4 hours to 30 days after you request it.');
   });
 
@@ -355,10 +356,15 @@ describe('web exports', () => {
     assert.equal(v.status, 'Looks ready: a notification from Mail 1 h ago');
     assert.match(v.detail!, /"Your Spotify data is ready to download"/);
     assert.match(v.detail!, /check your email or Spotify to be sure/);
-    assert.equal(v.actions[0].id, 'open', 'its page, to download it');
+    assert.deepEqual(actionIds(v).slice(0, 2), ['agent-download', 'open-ready'], 'Claude downloads it, or its page');
     const stale = view('spotify', { state: asked(hoursAgo(9)) });
     assert.equal(stale.section, 'working', 'a notification from before the request means nothing');
-    assert.ok(stale.notes!.some((n) => /watches this Mac's notifications.*can miss one or guess wrong/.test(n)), 'and it says it is only a guess');
+    assert.ok(stale.notes!.some((n) => /watches Apple Mail and this Mac's notifications.*can miss one/.test(n)), 'and it says it can miss one');
+    // An email from the service itself is surer: "Ready", and its link.
+    const mailed = view('spotify', { state: state((s) => (s.sources.spotify = { requestedAt: hoursAgo(5),
+      readySignal: { at: hoursAgo(1), via: 'Mail', sender: 'Spotify', text: 'Your Spotify data is ready to download', link: 'https://www.spotify.com/account/privacy/download' } })) });
+    assert.equal(mailed.status, 'Ready: Spotify emailed you 1 h ago');
+    assert.equal(mailed.actions.find((a) => a.id === 'open-ready')?.label, 'Open the download link');
   });
 
   test('iPhone notifications on this Mac: why to turn them on, and whether they are', () => {
@@ -373,8 +379,31 @@ describe('web exports', () => {
     assert.equal(view('iphone_notifications', { state: state((s) => (s.sources.iphone_backup = { skipped: 'No iPhone' })) }).section, 'unavailable');
   });
 
-  test('every export page opens in your own browser, X included', () => {
-    for (const id of ['x', 'discord', 'google_takeout']) assert.equal(view(id).actions[0].id, 'open', id);
+  test('every export page opens in your own browser, X included, and Claude can do it for you', () => {
+    for (const id of ['x', 'discord', 'google_takeout']) assert.deepEqual(actionIds(view(id)).slice(0, 2), ['agent-request', 'open'], id);
+  });
+
+  test('with AI turned off, nothing offers to do it for you', () => {
+    const off = (more: object = {}) => view('instagram', { state: state((s) => { s.settings.aiOn = false; s.sources.instagram = more as never; }) });
+    assert.ok(!actionIds(off()).some((a) => a.startsWith('agent-')), 'no Do It for Me');
+    assert.equal(off().actions.find((a) => a.primary)?.id, 'open', 'opening the page yourself comes first');
+    assert.ok(!actionIds(off({ requestedAt: hoursAgo(30) })).some((a) => a.startsWith('agent-')), 'and no Download It for Me');
+    assert.ok(view('instagram').actions.find((a) => a.id === 'agent-request')?.ai, 'with it on (or not decided yet), it carries the AI mark');
+  });
+
+  test('Do It for Me: working in Chrome, then needs you, could not finish, or downloading', () => {
+    const with_ = (agent: object, more: object = {}) => view('instagram', { state: state((s) => (s.sources.instagram = { agent, ...more } as never)) });
+    const working = with_({ mode: 'request', status: 'running', at: hoursAgo(0), step: 'Opening Instagram\'s export page' });
+    assert.deepEqual([working.section, working.status, actionIds(working)], ['working', 'Opening Instagram\'s export page', ['agent-stop']]);
+    const needs = with_({ mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Sign in to Instagram in Chrome.', session: 's1' });
+    assert.deepEqual([needs.section, needs.status, actionIds(needs)], ['needs', 'Needs you: Sign in to Instagram in Chrome.', ['agent-continue', 'agent-dismiss']]);
+    const failed = with_({ mode: 'request', status: 'failed', at: hoursAgo(0), note: 'The page never loaded.' });
+    assert.equal(failed.status, 'Claude couldn\'t finish: The page never loaded.');
+    assert.equal(failed.actions[0].id, 'agent-request');
+    assert.equal(with_({ mode: 'request', status: 'failed', at: hoursAgo(3) }, { requestedAt: hoursAgo(1) }).status.startsWith('Requested'), true, 'requested since: that wins');
+    assert.equal(with_({ mode: 'request', status: 'needs_you', at: hoursAgo(60) }).status, 'Not requested yet', 'after two days it is old news');
+    const down = with_({ mode: 'download', status: 'downloading', at: hoursAgo(0) }, { requestedAt: hoursAgo(20) });
+    assert.deepEqual([down.section, down.status], ['working', 'Downloading in Chrome']);
   });
 
   test('requested: waiting, then ready, then late, then expired', () => {

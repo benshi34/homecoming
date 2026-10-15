@@ -26,6 +26,7 @@ There's no analytics, no account, no update check and no telemetry.
 
 It reads, and changes only what you tell it to:
 
+- **Apple Mail and notifications, read only:** while an export is on its way, the app looks for the service's "your data is ready" email in Apple Mail and for its notification, on this Mac. Nothing else in them is kept.
 - **Downloads you're expecting** move from `~/Downloads` into your library's `imports/` folder when they arrive. Files on another drive are copied, not moved. Anything you weren't expecting waits for a yes.
 - **Two settings, only if you click Keep:** Claude Code's `cleanupPeriodDays` in `~/.claude/settings.json`, so it stops deleting transcripts after 30 days, and a few lines at the end of `~/.zshrc`, marked `# Added by Homecoming`, so Terminal keeps every command and when it ran.
 - **Settings in other apps:** Messages, Safari, your iPhone and Google can delete old history. For each one, the app shows you how to keep it, and you change it there yourself.
@@ -33,6 +34,8 @@ It reads, and changes only what you tell it to:
 ## What to expect
 
 - **It takes a few days, not an afternoon.** What's on your Mac is read first, while you request the rest. Some services take hours to prepare your download and others take weeks (Spotify can take 30 days), and some links expire within days. The app tracks each one, reminds you, and picks the file up from Downloads.
+- **AI, in one place** (optional, off until you turn it on): the Setup Assistant asks once, and the AI page lets you pick the agent (Claude Code or Codex, with your own sign-in, an API key, or a model on this Mac) and turn each use on or off. Everything that uses AI carries a sparkle mark.
+- **Do It for Me** (optional): Claude Code requests each export in your Chrome, where you're signed in, and when the service's "your data is ready" email arrives in Apple Mail, it downloads it. It stops only when you need to sign in or enter a code, and carries on when you click Continue.
 - **Your iPhone** is read from an encrypted backup on this Mac, made in Finder. The app walks you through it. You'll need the backup's password, and making the backup can take a while.
 - **Free space:** the app warns you below 20 GB. A big Google or Photos download can be tens of gigabytes.
 
@@ -136,7 +139,7 @@ Each source's detail pane has a **Progress** log, and when you run from source, 
 
 - **Not signed with an Apple Developer ID yet**, so macOS asks you to allow it the first time (Open Anyway, above).
 - **Apple silicon only**, and when run from source, Python 3.14 only, for the iPhone step.
-- **It refreshes only while it's open.** Leave it open while you wait for downloads, or open it every day or two.
-- **It doesn't fill in export forms for you.** Download pages open in your browser; the steps are in the app.
+- **Running from source, it works only while it's open.** The app from the .dmg keeps working in the menu bar when you close its window, and opens at login (Settings → Keep working when the window is closed).
+- **Do It for Me needs Claude Code and the Claude in Chrome extension**, even if you pick Codex for the rest: Codex can drive a browser only inside its own app, not when another app runs it. It stops when a service wants you to sign in, enter a code or prove you're not a robot. Without it, export pages open in your browser and the steps are in the app.
 
 How it all works: [desktop/README.md](desktop/README.md).
