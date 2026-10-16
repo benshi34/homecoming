@@ -14,12 +14,14 @@ const BANNER_MS = 5200, POP_MS = 2600;
 const BANNERED = new Set(['web', 'guided', 'iphone']);
 
 // Sources that came home since the window opened (moved to done with records, or done again with more of them), and
-// on opening, those that came home while it was closed.
-export function useArrivals(sources: SourceView[]): { banners: Arrival[]; popped: Set<string>; dismiss: (key: string) => void } {
+// on opening, those that came home while it was closed. Counted from the first snapshot with the library read
+// (`loaded`): before it, everything looks empty.
+export function useArrivals(sources: SourceView[], loaded = true): { banners: Arrival[]; popped: Set<string>; dismiss: (key: string) => void } {
   const prev = useRef<Map<string, { section: string; records: number }> | null>(null);
   const [banners, setBanners] = useState<Arrival[]>([]);
   const [popped, setPopped] = useState<Set<string>>(new Set());
   useEffect(() => {
+    if (!loaded) return;
     const before = prev.current;
     prev.current = new Map(sources.map((v) => [v.id, { section: v.section, records: v.records }]));
     // The window's first look: only what came home while it was closed (main.ts marks it), never everything already here.
@@ -36,7 +38,7 @@ export function useArrivals(sources: SourceView[]): { banners: Arrival[]; popped
     const next = came.filter((v) => BANNERED.has(v.group))
       .map((v) => ({ key: `${v.id}:${now}`, id: v.id, name: v.name, group: v.group, records: v.records, first: v.first, last: v.last }));
     if (next.length) setBanners((bs) => [...bs, ...next].slice(-3));
-  }, [sources]);
+  }, [sources, loaded]);
   return { banners, popped, dismiss: (key) => setBanners((bs) => bs.filter((b) => b.key !== key)) };
 }
 

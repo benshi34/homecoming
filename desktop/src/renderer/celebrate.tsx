@@ -36,11 +36,13 @@ const years = (a?: string | null, b?: string | null) => {
 };
 
 // What changed between snapshots that's worth a moment: sources that came home, and exports just asked for. Nothing
-// on the first snapshot (what was already there isn't news).
-function useMoments(sources: SourceView[]): { now: Moment | null; done: () => void } {
+// on the first snapshot with the library read (what was already there isn't news), nor before it (everything looks
+// empty then).
+function useMoments(sources: SourceView[], loaded: boolean): { now: Moment | null; done: () => void } {
   const prev = useRef<Map<string, { section: string; records: number; requestedAt?: string }> | null>(null);
   const [queue, setQueue] = useState<Moment[]>([]);
   useEffect(() => {
+    if (!loaded) return;
     const before = prev.current;
     prev.current = new Map(sources.map((v) => [v.id, { section: v.section, records: v.records, requestedAt: v.requestedAt }]));
     if (!before) return;
@@ -50,7 +52,7 @@ function useMoments(sources: SourceView[]): { now: Moment | null; done: () => vo
     if (!home.length && !asked.length) return;
     const now = Date.now();
     // Where the whole collection stood, and stands: what the progress bar fills from and to.
-    const ago = progress(sources.map((v) => (was(v.id) ? { ...v, section: was(v.id)!.section as SourceView['section'], records: was(v.id)!.records } : v)), new Date());
+    const ago = progress(sources.map((v) => (was(v.id) ? { ...v, section: was(v.id)!.section as SourceView['section'], records: was(v.id)!.records, requestedAt: was(v.id)!.requestedAt } : v)), new Date());
     const p = progress(sources, new Date());
     const share = (x: { collected: number; applicable: number }) => (x.applicable ? x.collected / x.applicable : 0);
     const milestone = home.length ? MILESTONES.find(([at]) => share(ago) < at && share(p) >= at)?.[1] : undefined;
@@ -68,9 +70,10 @@ function useMoments(sources: SourceView[]): { now: Moment | null; done: () => vo
         sub: `${count(n)} ${n === 1 ? 'record' : 'records'}`, ...base });
     }
     if (out.length && milestone) out[out.length - 1].milestone = milestone;
-    // Asking for the last export there is to ask for is a milestone of its own.
-    const req = (x: { phases: { id: string; done: number; total: number }[] }) => x.phases.find((ph) => ph.id === 'request');
-    const allAsked = asked.length > 0 && !!req(p)?.total && req(p)!.done === req(p)!.total && req(ago)!.done < req(ago)!.total;
+    // Asking for the last export there is to ask for is a milestone of its own: one was just asked for, and now every
+    // one is (the timeline counts one Claude is asking for already, so the snapshot before can't say).
+    const req = p.phases.find((ph) => ph.id === 'request');
+    const allAsked = asked.length > 0 && !!req?.total && req.done === req.total;
     for (const v of asked) {
       const w = BY_ID[v.id]?.waitHours;
       const onWay = sources.filter((x) => x.onTheWay).length;
@@ -79,12 +82,12 @@ function useMoments(sources: SourceView[]): { now: Moment | null; done: () => vo
     }
     if (allAsked) out[out.length - 1].milestone = 'Every export is asked for!';
     setQueue((q) => [...q, ...out].slice(-4));
-  }, [sources]);
+  }, [sources, loaded]);
   return { now: queue[0] ?? null, done: () => setQueue((q) => q.slice(1)) };
 }
 
-export function Celebrations({ sources }: { sources: SourceView[] }) {
-  const { now, done } = useMoments(sources);
+export function Celebrations({ sources, loaded = true }: { sources: SourceView[]; loaded?: boolean }) {
+  const { now, done } = useMoments(sources, loaded);
   if (!now) return null;
   return <Celebration key={now.key} m={now} onDone={done} />;
 }

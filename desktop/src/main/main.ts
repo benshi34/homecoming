@@ -448,7 +448,7 @@ function snapshot(): Snapshot {
   const summary = summarize(views, stats);
   return {
     sources: views, summary, next: probe ? nextUp(views) : null, jobs,
-    settings: settingsView(), probeTime: probe?.time, corpusPath: P.corpus, readOnly: READONLY, demo: DEMO, label: LABEL, agentInstalled: agentInstalled(),
+    settings: settingsView(), probeTime: probe?.time, corpusPath: P.corpus, readOnly: READONLY, loaded: !!stats, demo: DEMO, label: LABEL, agentInstalled: agentInstalled(),
     identity: probe?.identity ?? null, identitySuggestion: probe?.identity_suggestion ?? null,
     onboarding: store.state.onboarding, accent: accentColor(), identityCandidates: candidates, identityCandidatesReady: candidatesReady, identityDismissed: store.state.identityDismissed,
     services: store.state.services, discovery: newDiscoveries(), mappings: mappings(), claude: claudeKind(),

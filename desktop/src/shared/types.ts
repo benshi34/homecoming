@@ -258,6 +258,8 @@ export interface Snapshot {
   probeTime?: string;
   corpusPath?: string;
   readOnly: boolean;
+  // The library's numbers have been read. Before that every source looks empty, so nothing is taken as just arrived.
+  loaded?: boolean;
   demo?: boolean; // a made-up library (scripts/demo.mjs)
   agentInstalled?: boolean; // Do It for Me can run: Claude Code is on this Mac (or the demo's stand-in)
   label?: string;

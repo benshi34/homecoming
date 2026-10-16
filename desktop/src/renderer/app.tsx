@@ -128,7 +128,7 @@ function App() {
       </div>
       {dragging && <div className="dropping"><div className="dropping-label">{dropLabel(snap)}</div></div>}
       {/* A source coming home, an export asked for: worth a moment, in the Setup Assistant and the window alike. */}
-      <Celebrations sources={snap.sources} />
+      <Celebrations sources={snap.sources} loaded={snap.loaded !== false} />
     </div>
   );
 }

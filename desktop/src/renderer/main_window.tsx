@@ -37,14 +37,16 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
   const selId = (selected[nav] && rows.some((r) => r.id === selected[nav])) ? selected[nav]! : rows[0]?.id;
   const view = all.find((s) => s.id === selId) ?? null;
   const prog = useMemo(() => progress(all, new Date()), [all]);
-  const { banners, popped, dismiss } = useArrivals(all);
-  // Each time another source is collected, a light sweeps along the sidebar's bar.
-  const lastCollected = useRef(prog.collected);
+  const loaded = snap.loaded !== false;
+  const { banners, popped, dismiss } = useArrivals(all, loaded);
+  // Each time another source is collected, a light sweeps along the sidebar's bar (counted once the library is read).
+  const lastCollected = useRef<number | null>(null);
   const [grew, setGrew] = useState(0);
   useEffect(() => {
-    if (prog.collected > lastCollected.current) setGrew((n) => n + 1);
+    if (!loaded) return;
+    if (lastCollected.current !== null && prog.collected > lastCollected.current) setGrew((n) => n + 1);
     lastCollected.current = prog.collected;
-  }, [prog.collected]);
+  }, [prog.collected, loaded]);
 
   // After you act on a source it moves (Needs You -> In Progress -> Collected); the selection follows it for a
   // couple of minutes instead of jumping to whatever is next in the old list.

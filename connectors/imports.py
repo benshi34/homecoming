@@ -1173,10 +1173,15 @@ def whatsapp(es, W, used):
 
 
 def slack(es, W, used):
-    users_e = next((e for e in es if e.name == "users.json"), None)
+    # Each workspace export by itself, with its own users.json: a Claude.ai export beside it has a users.json too.
     days = [e for e in es if re.search(r"(^|/)[^/]+/\d{4}-\d{2}-\d{2}\.json$", e.path)]
-    if not users_e or not days:
-        return
+    for origin in sorted({e.origin for e in days}):
+        users_e = next((e for e in es if e.name == "users.json" and e.origin == origin), None)
+        if users_e:
+            slack_workspace(users_e, [e for e in days if e.origin == origin], W, used)
+
+
+def slack_workspace(users_e, days, W, used):
     used.add(users_e.path)
     users = {u.get("id"): u.get("real_name") or (u.get("profile") or {}).get("real_name") or u.get("name") for u in users_e.json()}
     w = W("slack")
