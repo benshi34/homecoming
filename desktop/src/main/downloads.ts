@@ -67,7 +67,8 @@ interface Seen {
 }
 
 // Polls a folder (fs.watch on macOS misses some renames) and reports each finished candidate once. `also` adds
-// files the name rules don't know, e.g. a .csv named after a service you asked for its data.
+// files the name rules don't know, e.g. a .csv named after a service you asked for its data. While `active` says no
+// (Watch Downloads is off), nothing is reported or marked as reported: what's there is reported once it says yes.
 export class FolderWatcher {
   private seen = new Map<string, Seen>();
   private reported = new Set<string>();
@@ -78,14 +79,16 @@ export class FolderWatcher {
   readonly intervalMs: number;
   private onReady: (p: string, size: number) => void;
   private also: (name: string, isDir: boolean) => boolean;
+  private active: () => boolean;
 
   constructor(dir: string, onReady: (p: string, size: number) => void, settleMs = 4000, intervalMs = 3000,
-    also: (name: string, isDir: boolean) => boolean = () => false) {
+    also: (name: string, isDir: boolean) => boolean = () => false, active: () => boolean = () => true) {
     this.dir = dir;
     this.onReady = onReady;
     this.settleMs = settleMs;
     this.intervalMs = intervalMs;
     this.also = also;
+    this.active = active;
   }
 
   start() {
@@ -118,6 +121,7 @@ export class FolderWatcher {
       return;
     }
     const present = new Set<string>();
+    const active = this.active();
     for (const d of names) {
       if (!isCandidate(d.name, d.isDirectory()) && (isPartial(d.name) || !this.also(d.name, d.isDirectory()))) continue;
       const p = path.join(this.dir, d.name);
@@ -135,7 +139,7 @@ export class FolderWatcher {
         this.seen.set(p, { size, mtime, stableSince: now });
         continue;
       }
-      if (!this.reported.has(p) && now - prev.stableSince >= this.settleMs) {
+      if (active && !this.reported.has(p) && now - prev.stableSince >= this.settleMs) {
         this.reported.add(p);
         this.onReady(p, size);
       }

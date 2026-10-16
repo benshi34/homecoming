@@ -119,6 +119,22 @@ test('the watcher also takes what the app says is wanted, in any format, once fi
   assert.deepEqual(got, ['goodreads_library_export.csv'], 'not a half-downloaded one, nor one the app has no reason to want');
 });
 
+test('with Watch Downloads off, the watcher waits: what landed meanwhile is reported once it is on again', () => {
+  const got: string[] = [];
+  let on = false;
+  const w = new FolderWatcher(tmp, (p) => got.push(path.basename(p)), 0, 1000, () => false, () => on);
+  fs.writeFileSync(path.join(tmp, 'package.zip'), 'x');
+  w.scan(1);
+  w.scan(2);
+  w.scan(3);
+  assert.deepEqual(got, [], 'off: nothing reported');
+  on = true;
+  w.scan(4);
+  assert.deepEqual(got, ['package.zip'], 'on: the file that was waiting');
+  w.scan(5);
+  assert.deepEqual(got, ['package.zip'], 'and only once');
+});
+
 test('the watcher sizes folders and survives a missing directory', () => {
   const box = path.join(tmp, 'Inbox.mbox');
   fs.mkdirSync(box);

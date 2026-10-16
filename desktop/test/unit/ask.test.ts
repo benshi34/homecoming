@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { agentProfile, codexPermissions } from '../../src/main/ask.ts';
 import { resolvePaths } from '../../src/main/paths.ts';
-import { addEvent, answerOf, type AskTurn, DEFAULT_ASK, describeTool, followupPrompt, modelLabel, PROVIDERS, RECHECK_DAYS, RETENTION,
-  retentionOk, titleOf } from '../../src/shared/ask.ts';
+import { addEvent, agentNeed, type AgentState, answerOf, type AskTurn, DEFAULT_ASK, describeTool, explainError, followupPrompt, isLocalAddress, modelLabel,
+  needText, PROVIDERS, RECHECK_DAYS, RETENTION, retentionOk, titleOf } from '../../src/shared/ask.ts';
 import { blocks, embedKey, embedOf, partialEmbed } from '../../src/shared/markdown.ts';
 
 const turn = (question: string, answer: string): AskTurn => ({ question, answer, provider: 'anthropic', model: 'm', startedAt: '', events: [] });
@@ -16,7 +16,7 @@ test('every provider runs Claude Code or Codex; every cloud one says what it kee
       continue;
     }
     const r = RETENTION[p.id]!;
-    assert.ok(r.short && r.confirm && r.detail.length >= 2, p.id);
+    assert.ok(r.short && r.done && r.confirm && r.detail.length >= 2, p.id);
     assert.match(r.link.url, /^https:\/\//);
     assert.ok(r.detail.some((d) => /photos/.test(d)), `${p.id} mentions photos`);
   }
@@ -45,6 +45,54 @@ test('follow-ups carry the earlier questions and answers, newest kept when long'
   const long = followupPrompt('Q', [turn('old', 'x'.repeat(500)), turn('new', 'y'.repeat(500))], 700);
   assert.doesNotMatch(long, /\nold\n/);
   assert.match(long, /\nnew\n/);
+});
+
+test('a failed or stopped turn isn\'t sent back as an answer', () => {
+  const failed = { ...turn('Who did I text most?', 'Invalid API key · Please run /login'), error: 'Claude Code isn\'t signed in.' };
+  const stopped = { ...turn('Tell me everything', 'Half an answer'), stopped: true };
+  assert.equal(followupPrompt('Again?', [failed, stopped]), 'Again?', 'no earlier answers to bring');
+  const p = followupPrompt('And May?', [turn('April?', '120.'), failed]);
+  assert.match(p, /April\?\n\n### Your answer\n120\./);
+  assert.doesNotMatch(p, /Invalid API key|Who did I text most/);
+});
+
+test('what the chosen agent still needs: the agent, its key, a local server that answers, on this Mac', () => {
+  const v = (patch: Partial<AgentState> = {}, settings: Partial<AgentState['settings']> = {}): AgentState => ({
+    settings: { ...DEFAULT_ASK, ...settings }, installed: { 'claude-code': true, codex: true }, keys: { anthropic: false, openai: false }, ...patch });
+  assert.equal(agentNeed(v()), null, 'Claude Code with your account');
+  assert.deepEqual(agentNeed(v({ installed: { 'claude-code': false, codex: true } })), { kind: 'install', harness: 'claude-code' });
+  assert.deepEqual(agentNeed(v({}, { provider: 'anthropic' })), { kind: 'key', key: 'anthropic' });
+  assert.equal(agentNeed(v({ keys: { anthropic: true, openai: false } }, { provider: 'anthropic' })), null);
+  assert.deepEqual(agentNeed(v({ installed: { 'claude-code': true, codex: false } }, { provider: 'openai' })), { kind: 'install', harness: 'codex' }, 'the agent before its key');
+  const url = 'http://localhost:11434/v1';
+  assert.equal(agentNeed(v({}, { provider: 'local' })), null, 'not checked yet: not held up');
+  assert.equal(agentNeed(v({ local: { url, up: true, at: '' } }, { provider: 'local' })), null);
+  const down = agentNeed(v({ local: { url, up: false, at: '' } }, { provider: 'local' }))!;
+  assert.deepEqual(down, { kind: 'local', url, server: 'ollama' });
+  assert.equal(needText(down), 'Nothing is answering at localhost:11434. Open Ollama, then try again.');
+  assert.equal(agentNeed(v({ local: { url: 'http://localhost:1234/v1', up: false, at: '' } }, { provider: 'local' })), null, 'a check of another address');
+  assert.equal(agentNeed(v({}, { provider: 'local', localUrl: 'http://192.168.1.5:11434/v1' }))?.kind, 'local-address');
+  assert.equal(needText({ kind: 'key', key: 'openai' }), 'Codex needs your OpenAI API key to answer.');
+  for (const u of ['http://localhost:11434/v1', 'http://127.0.0.1:1234/v1', 'http://[::1]:8080']) assert.ok(isLocalAddress(u), u);
+  for (const u of ['http://example.com/v1', 'http://localhost.example.com', 'file:///etc', 'not a url', 'http://10.0.0.2:11434']) assert.ok(!isLocalAddress(u), u);
+});
+
+test('agents\' errors in plain words, with the way forward', () => {
+  const login = explainError('claude-code', 'Invalid API key · Please run /login\nClaude Code stopped (exit 1)');
+  assert.deepEqual(login, { text: 'Claude Code isn\'t signed in. Open Terminal, type claude, and sign in.', fix: 'sign-in' });
+  assert.deepEqual(explainError('anthropic', 'Invalid API key · Please run /login'), { text: 'Anthropic didn\'t accept the key. Check it under AI Settings.', fix: 'key' });
+  const codex = explainError('codex', 'unexpected status 401 Unauthorized: Your authentication token has expired. Please try signing in again.');
+  assert.deepEqual(codex, { text: 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.', fix: 'sign-in' });
+  assert.equal(explainError('openai', '401 Unauthorized: Incorrect API key provided').text, 'OpenAI didn\'t accept the key. Check it under AI Settings.');
+  const local = explainError('local', 'error sending request for url (http://localhost:1234/v1/responses): Connection refused (os error 61)',
+    { localUrl: 'http://localhost:1234/v1', localServer: 'lmstudio' });
+  assert.deepEqual(local, { text: 'Nothing is answering at localhost:1234. Open LM Studio, then try again.', fix: 'local' });
+  assert.deepEqual(explainError('anthropic', 'API Error: 404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-sonet-5"}}', { model: 'claude-sonet-5' }),
+    { text: 'Anthropic doesn\'t have a model called “claude-sonet-5”. Pick another under AI Settings.', fix: 'model' });
+  assert.deepEqual(explainError('anthropic', 'Add your Anthropic API key first.'), { text: 'Add your Anthropic API key first.', fix: 'key' });
+  assert.equal(explainError('claude-code', 'Traceback (most recent call last):\n  File "x.py"\njson.decoder.JSONDecodeError: Expecting value').text,
+    'Claude Code stopped before it answered.', 'a crash: the traceback only under Details');
+  assert.equal(explainError('codex', 'stream error: 429 Too Many Requests').text, 'OpenAI is busy right now. Try again in a minute.');
 });
 
 test('streamed text (Claude Code) joins up; whole messages (Codex) stay apart; the answer is what follows the last lookup', () => {

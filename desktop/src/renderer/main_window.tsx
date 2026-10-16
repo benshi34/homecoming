@@ -1,17 +1,18 @@
 // The main window, laid out like Mail or Notes: a vibrant sidebar of sections (with counts), the sources in
 // the chosen section, and the selected source on the right. Overview holds the progress timeline.
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { ago, count } from '../shared/format.ts';
-import { type Phase, progress, readyIn } from '../shared/progress.ts';
+import { type Phase, progress, readyIn, wayTag } from '../shared/progress.ts';
+import { READ_ONLY_NOTE } from '../shared/status.ts';
 import { countFor, listFor, listSummary, type Nav, navOf } from '../shared/lists.ts';
 import type { Snapshot, SourceView } from '../shared/types.ts';
-import { AiAgreement, AiPage } from './ai.tsx';
+import { AiPage, AskAiGate } from './ai.tsx';
 import { api } from './api.ts';
 import { Glyph, SourceIcon } from './icons.tsx';
 import { AskPage } from './ask.tsx';
-import { ExplorePage, Num } from './explore.tsx';
-import { Hub } from './hub.tsx';
+import { ExplorePage, exploreHome, exploreOpen, Num } from './explore.tsx';
+import { Hub, type HubFilter } from './hub.tsx';
 import { ArrivalBanners, RowCount, useArrivals, WaitClock } from './moments.tsx';
 import { AddServiceSheet, Detail, vt } from './parts.tsx';
 import { AiMark, animate, Button, Checkmark, Group, GroupRow, ProgressBar, ProgressRing, Sheet, Spinner, Toggle } from './ui.tsx';
@@ -22,7 +23,7 @@ const NAV: { id: Nav; label: string; glyph: string }[] = [
   { id: 'needs', label: 'Needs You', glyph: 'bell' },
   { id: 'working', label: 'In Progress', glyph: 'arrows' },
   { id: 'done', label: 'Collected', glyph: 'checkCircle' },
-  { id: 'unavailable', label: 'Not Available', glyph: 'minusCircle' },
+  { id: 'unavailable', label: 'Not Collecting', glyph: 'minusCircle' },
 ];
 
 export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, nav, setNav, adding, setAdding, focus }: {
@@ -48,7 +49,19 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
   // After you act on a source it moves (Needs You -> In Progress -> Collected); the selection follows it for a
   // couple of minutes instead of jumping to whatever is next in the old list.
   const follow = useRef<{ id: string; until: number } | null>(null);
+  // A source just added: shown as soon as it's in a snapshot, from wherever you added it.
+  const pending = useRef<string | null>(null);
   useEffect(() => {
+    const p = pending.current && all.find((s) => s.id === pending.current);
+    if (p) {
+      pending.current = null;
+      const n = navOf(p);
+      animate(() => {
+        setNav(n);
+        setSelected((s) => ({ ...s, [n]: p.id }));
+      });
+      return;
+    }
     const f = follow.current;
     if (!f || Date.now() > f.until || nav === 'overview' || nav === 'ask' || nav === 'explore' || rows.some((r) => r.id === f.id)) return;
     const v = all.find((s) => s.id === f.id);
@@ -62,6 +75,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
 
   const go = (n: Nav, id?: string) => {
     if (follow.current && follow.current.id !== id) follow.current = null;
+    if (pending.current && pending.current !== id) pending.current = null; // you went somewhere else meanwhile
     animate(() => {
       setNav(n);
       if (id) setSelected((s) => ({ ...s, [n]: id }));
@@ -88,10 +102,32 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
     found: snap.discovery?.found.length ?? 0,
     hub: 0,
   };
-  // A service just added (here or from the menu) is selected once it shows up.
+  // A service just added (here, from the hub or from the menu) is shown once it's in the list, wherever you were.
   const added = (id: string) => {
     follow.current = { id, until: Date.now() + 120_000 };
-    jump(id);
+    if (all.some((s) => s.id === id)) jump(id);
+    else pending.current = id;
+  };
+  const [addName, setAddName] = useState('');
+  const addOther = (q?: string) => {
+    setAddName(q ?? '');
+    setAdding(true);
+  };
+  // The hub's tabs and the sidebar agree: In Your Data is Found in Your Data; the others are All Sources.
+  const [hubFilter, setHubFilter] = useState<HubFilter>('all');
+  const onHubFilter = (f: HubFilter) => {
+    if (f === 'found') return go('found');
+    setHubFilter(f);
+    if (nav !== 'hub') go('hub');
+  };
+  // Up and down arrows move through the list, as in Mail.
+  const onListKey = (e: KeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const i = rows.findIndex((r) => r.id === selId);
+    const next = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (next) pick(next.id);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-testid="row-${next?.id}"]`)?.focus());
   };
 
   return (
@@ -100,16 +136,17 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
         <div className="no-drag">
           <SideItem id="overview" label="Overview" glyph="gauge" nav={nav} onClick={() => go('overview')} />
           <SideItem id="ask" label="Ask" glyph="bubble" nav={nav} onClick={() => go('ask')} />
-          <SideItem id="explore" label="Explore" glyph="compass" nav={nav} onClick={() => go('explore')} />
-          <SideItem id="ai" label="AI" glyph="sparkle" icon={<AiMark size={16} />} nav={nav} onClick={() => go('ai')} />
+          {/* On Explore already: back to its home page, as a tab bar does. */}
+          <SideItem id="explore" label="Explore" glyph="compass" nav={nav} onClick={() => (nav === 'explore' ? exploreHome() : go('explore'))} />
           <div className="sidebar-section">Sources</div>
           {NAV.map((n) => <SideItem key={n.id} id={n.id} label={n.label} glyph={n.glyph} nav={nav} count={counts[n.id]} alert={n.id === 'needs'} onClick={() => go(n.id)} />)}
+          {/* Every source there is, yours or not yet, and the ones your data points to: adding one starts on that page. */}
+          <SideItem id="hub" label="All Sources" glyph="layers" nav={nav} onClick={() => go('hub')} />
+          <SideItem id="found" label="Found in Your Data" glyph="search" nav={nav} count={counts.found || undefined} onClick={() => go('found')} />
           <div className="sidebar-section">This Mac</div>
           <SideItem id="setup" label="Setup Checks" glyph="gear" nav={nav} count={counts.setup || undefined} alert onClick={() => go('setup')} />
-          <div className="sidebar-section">Other Accounts</div>
-          <SideItem id="hub" label="All Services" glyph="layers" nav={nav} onClick={() => go('hub')} />
-          <SideItem id="found" label="Found in Your Data" glyph="search" nav={nav} count={counts.found || undefined} onClick={() => go('found')} />
-          <div className="side-item" onClick={() => setAdding(true)} data-testid="nav-add-service"><Glyph name="plus" size={16} /><span>Add Another Service…</span></div>
+          <div className="sidebar-section">Settings</div>
+          <SideItem id="ai" label="AI Settings" glyph="sparkle" icon={<AiMark size={16} />} nav={nav} onClick={() => go('ai')} />
         </div>
         <div className="sidebar-foot no-drag" data-testid="sidebar-progress">
           <Num value={prog.collected} /> of {prog.applicable} sources collected
@@ -125,21 +162,19 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
       ) : nav === 'ask' && snap.settings.aiOn !== true ? (
         <div className="column grouped">
           <Toolbar title="Ask" onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
-          {snap.settings.aiOn === false ? (
-            <div className="scroll"><div className="empty" data-testid="ask-ai-off"><AiMark size={30} /><h2>AI is off</h2>Ask uses an AI agent to look things up in your data.
-              <div style={{ marginTop: 12 }}><Button ai onClick={() => go('ai')} testAction="open-ai">Turn It On in AI…</Button></div></div></div>
-          ) : <div className="scroll"><div className="ai-page"><AiAgreement snap={snap} /></div></div>}
+          <div className="scroll"><AskAiGate snap={snap} onSettings={() => go('ai')} /></div>
         </div>
       ) : nav === 'ask' ? (
         <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
       ) : nav === 'ai' ? (
         <AiPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
       ) : nav === 'explore' ? (
-        <ExplorePage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
+        <ExplorePage snap={snap} onSource={jump} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
       ) : nav === 'found' || nav === 'hub' ? (
         <div className="column grouped">
-          <Toolbar title={nav === 'hub' ? 'All Services' : 'Found in Your Data'} onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
-          <div className="scroll"><Hub snap={snap} filter={nav === 'found' ? 'found' : 'all'} onOpen={added} onAddOther={() => setAdding(true)} /></div>
+          <Toolbar title={nav === 'hub' ? 'All Sources' : 'Found in Your Data'} onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
+          <div className="scroll"><Hub snap={snap} filter={nav === 'found' ? 'found' : hubFilter} onOpen={added} onAdded={(ids) => ids.length > 1 && added(ids[0])}
+            onAddOther={addOther} onFilter={onHubFilter} /></div>
         </div>
       ) : (
         <>
@@ -151,7 +186,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
               </div>
             </div>
             <div className="scroll" style={vt('list')}>
-              <div className="list" data-testid="sections">
+              <div className="list" data-testid="sections" onKeyDown={onListKey}>
                 {groups.filter((g) => g.rows.length).map((g) => (
                   <div key={g.title ?? 'main'} data-group={g.title ?? 'main'}>
                     {g.title && <div className="list-section">{g.title}</div>}
@@ -166,13 +201,14 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
           <div className="column grouped" data-testid="right">
             <Toolbar onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
             <div className="scroll">
-              <div style={vt('detail')}>{view ? <Detail key={view.id} snap={snap} view={view} onActed={(id) => (follow.current = { id, until: Date.now() + 120_000 })} /> : <div className="empty">Nothing selected.</div>}</div>
+              <div style={vt('detail')}>{view ? <Detail key={view.id} snap={snap} view={view} onActed={(id) => (follow.current = { id, until: Date.now() + 120_000 })}
+                onExplore={(page) => { exploreOpen(page); go('explore'); }} /> : null}</div>
             </div>
           </div>
         </>
       )}
       <ArrivalBanners banners={banners} onOpen={jump} onDismiss={dismiss} />
-      {adding && <AddServiceSheet onClose={() => setAdding(false)} onAdded={added} />}
+      {adding && <AddServiceSheet initialName={addName} onClose={() => setAdding(false)} onAdded={added} />}
       {settingsOpen && <SettingsSheet snap={snap} onClose={() => setSettingsOpen(false)} onAssistant={() => { setSettingsOpen(false); onAssistant(); }} />}
     </div>
   );
@@ -180,7 +216,8 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
 
 function SideItem({ id, label, glyph, icon, nav, count: n, alert, onClick }: { id: Nav; label: string; glyph: string; icon?: ReactNode; nav: Nav; count?: number; alert?: boolean; onClick: () => void }) {
   return (
-    <div className={`side-item ${nav === id ? 'selected' : ''}`} onClick={onClick} data-testid={`nav-${id}`}>
+    <div className={`side-item ${nav === id ? 'selected' : ''}`} onClick={onClick} data-testid={`nav-${id}`} role="button" tabIndex={0} aria-current={nav === id ? 'page' : undefined}
+      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onClick())}>
       {icon ?? <Glyph name={glyph} size={16} />}
       <span>{label}</span>
       {n !== undefined && n > 0 && <span className={`count ${alert ? 'alert' : ''}`}>{n}</span>}
@@ -193,7 +230,7 @@ function Toolbar({ title, snap, onAssistant, onSettings }: { title?: string; sna
     <div className="toolbar drag">
       {title && <h1>{title}</h1>}
       {snap.label && <span className="tag" data-testid="label">{snap.label}</span>}
-      {snap.readOnly && <span className="tag">Read-only</span>}
+      {snap.readOnly && !snap.demo && <span className="tag">Read-only</span>}
       <div className="spacer" />
       {snap.jobs.length > 0 && <span className="sub no-drag" style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 6 }}><Spinner size={12} />{snap.jobs[0].label}</span>}
       <ToolbarButtons onAssistant={onAssistant} onSettings={onSettings} />
@@ -216,7 +253,8 @@ function Row({ v, selected, onSelect, unlocks, needsYou, popped }: { v: SourceVi
     : v.section === 'done' && v.group !== 'setup' && v.records > 0 ? <RowCount v={v} popped={!!popped} /> : v.waiting ? <WaitClock size={15} started={v.requestedAt} />
       : v.section === 'working' ? <Spinner size={13} /> : null;
   return (
-    <div className={`lrow ${selected ? 'selected' : ''} ${popped ? 'arrived' : ''}`} onClick={() => onSelect(v.id)} data-testid={`row-${v.id}`} data-section={v.section} style={vt(`row-${v.id}`)}>
+    <div className={`lrow ${selected ? 'selected' : ''} ${popped ? 'arrived' : ''}`} onClick={() => onSelect(v.id)} data-testid={`row-${v.id}`} data-section={v.section} style={vt(`row-${v.id}`)}
+      role="option" aria-selected={selected} tabIndex={selected ? 0 : -1} onFocus={() => !selected && onSelect(v.id)}>
       <SourceIcon id={v.id} group={v.group} size={28} />
       <div className="main">
         <div className="name"><span className="n">{v.name}</span>{v.tag && <span className="tag">{v.tag}</span>}</div>
@@ -235,7 +273,7 @@ function EmptyList({ nav }: { nav: Nav }) {
     needs: ['Nothing needs you', 'Everything that needs a hand is done or on its way.'],
     working: ['Nothing in progress', 'Reading and imports show up here while they run.'],
     done: ['Nothing collected yet', 'Sources land here as they\'re read.'],
-    unavailable: ['Everything is available', 'Sources that aren\'t on this Mac, or that you skip, show up here.'],
+    unavailable: ['Collecting everything', 'Sources you skip, and ones that aren\'t on this Mac, show up here. You can include any of them again.'],
   };
   const [h, p] = text[nav] ?? ['', ''];
   return <div className="empty appear"><h2>{h}</h2>{p}</div>;
@@ -280,7 +318,7 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
             <div className="pct-sub">collected</div>
           </ProgressRing>
           <div>
-            <h2>{prog.collected} of {prog.applicable} sources in your corpus</h2>
+            <h2>{prog.collected} of {prog.applicable} sources in your library</h2>
             <p>{prog.toDo ? `${prog.toDo} ${prog.toDo === 1 ? 'thing needs' : 'things need'} you` : 'Nothing needs you right now'}{prog.waiting.length ? ` · ${prog.waiting.length} ${prog.waiting.length === 1 ? 'export' : 'exports'} on the way` : ''}.</p>
             <div className="ov-stats">
               <span><b>{count(snap.summary.records)}</b> records</span>
@@ -310,7 +348,8 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
             <Checkmark size={28} />
             <div style={{ flex: 1 }}>
               <div className="title">{prog.waiting.length ? 'Waiting on exports' : 'All caught up'}</div>
-              <div className="status">{prog.waiting.length ? 'Each export is imported as soon as it lands in Downloads.' : 'Everything available is in your corpus.'}</div>
+              <div className="status">{prog.waiting.length ? (snap.settings.watchDownloads ? 'Each export is imported as soon as it lands in Downloads.' : 'When each one comes, add it on its page (Watch Downloads is off in Settings).')
+                : 'Everything available is in your library.'}</div>
             </div>
           </div>
         )}
@@ -324,15 +363,16 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
         <Group title="On the way" testId="waiting">
           {prog.waiting.map((w) => {
             const v = snap.sources.find((s) => s.id === w.id)!;
+            const tag = wayTag(w);
             return <GroupRow key={w.id} icon={<SourceIcon id={w.id} size={24} />} title={w.name}
               subtitle={`Requested ${ago(v.requestedAt, now)} · ${readyIn(w, now)}`} onClick={() => onJump(w.id)}
-              trailing={w.ready ? <span className="tag" style={{ background: 'color-mix(in srgb, var(--green) 20%, transparent)', color: 'var(--green)' }}>Ready</span> : undefined} />;
+              trailing={tag ? <span className="tag" data-testid={`way-${w.id}`} style={{ background: `color-mix(in srgb, var(--${tag.color}) 20%, transparent)`, color: `var(--${tag.color})` }}>{tag.text}</span> : undefined} />;
           })}
         </Group>
       )}
 
       {!snap.onboarding.done && (
-        <div style={{ marginTop: 18, textAlign: 'center' }}><Button onClick={onAssistant}>Continue in the Setup Assistant</Button></div>
+        <div style={{ marginTop: 18, textAlign: 'center' }}><Button onClick={onAssistant} testAction="continue-assistant">Continue in the Setup Assistant</Button></div>
       )}
     </div>
   );
@@ -342,24 +382,43 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
 
 function SettingsSheet({ snap, onClose, onAssistant }: { snap: Snapshot; onClose: () => void; onAssistant: () => void }) {
   const s = snap.settings;
+  // Read-only mode: settings that would change what's kept are shown, not changed.
+  const locked = snap.readOnly && !snap.demo;
+  const lock = (t: ReactNode) => (locked ? <span title={READ_ONLY_NOTE} style={{ opacity: 0.45, pointerEvents: 'none' }}>{t}</span> : t);
+  // Claude's checks need it to download what it finds, and Claude Code.
+  const agent = s.aiOn === true && !!s.agentExports && s.agentDownloads !== false && snap.agentInstalled !== false;
   return (
     <Sheet onClose={onClose} testId="settings" width={500}>
       <h2>Settings</h2>
       <div className="group-box" style={{ marginTop: 10 }}>
         <GroupRow title="Read this Mac every day" subtitle="Screen Time, Chrome and the call log forget history. Each run keeps what it saw."
-          trailing={<Toggle checked={s.autoRefresh} onChange={(v) => void api.settings({ autoRefresh: v })} label="Read this Mac every day" />} />
-        <GroupRow title="Watch Downloads for exports" subtitle="Finished exports are recognized and imported."
-          trailing={<Toggle checked={s.watchDownloads} onChange={(v) => void api.settings({ watchDownloads: v })} label="Watch Downloads" />} />
-        <GroupRow title="Keep working when the window is closed" subtitle="Homecoming stays in the menu bar, reading this Mac and watching for exports, and opens at login."
+          trailing={lock(<Toggle checked={s.autoRefresh} onChange={(v) => void api.settings({ autoRefresh: v })} label="Read this Mac every day" />)} />
+        <GroupRow title="Watch Downloads for exports"
+          subtitle={s.watchDownloads ? 'An export you asked for is imported as it lands in Downloads. Any other waits on its page for you to say yes.'
+            : 'Off: add each download on its page. What Claude downloads for you is still read.'}
+          trailing={lock(<Toggle checked={s.watchDownloads} onChange={(v) => void api.settings({ watchDownloads: v })} label="Watch Downloads" testId="toggle-watch" />)} />
+        <GroupRow title="Keep working when the window is closed" subtitle="Homecoming stays in the menu bar, reading this Mac and watching for your exports."
           trailing={<Toggle checked={!!s.background} onChange={(v) => void api.settings({ background: v })} label="Keep working when closed" testId="toggle-background" />} />
+        <GroupRow title="Open at login" subtitle={s.background ? 'Starts in the menu bar when you log in.' : 'Opens Homecoming when you log in.'}
+          trailing={<Toggle checked={!!s.openAtLogin} onChange={(v) => void api.settings({ openAtLogin: v })} label="Open at login" testId="toggle-login" />} />
       </div>
 
       <div className="group-box" style={{ marginTop: 12 }}>
-        <GroupRow title="Corpus" subtitle={<code className="selectable">{snap.corpusPath}</code>} />
+        <GroupRow title="Look for exports every few hours" testId="settings-checks"
+          subtitle={agent ? 'While an export is on its way, Claude opens Chrome now and then to check the service\'s page, or your webmail for the email saying it\'s ready, and downloads it.'
+            : 'Needs Do It for Me, with downloads on, in AI Settings.'}
+          trailing={agent ? lock(<Toggle checked={s.agentChecks !== false} onChange={(v) => void api.settings({ agentChecks: v })} label="Look for exports every few hours" testId="toggle-checks" />)
+            : <span className="tag">Off</span>} />
+        <GroupRow title="AI and Do It for Me…" subtitle="Which agent does the work, and what uses it." testId="settings-ai"
+          onClick={() => { onClose(); void api.action('*', 'show-ai'); }} />
+      </div>
+
+      <div className="group-box" style={{ marginTop: 12 }}>
+        <GroupRow title="Your library" subtitle={<code className="selectable">{snap.corpusPath}</code>} />
       </div>
       <div className="sheet-actions" style={{ justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button onClick={() => void api.action('*', 'run-all-mac')} disabled={snap.readOnly}>Read This Mac Now</Button>
+          <Button onClick={() => void api.action('*', 'run-all-mac')} disabled={snap.readOnly} title={locked ? READ_ONLY_NOTE : undefined}>Read This Mac Now</Button>
           <Button onClick={onAssistant}>Setup Assistant…</Button>
         </div>
         <Button kind="primary" onClick={onClose}>Done</Button>

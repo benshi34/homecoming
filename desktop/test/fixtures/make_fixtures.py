@@ -8,6 +8,7 @@ the Mac connectors read, so the real parsers run on them.
     make_fixtures.py ask-corpus <dir> a small indexed corpus (corpus.db) for the Ask assistant
 """
 
+import collections
 import datetime as dt
 import io
 import json
@@ -370,6 +371,131 @@ def explore_corpus(corpus):
     return str(corpus)
 
 
+def media_corpus(corpus):
+    """A corpus for Explore's Listening, Moving and Sleep, Curiosity and Watching (times UTC; tests run with
+    UMP_TZ=UTC): songs from Spotify (one skipped), the Mac's Now Playing (Spotify, and Netflix, which is watching) and
+    YouTube's artist channels; videos from YouTube, Netflix on the iPhone; searches from Google and Safari (one in both
+    a minute apart, one inside Gmail) about sourdough in 2024 and Tokyo in 2025, before a trip there; Health's days
+    and nights. Everyone is made up."""
+    corpus = Path(corpus)
+    norm = corpus / "normalized"
+    norm.mkdir(parents=True, exist_ok=True)
+    (corpus / "identity.json").write_text(json.dumps({"names": ["Ada Lovelace"], "emails": ["ada@example.com"], "usernames": [], "phones": []}))
+    n = iter(range(1, 10 ** 6))
+    sets = collections.defaultdict(list)
+
+    def add(source, **f):
+        sets[source].append({"id": f"{source}-{next(n)}", "source": source, "kind": f.pop("kind", "record"), "author": "me", "is_me": True, **f})
+
+    def song(ts, track, artist, seconds=200):
+        add("spotify", kind="media", ts=ts, title=track, text=f"{track} — {artist} (Spotify)", meta={"artist": artist, "seconds": seconds})
+
+    # The Weavers all spring 2025, then the Looms all summer: two eras. A song on repeat one day; a skip that isn't a play.
+    for i in range(30):
+        song(f"2025-02-{i % 27 + 1:02d}T08:{i % 60:02d}:00Z", ["Warp", "Weft", "Shuttle"][i % 3], "The Weavers")
+    for i in range(40):
+        song(f"2025-07-{i % 30 + 1:02d}T21:{i % 60:02d}:00Z", ["Bobbin", "Spindle"][i % 2], "The Looms")
+    for i in range(5):
+        song(f"2025-07-04T1{i}:00:00Z", "Spindle", "The Looms")
+    song("2025-07-05T10:00:00Z", "Warp", "The Weavers", seconds=12)
+    for i in range(3):
+        add("app_usage", kind="media", ts=f"2025-08-0{i + 1}T09:00:00Z", title="Loom Song", meta={"app": "Spotify", "artist": "Ada's Band", "duration": 180})
+    add("app_usage", kind="media", ts="2025-08-04T22:00:00Z", title="Our Planet", meta={"app": "Netflix", "artist": None, "duration": 3000})
+    for i in range(2):
+        add("google_activity", kind="media", ts=f"2025-09-0{i + 1}T20:00:00Z", title="Warp (Official Audio)", text="Warp (Official Audio)\nThe Weavers - Topic",
+            url="https://www.youtube.com/watch?v=w1", meta={"product": "YouTube"})
+    # Videos: a channel watched night after night, one of them twice; a long night of it.
+    for i in range(6):
+        add("google_activity", kind="media", ts=f"2025-10-0{i + 1}T23:00:00Z", title=f"How engines work {i % 5}",
+            text=f"How engines work {i % 5}\nEngine Lab", url="https://www.youtube.com/watch?v=e{i}", meta={"product": "YouTube"})
+    for i, ts in enumerate(["2025-10-10T20:30:00Z", "2025-10-10T21:30:00Z", "2025-10-10T22:30:00Z", "2025-10-10T23:30:00Z", "2025-10-11T00:30:00Z"]):
+        add("google_activity", kind="media", ts=ts, title=f"Gears, part {i}", text=f"Gears, part {i}\nEngine Lab",
+            url=f"https://www.youtube.com/watch?v=g{i}", meta={"product": "YouTube"})
+    for ep in (1, 2):
+        add("phone_netflix", kind="media", ts=f"2025-11-0{ep}T21:00:00Z", title=f"Our Planet: Season 1: Episode {ep}",
+            meta={"artifact": "netflix", "fields": {"Displayed Title": f"Our Planet: Season 1: Episode {ep}"}})
+    # Searches: sourdough in 2024, Tokyo in 2025 (in the weeks before the trip), some every year.
+    for i, q in enumerate(["sourdough starter", "sourdough starter feeding", "how to make sourdough starter", "sourdough starter smells",
+                           "sourdough starter jar", "why is my sourdough starter flat"]):
+        add("google_activity", kind="search", ts=f"2024-05-{i + 1:02d}T12:00:00Z", title=q, text=q, meta={"product": "Search"})
+    for i, q in enumerate(["tokyo ramen", "tokyo hotels", "tokyo subway map", "is the tokyo jr pass worth it", "tokyo cherry blossoms", "tokyo in march"]):
+        add("google_activity", kind="search", ts=f"2025-03-0{i + 1}T12:00:00Z", title=q, text=q, meta={"product": "Search"})
+    add("browser_history", kind="search", ts="2025-03-01T12:00:30Z", title="tokyo ramen", text="tokyo ramen", url="https://www.google.com/search?q=tokyo+ramen")
+    add("google_activity", kind="search", ts="2025-03-02T13:00:00Z", title="invoice from tokyo hotel", text="invoice from tokyo hotel", meta={"product": "Gmail"})
+    for y in (2024, 2025):
+        for i in range(4):
+            add("google_activity", kind="search", ts=f"{y}-0{i + 6}-01T09:00:00Z", title="weather", text="weather", meta={"product": "Search"})
+    # Home in Princeton, then Tokyo for three days: a trip.
+    for d in ("2025-01-05", "2025-01-20", "2025-02-11", "2025-03-01", "2025-04-02", "2025-04-20"):
+        add("photos", kind="photo", ts=f"{d}T15:00:00Z", title="Princeton", text="Photo\nPlace: Princeton, New Jersey, United States", meta={"lat": 40.35, "lon": -74.66})
+    for d in ("2025-03-20", "2025-03-21", "2025-03-22"):
+        add("photos", kind="photo", ts=f"{d}T03:00:00Z", title="Shinjuku", text="Photo\nPlace: Shinjuku, Tokyo, Japan", meta={"lat": 35.69, "lon": 139.70, "timezone": "Asia/Tokyo"})
+    # Health: 20 days, the three in Tokyo over 10,000 steps (a streak), and 15 nights, bedtime past midnight on weekends.
+    for i in range(20):
+        d = f"2025-03-{i + 3:02d}"
+        steps = 15000 + i if d in ("2025-03-20", "2025-03-21", "2025-03-22") else 6000 + i * 10
+        add("health", kind="health_day", ts=f"{d}T00:00:00", title=f"Health {d}", text=f"Health {d}", meta={"steps": steps, "distance_km": steps * 0.0007, "flights": 3})
+    for i in range(15):
+        day = 3 + i
+        late = i % 7 in (4, 5)
+        start = f"2025-03-{day:02d}T23:30:00Z" if not late else f"2025-03-{day + 1:02d}T01:00:00Z"
+        end = f"2025-03-{day + 1:02d}T07:00:00Z" if not late else f"2025-03-{day + 1:02d}T09:00:00Z"
+        add("health", kind="sleep", ts=start, ts_end=end, title="Sleep", text="Slept", meta={"asleep_min": 420 if not late else 470, "tz": "UTC"})
+    add("health", kind="sleep", ts="2025-03-10T14:00:00Z", ts_end="2025-03-10T14:40:00Z", title="Nap", text="Slept", meta={"asleep_min": 40, "tz": "UTC"})
+    for source, rows in sets.items():
+        with (norm / f"{source}.jsonl").open("w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+    env = {**os.environ, "CORPUS_DIR": str(corpus)}
+    subprocess.run([sys.executable, str(REPO / "connectors" / "build_index.py")], check=True, env=env, capture_output=True)
+    return str(corpus)
+
+
+def ads_corpus(corpus):
+    """A corpus for Explore's What They Know, written the way connectors/imports.py writes the exports' ads files:
+    advertisers on Facebook and Instagram (one on both, one by two routes) and X, what each service decided (an X
+    interest turned off, LinkedIn targeting), a company that told Facebook what you did (and an older import's record
+    of another, kept under its file), ads on Instagram and X, Google ad activity, and email from one advertiser."""
+    corpus = Path(corpus)
+    norm = corpus / "normalized"
+    norm.mkdir(parents=True, exist_ok=True)
+    (corpus / "identity.json").write_text(json.dumps({"names": ["Ada Lovelace"], "emails": ["ada@example.com"], "usernames": [], "phones": []}))
+    n = iter(range(1, 10 ** 6))
+    sets = collections.defaultdict(list)
+
+    def add(source, kind, **f):
+        sets[source].append({"id": f"{source}-{next(n)}", "source": source, "kind": kind, "author": f.pop("author", "x"), "is_me": False, **f})
+
+    for site in ("facebook", "instagram"):
+        svc = site.title()
+        add(f"{site}_activity", "advertiser", title="Acme Outdoor", text="", meta={"how": "list", "service": svc})
+        add(f"{site}_activity", "advertiser", title="Acme Outdoor", text="", meta={"how": "activity", "service": svc})
+    add("facebook_activity", "advertiser", title="Night Owl Games", text="", meta={"how": "activity", "service": "Facebook"})
+    add("x", "advertiser", title="@acmeoutdoor", text="", meta={"how": "lookalike", "service": "X"})
+    add("facebook_activity", "inference", title="Frequent travelers", text="", meta={"what": "category", "service": "Facebook"})
+    add("instagram_activity", "inference", title="Frequent travelers", text="", meta={"what": "category", "service": "Instagram"})  # Meta's one profile
+    add("instagram_activity", "inference", title="Rock climbing", text="", meta={"file": "interest_categories"})  # an older import: no what
+    add("x", "inference", title="female", text="", meta={"what": "gender", "service": "X"})
+    add("x", "inference", title="Golf", text="", meta={"what": "interest", "service": "X", "turned_off": True})
+    add("linkedin", "inference", title="Python", text="", meta={"what": "Member Skills", "service": "LinkedIn"})
+    add("linkedin", "inference", title="ad targeting", text="LinkedIn ad targeting\nMember Age: 25 to 34", meta={"file": "ad_targeting.csv"})  # an older import's whole file
+    add("facebook_activity", "off_platform", title="Night Owl Games", ts="2026-01-03T00:00:00Z", text="",
+        meta={"service": "Facebook", "events": [{"type": "PURCHASE", "ts": "2026-01-01T00:00:00Z"}, {"type": "PAGE_VIEW", "ts": "2026-01-03T00:00:00Z"}]})
+    add("facebook_activity", "record", title="Corner Bakery", text="Facebook your activity off meta technologies\nTitle: Corner Bakery\nEvent: PAGE_VIEW\nEvent: PURCHASE",
+        meta={"file": "your_activity_off_meta_technologies"})
+    add("instagram_activity", "ad", title="Acme Outdoor", ts="2026-01-02T10:00:00Z", text="", meta={"service": "Instagram"})
+    add("instagram_activity", "ad", title="Acme Outdoor", ts="2026-02-02T10:00:00Z", text="", meta={"service": "Instagram"})
+    add("x", "ad", title="Corner Bakery", ts="2026-02-03T10:00:00Z", text="", meta={"service": "X", "why": ["Locations: Chicago"]})
+    add("google_activity", "activity", title="Viewed an ad", ts="2026-02-04T10:00:00Z", text="", meta={"product": "Ads"})
+    add("gmail", "email", title="Your order", ts="2026-01-05T10:00:00Z", text="", meta={"from": "Acme Outdoor <orders@acme-outdoor.example>"})
+    for source, rows in sets.items():
+        with (norm / f"{source}.jsonl").open("w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+    subprocess.run([sys.executable, str(REPO / "connectors" / "build_index.py")], check=True, env={**os.environ, "CORPUS_DIR": str(corpus)}, capture_output=True)
+    return str(corpus)
+
+
 if __name__ == "__main__":
     cmd, target = sys.argv[1], sys.argv[2]
     if cmd == "exports":
@@ -380,5 +506,7 @@ if __name__ == "__main__":
         print(json.dumps({"backup": backup(target)}))
     elif cmd == "ask-corpus":
         print(json.dumps({"corpus": ask_corpus(target)}))
+    elif cmd == "media-corpus":
+        print(media_corpus(target))
     elif cmd == "explore-corpus":
         print(json.dumps({"corpus": explore_corpus(target)}))

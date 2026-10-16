@@ -12,6 +12,10 @@ open it.
     python3 explore.py firsts               firsts: each person, country, city, project and app
     python3 explore.py made                 what you made, day by day: code, writing, posts, photos
     python3 explore.py groups               every group chat, from any app: who talks, when, its own words and emoji
+    python3 explore.py listening            the music you played: artists and songs by year, your eras, songs on repeat
+    python3 explore.py movement             your steps and sleep over the years: best days, streaks, bedtimes, trips
+    python3 explore.py curiosity            what you searched for: each year's own topics, questions, searches before trips
+    python3 explore.py watching             what you watched: channels and shows, rewatches, late nights
     python3 explore.py journeys             every time you went somewhere far, worked out from where your photos (or
                                             anything else with a location) were made; which of them were flights
     python3 explore.py year [YYYY]          a year as a story: people, trips, distance, photos, what you made, steps;
@@ -50,7 +54,7 @@ REPO = Path(os.environ.get("UMP_REPO") or Path(__file__).resolve().parents[2])
 CORPUS = Path(os.environ.get("CORPUS_DIR") or REPO / "corpus")
 DB = CORPUS / "corpus.db"
 CACHE = Path(os.environ.get("UMP_EXPLORE_CACHE") or Path(tempfile.gettempdir()) / "ump-explore")
-VERSION = 1  # bump when an artifact's shape changes, so old cached results aren't served
+VERSION = 2  # bump when an artifact's shape changes, so old cached results aren't served
 
 CHATS = ("imessage", "instagram", "messenger", "discord", "phone_whatsapp")
 ONE_SIDED = {"discord"}  # exports that keep only your own messages
@@ -215,16 +219,37 @@ Trinidad and Tobago|Tunisia|Turkey|Türkiye|Turkmenistan|Turks and Caicos Island
 United Kingdom|United States|U.S. Virgin Islands|Uruguay|Uzbekistan|Vanuatu|Vatican City|Venezuela|Vietnam|Yemen|Zambia|Zimbabwe""".replace("\n", "").split("|"))
 
 
+# Parts of a place line that are a county or the like, between a city and its state.
+SUBREGION = re.compile(r"\b(County|Parish|Borough|Prefecture|Province|Oblast|Municipality)$", re.I)
+
+
 def place_parts(text):
-    """'Photo\\nPlace: Kyoto, Kansai, Japan\\n...' -> ('Kyoto', 'Japan'): the
-    place's own name (first) and its country, the last part that is one (None when no part is)."""
+    """'Photo\\nPlace: Golden Gate Park, San Francisco, California, United States\\n...' -> ('San Francisco',
+    'United States'): the city, and the country (the last part that is one; None when no part is). Photos lists a
+    place from the most particular (a park, a neighborhood) out to the country, a state or region just before it; the
+    city is the part before the region. A city that is its own region is named twice ("Tokyo, Tokyo, Japan"). With
+    only two parts there's no telling a neighborhood and its city from a city and its state: the first, then."""
     m = re.search(r"^Place: (.+)$", text or "", re.M)
     if not m:
         return None, None
     parts = [p.strip() for p in m.group(1).split(",") if p.strip()]
     country = next((p for p in reversed(parts) if p in COUNTRIES), None)
-    first = parts[0] if parts and parts[0] != country else None
-    return first, country
+    if country:
+        parts = parts[:parts.index(country)]
+    twice = next((a for a, b in zip(parts, parts[1:]) if a.casefold() == b.casefold()), None)
+    if twice:
+        return twice, country
+    parts = [p for p in parts if not SUBREGION.search(p)] or parts
+    if not parts:
+        return None, country
+    return (parts[-2] if len(parts) >= 3 else parts[0]), country
+
+
+def spot_of(text):
+    """A place line's first part, the most particular ("the West Loop"): for a day's photos, where in town."""
+    m = re.search(r"^Place: ([^,\n]+)", text or "", re.M)
+    p = m.group(1).strip() if m else None
+    return None if not p or p in COUNTRIES else p
 
 
 def people_in_photo(text):
@@ -379,7 +404,7 @@ def _people(con, mine, pg):
         p["years"] = {str(y): n for y, n in sorted(p["years"].items())}
         p["call_minutes"] = round(p["call_minutes"])
         out.append(p)
-    out.sort(key=lambda p: -(p["messages"] + 20 * p["calls"]))
+    out.sort(key=lambda p: (-p["messages"], -p["calls"], p["name"].casefold()))  # most messages first, as the page says
     years = sorted({int(y) for p in out for y in p["years"]})
     circle = {}
     for y in years:
@@ -460,7 +485,7 @@ def _person(con, mine, k, entry, keys, photo_keys, pg):
         first_of.setdefault(t.date().isoformat(), rowid)
     busiest = [{"date": d, "messages": n, "rowid": first_of[d]} for d, n in days.most_common(8)]
     return {"key": k, "name": name, "months": {m: dict(c) for m, c in sorted(months.items())}, "hours": hours,
-            "calls": calls[-200:], "call_count": len(calls), "photos": photos[-60:], "photo_count": len(photos),
+            "calls": calls[-200:], "call_count": len(calls), "photos": photos, "photo_count": len(photos),
             "busiest_days": busiest, "first": sample[0][1] if sample else None, "last": sample[-1][1] if sample else None}
 
 
@@ -471,6 +496,7 @@ def on_this_day(md=None):
     today = datetime.now(TZ).date()
     month, day = (int(x) for x in (md or today.strftime("%m-%d")).split("-"))
     mine = me_names()
+    merged = merged_names()
     first = con.execute("select min(ts) from records where ts > '1990'").fetchone()[0]
     start_year = parse(first).year if first else today.year
     years = []
@@ -483,24 +509,36 @@ def on_this_day(md=None):
             continue
         lo = datetime(y, month, day, tzinfo=TZ).astimezone(timezone.utc)
         hi = lo + timedelta(days=1)
-        rows = con.execute("select rowid, source, kind, ts, is_me, thread, thread_name, participants, title, text, meta "
+        rows = con.execute("select rowid, source, kind, ts, is_me, author, thread, thread_name, participants, title, text, meta "
                            "from records where ts >= ? and ts < ? order by ts",
                            (lo.strftime("%Y-%m-%dT%H:%M:%S"), hi.strftime("%Y-%m-%dT%H:%M:%S"))).fetchall()
         if not rows:
             continue
         photos, places, threads, searches, watched, made, events, calls, steps = [], collections.Counter(), {}, [], [], [], [], [], None
         watch_count = 0
-        for rowid, source, kind, ts, is_me, thread, thread_name, participants, title, text, meta in rows:
+        for rowid, source, kind, ts, is_me, author, thread, thread_name, participants, title, text, meta in rows:
             if source == "photos":
                 photos.append(rowid)
-                p, _ = place_parts(text)
+                p = spot_of(text)
                 if p:
                     places[p] += 1
             elif kind == "message" and source in CHATS:
+                # One person once, whichever apps you talked in (the busiest conversation opens); a group as a group.
                 m = meta_of(meta) if source == "imessage" else {}
-                who = chat_partner(source, thread_name, participants, m, mine) or thread_name or "a group"
-                t = threads.setdefault((source, thread), {"name": who, "app": APP_NAMES.get(source, source), "messages": 0, "rowid": rowid})
+                who = chat_partner(source, thread_name, participants, m, mine)
+                if who:
+                    pk, name = merged.get(key(who), (key(who), who))
+                    t = threads.setdefault(("person", pk), {"name": name, "key": pk, "group": False, "members": [], "apps": collections.Counter(),
+                                                            "messages": 0, "by_thread": collections.Counter(), "first": {}})
+                else:
+                    t = threads.setdefault(("group", source, thread), {"name": thread_name or "A group", "key": None, "group": True, "members": [],
+                                                                       "apps": collections.Counter(), "messages": 0, "by_thread": collections.Counter(), "first": {}})
+                    if str(is_me) != "1" and author and author not in t["members"] and len(t["members"]) < 3:
+                        t["members"].append(author)
                 t["messages"] += 1
+                t["apps"][APP_NAMES.get(source, source)] += 1
+                t["by_thread"][(source, thread)] += 1
+                t["first"].setdefault((source, thread), rowid)
             elif kind == "search" and (source, kind) in SEARCHES:
                 q = (title or text or "").removeprefix("Searched for ").strip()
                 if q and q not in [s["text"] for s in searches]:
@@ -510,7 +548,8 @@ def on_this_day(md=None):
                 if title and not title.startswith("http"):  # the video's title, when Google kept it
                     watched.append({"title": title[:120], "rowid": rowid})
             elif source == "calls":
-                calls.append({"name": thread_name, "rowid": rowid, "minutes": round(float(meta_of(meta).get("seconds") or 0) / 60, 1)})
+                calls.append({"name": merged.get(key(thread_name), (None, thread_name))[1], "rowid": rowid,
+                              "minutes": round(float(meta_of(meta).get("seconds") or 0) / 60, 1)})
             elif source in ("calendar", "google_calendar") and kind == "event":
                 events.append({"title": (title or "")[:100], "rowid": rowid})
             elif source == "health":
@@ -522,15 +561,44 @@ def on_this_day(md=None):
         r = con.execute("select meta from records where source = 'health' and kind = 'health_day' and ts like ?", (f"{d.isoformat()}%",)).fetchone()
         if r:
             steps = int(meta_of(r[0]).get("steps") or 0) or None
-        top = sorted(threads.values(), key=lambda t: -t["messages"])
+        top = []
+        for t in sorted(threads.values(), key=lambda t: -t["messages"]):
+            busiest = t.pop("by_thread").most_common(1)[0][0]
+            apps = [a for a, _ in t.pop("apps").most_common()]
+            t["rowid"], t["apps"], t["app"] = t.pop("first")[busiest], apps, " and ".join(apps)
+            top.append(t)
         entry = {"year": y, "date": d.isoformat(), "ago": today.year - y,
-                 "photos": {"count": len(photos), "sample": spread(photos, 12), "places": [p for p, _ in places.most_common(4)]},
-                 "messages": {"count": sum(t["messages"] for t in top), "threads": top[:6], "conversations": len(top)},
-                 "calls": calls[:6], "searches": searches[:8], "search_count": len(searches), "watched": watched[:5],
-                 "watch_count": watch_count, "made": made[:8], "made_count": len(made), "events": events[:6], "steps": steps}
+                 "photos": {"count": len(photos), "sample": spread(photos, 12), "ids": photos, "places": [p for p, _ in places.most_common(4)]},
+                 "messages": {"count": sum(t["messages"] for t in top), "threads": top, "conversations": len(top)},
+                 "calls": calls, "searches": searches, "search_count": len(searches), "watched": watched,
+                 "watch_count": watch_count, "made": made, "made_count": len(made), "events": events, "steps": steps}
         if entry["photos"]["count"] or entry["messages"]["count"] or searches or made or events or calls or watch_count:
             years.append(entry)
-    return {"date": f"{month:02d}-{day:02d}", "label": date(2000, month, day).strftime("%B %-d"), "years": years}
+    out = {"date": f"{month:02d}-{day:02d}", "label": date(2000, month, day).strftime("%B %-d"), "years": years}
+    if not years:
+        out["nearest"] = nearest_days(con, date(2000, month, day))
+    return out
+
+
+def nearest_days(con, d):
+    """For a day with nothing on it: how many days before and after it the nearest days with something are (in any
+    year), or None."""
+    have = set()
+    shown = (f"source = 'photos' or (kind = 'message' and source in ({','.join(repr(c) for c in CHATS)})) or source = 'calls' "
+             f"or (kind = 'search' and source in ({','.join(repr(a) for a, _ in SEARCHES)})) or (source = 'google_activity' and kind = 'media') "
+             "or (source in ('calendar', 'google_calendar') and kind = 'event') or (source in ('git_commits', 'documents') and is_me = '1') "
+             "or source in ('apple_notes', 'notion') or kind = 'post'")  # what a day here shows
+    for (h,) in con.execute(f"select distinct substr(ts, 1, 13) from records where ts > '1990' and ({shown})"):
+        t = parse(f"{h}:00:00")
+        if t:
+            have.add((t.month, t.day))
+    out = {"before": None, "after": None}
+    for n in range(1, 367):
+        for side, k in (("before", -n), ("after", n)):
+            dd = d + timedelta(days=k)
+            if out[side] is None and (dd.month, dd.day) in have:
+                out[side] = n
+    return out
 
 
 def spread(items, n):
@@ -649,7 +717,8 @@ def find_trips(con, pts, away_km=100, gap_days=2, pg=None):
                     "days": (end - start).days + 1, "photos": len(photos), "places": [p for p, _ in places.most_common(6)],
                     "countries": [c for c, _ in countries.most_common()], "farthest_km": round(km(h, (far[1], far[2]))),
                     "lat": round(sum(p[1] for p in photos) / len(photos), 3), "lon": round(sum(p[2] for p in photos) / len(photos), 3),
-                    "sample": spread([p[5] for p in photos], 12), "people": trip_people(con, lo, hi, merged),
+                    "sample": spread([p[5] for p in photos], 12), "photo_ids": [p[5] for p in photos],  # every one, in order
+                    "people": trip_people(con, lo, hi, merged),
                     "money": con.execute("select count(*) from records where source in ('phone_splitwise', 'phone_venmo') "
                                          "and ts >= ? and ts < ?", (lo, hi)).fetchone()[0]})
     out.sort(key=lambda t: t["start"], reverse=True)
@@ -686,18 +755,20 @@ def trip_people(con, lo, hi, merged=None):
             k, name = merged.get(key(who), (key(who), who))
             c[k] += 1
             names[k] = name
-    return [{"key": k, "name": names[k], "messages": n} for k, n in c.most_common(4)]
+    return [{"key": k, "name": names[k], "messages": n} for k, n in c.most_common()]
 
 
 # ---------------------------------------------------------------- rhythms
 
 def rhythms():
     con = connect()
+    # Each kind's records, by a query; searches and videos are the ones Curiosity and Watching count (each search
+    # once, every video service), so the pages agree.
     kinds = {
         "messages": ("Messages you sent", f"kind = 'message' and is_me = '1' and source in ({','.join(repr(s) for s in CHATS)})"),
         "browsing": ("Pages you visited", " or ".join(f"(source = '{s}' and kind = '{k}')" for s, k in VISITS)),
-        "searches": ("Searches", " or ".join(f"(source = '{s}' and kind = '{k}')" for s, k in SEARCHES)),
-        "watching": ("YouTube videos you watched", "source = 'google_activity' and kind = 'media' and url like '%youtube.com/watch%'"),
+        "searches": ("Searches", lambda: (t for t, _, _ in searches(con))),
+        "watching": ("Videos you watched", lambda: (v[0] for v in videos(con))),
         "coding": ("Code you wrote", "(source = 'git_commits' and is_me = '1') or (source = 'ai_coding' and is_me = '1')"),
         "photos": ("Photos you took", "source = 'photos'"),
     }
@@ -713,8 +784,9 @@ def _rhythms(con, kinds, pg):
         by_year = collections.defaultdict(lambda: [0] * 24)
         last_of_day, per_day = {}, collections.Counter()
         n = 0
-        for ts, meta in con.execute(f"select ts, case when source = 'photos' then meta end from records where ({where}) and ts is not null"):
-            t = parse(ts, meta_of(meta).get("timezone") if meta else None)
+        times = where() if callable(where) else (parse(ts, meta_of(meta).get("timezone") if meta else None) for ts, meta in con.execute(
+            f"select ts, case when source = 'photos' then meta end from records where ({where}) and ts is not null"))
+        for t in times:
             if not t:
                 continue
             n += 1
@@ -824,7 +896,7 @@ def made():
     con = connect()
     kinds = {
         "code": ("Code", "source = 'git_commits' and is_me = '1'"),
-        "ai": ("Sessions with an AI", "source in ('ai_coding', 'chatgpt', 'claude_ai') and is_me = '1'"),
+        "ai": ("AI conversations", "source in ('ai_coding', 'chatgpt', 'claude_ai') and is_me = '1'"),
         "writing": ("Writing", "source in ('apple_notes', 'notion', 'notion_export') or (source = 'documents' and is_me = '1')"),
         "posts": ("Posts", "kind = 'post'"),
         "photos": ("Photos", "source = 'photos'"),
@@ -870,6 +942,647 @@ def _made(con, kinds, pg):
             "totals": {y: dict(c) for y, c in sorted(totals.items())},
             "busiest": {k: {"count": v[0], "date": v[1], "rowid": v[2]} for k, v in biggest.items()},
             "streak": {"days": best[0], "start": best[1], "end": best[2]}}
+
+
+# ---------------------------------------------------------------- listening
+
+# What the Mac said was playing (Now Playing): music apps only; the rest (Netflix, a video in a browser) is watching.
+MUSIC_APPS = ("spotify", "music", "tidal", "deezer", "soundcloud", "pandora", "youtube music", "amazon music", "qobuz", "bandcamp")
+QUARTER = lambda t: f"{t.year}-Q{(t.month - 1) // 3 + 1}"  # noqa: E731
+
+
+def plays(con, pg=None):
+    """(local time, track, artist, seconds or None, rowid, from) for every song played: Spotify's streaming history,
+    what the Mac was playing in a music app, and YouTube's artist channels ("Artist - Topic" is YouTube Music's)."""
+    where = ("ts is not null and ((source = 'spotify' and kind = 'media') or (source = 'app_usage' and kind = 'media') "
+             "or (source = 'google_activity' and kind = 'media' and text like '%- Topic%'))")
+    if pg:
+        pg.step(0, count_where(con, where))
+    out = []
+    for i, (rowid, source, ts, title, text, meta) in enumerate(con.execute(f"select rowid, source, ts, title, text, meta from records where {where}")):
+        if pg:
+            pg.tick(i)
+        m = meta_of(meta)
+        if source == "spotify":
+            artist, secs, via = m.get("artist"), m.get("seconds"), "Spotify"
+            if isinstance(secs, (int, float)) and secs < 30:  # Spotify counts a play from 30 seconds; less is a skip
+                continue
+        elif source == "app_usage":
+            if not any(a in str(m.get("app") or "").casefold() for a in MUSIC_APPS):
+                continue
+            artist, secs, via = m.get("artist"), m.get("duration"), str(m.get("app"))
+        else:
+            lines = (text or "").split("\n")
+            channel = lines[1].strip() if len(lines) > 1 else ""
+            if not channel.endswith(" - Topic"):
+                continue
+            artist, secs, via = channel[: -len(" - Topic")], None, "YouTube"
+        t = parse(ts)
+        if t and title and artist:
+            out.append((t, str(title).strip(), str(artist).strip(), secs if isinstance(secs, (int, float)) else None, rowid, via))
+    out.sort(key=lambda p: p[0])
+    return out
+
+
+def listening():
+    with Progress(["Songs you played", "Your artists over the years"]) as pg:
+        return _listening(connect(), pg)
+
+
+def _listening(con, pg):
+    ps = plays(con, pg)
+    pg.step(1)
+    # Every play opens the latest of its kind: an artist's or song's latest play (in the year, for a year's), a day's
+    # song on repeat that day, an era's in that era.
+    artists, tracks, day_track, day_rowid = {}, {}, collections.Counter(), {}
+    years = collections.defaultdict(lambda: {"plays": 0, "seconds": 0, "artists": collections.Counter(), "tracks": collections.Counter(), "hours": [0] * 24,
+                                             "latest": {}})
+    quarters = collections.defaultdict(collections.Counter)
+    quarter_rowid = {}
+    months, by_hour, weekday, via = collections.Counter(), [0] * 24, [0] * 7, collections.Counter()
+    first_heard = {}
+    for t, track, artist, secs, rowid, src in ps:
+        a = artists.setdefault(artist, {"name": artist, "plays": 0, "seconds": 0, "first": t.isoformat(), "last": t.isoformat(), "rowid": rowid, "years": collections.Counter()})
+        a["plays"] += 1
+        a["seconds"] += secs or 0
+        a["last"], a["rowid"] = t.isoformat(), rowid
+        a["years"][str(t.year)] += 1
+        tk = (track, artist)
+        tr = tracks.setdefault(tk, {"title": track, "artist": artist, "plays": 0, "rowid": rowid, "first": t.isoformat()})
+        tr["plays"] += 1
+        tr["rowid"] = rowid
+        day_track[(track, artist, t.date().isoformat())] += 1
+        day_rowid[(track, artist, t.date().isoformat())] = rowid
+        y = years[str(t.year)]
+        y["plays"] += 1
+        y["seconds"] += secs or 0
+        y["artists"][artist] += 1
+        y["tracks"][tk] += 1
+        y["hours"][t.hour] += 1
+        y["latest"][artist] = y["latest"][tk] = rowid
+        first_heard.setdefault(artist, str(t.year))
+        quarters[QUARTER(t)][artist] += 1
+        quarter_rowid[(QUARTER(t), artist)] = rowid
+        months[t.strftime("%Y-%m")] += 1
+        by_hour[t.hour] += 1
+        weekday[t.weekday()] += 1
+        via[src] += 1
+    new_by_year = collections.Counter(first_heard.values())
+    # Your eras: each quarter's most-played artist, when they had a real share of it; the same artist quarter after
+    # quarter is one era.
+    eras = []
+    for q in sorted(quarters):
+        c = quarters[q]
+        top, n = c.most_common(1)[0]
+        if n < 10 or n < 0.08 * sum(c.values()):
+            continue
+        if eras and eras[-1]["artist"] == top:
+            eras[-1]["end"], eras[-1]["plays"], eras[-1]["rowid"] = q, eras[-1]["plays"] + n, quarter_rowid[(q, top)]
+        else:
+            eras.append({"artist": top, "start": q, "end": q, "plays": n, "rowid": quarter_rowid[(q, top)]})
+
+    def on_repeat(year=None, n=10):
+        """One song three or more times in a day, most first."""
+        return [{"title": tr, "artist": ar, "date": d, "plays": c, "rowid": day_rowid[(tr, ar, d)]}
+                for (tr, ar, d), c in day_track.most_common() if c >= 3 and (year is None or d[:4] == year)][:n]
+    repeat = on_repeat()
+    rank = lambda xs, k: sorted(xs, key=lambda x: -x[k])  # noqa: E731
+    top_artists = [{**a, "minutes": round(a["seconds"] / 60), "years": dict(sorted(a["years"].items()))} for a in rank(artists.values(), "plays")[:30]]
+    for a in top_artists:
+        del a["seconds"]
+    return {
+        "plays": len(ps), "minutes": round(sum(p[3] or 0 for p in ps) / 60), "artists": len(artists), "songs": len(tracks),
+        "first": {"title": ps[0][1], "artist": ps[0][2], "ts": ps[0][0].isoformat(), "rowid": ps[0][4]} if ps else None,
+        "last": ps[-1][0].isoformat() if ps else None, "from": dict(via.most_common()),
+        "top_artists": top_artists, "top_tracks": rank(tracks.values(), "plays")[:30],
+        "years": {yy: {"plays": v["plays"], "minutes": round(v["seconds"] / 60), "artists": len(v["artists"]), "new_artists": new_by_year.get(yy, 0),
+                       "top_artists": [{"name": a, "plays": n, "rowid": v["latest"][a]} for a, n in v["artists"].most_common(10)],
+                       "top_tracks": [{"title": tr, "artist": ar, "plays": n, "rowid": v["latest"][(tr, ar)]} for (tr, ar), n in v["tracks"].most_common(10)],
+                       "by_hour": v["hours"], "on_repeat": on_repeat(yy)}
+                  for yy, v in sorted(years.items())},
+        "eras": eras, "on_repeat": repeat, "months": dict(sorted(months.items())), "by_hour": by_hour, "weekday": weekday,
+    }
+
+
+# ---------------------------------------------------------------- moving and sleep
+
+STEP_GOAL = 10000
+
+
+def movement():
+    with Progress(["Your days", "Your nights", "Where you walked most"]) as pg:
+        return _movement(connect(), pg)
+
+
+def _movement(con, pg):
+    pg.step(0)
+    days = {}
+    for rowid, ts, meta in con.execute("select rowid, ts, meta from records where source = 'health' and kind = 'health_day'"):
+        m = meta_of(meta)
+        try:
+            d, steps = date.fromisoformat(str(ts)[:10]), float(m.get("steps") or 0)
+        except (TypeError, ValueError):
+            continue
+        if steps > 0:
+            days[d] = (steps, float(m.get("distance_km") or 0), float(m.get("flights") or 0), rowid)
+    ordered = sorted(days)
+    years = collections.defaultdict(list)
+    months = collections.defaultdict(list)
+    weekday = [[] for _ in range(7)]
+    for d in ordered:
+        years[str(d.year)].append(d)
+        months[d.strftime("%Y-%m")].append(days[d][0])
+        weekday[d.weekday()].append(days[d][0])
+    def streak(ds):
+        """The longest run of days in a row over the goal."""
+        best, run, prev, start = (0, None, None), 0, None, None
+        for d in ds:
+            if days[d][0] >= STEP_GOAL:
+                if not (prev and (d - prev).days == 1 and run):
+                    run, start = 0, d
+                run += 1
+                if run > best[0]:
+                    best = (run, start.isoformat(), d.isoformat())
+                prev = d
+            else:
+                run = 0
+        return {"days": best[0], "start": best[1], "end": best[2]}
+    avg = lambda xs: round(sum(xs) / len(xs)) if xs else 0  # noqa: E731
+    dayrec = lambda d: {"date": d.isoformat(), "steps": round(days[d][0]), "km": round(days[d][1], 1), "rowid": days[d][3]}  # noqa: E731
+    pg.step(1)
+    nights = []
+    for rowid, ts, end, meta in con.execute("select rowid, ts, ts_end, meta from records where source = 'health' and kind = 'sleep' and ts is not null"):
+        m = meta_of(meta)
+        a, b = parse(ts, m.get("tz")), parse(end, m.get("tz")) if end else None
+        mins = float(m.get("asleep_min") or 0) or float(m.get("in_bed_min") or 0)
+        if not a or not b or mins < 120:  # a nap, or a night the watch was off
+            continue
+        bed = a.hour + a.minute / 60 + (24 if a.hour < 15 else 0)  # 1 am is 25: late is later
+        nights.append((b.date(), mins, bed, b.hour + b.minute / 60, rowid))
+    nights.sort()
+    sleep = None
+    if nights:
+        by_year = collections.defaultdict(list)
+        for n in nights:
+            by_year[str(n[0].year)].append(n)
+        med = lambda xs: round(sorted(xs)[len(xs) // 2], 2)  # noqa: E731
+        bed_months = collections.defaultdict(list)
+        for n in nights:
+            bed_months[n[0].strftime("%Y-%m")].append(n[2])
+        weekdays = lambda ns: [avg([n[1] for n in ns if (n[0] - timedelta(days=1)).weekday() == w]) for w in range(7)]  # noqa: E731 - by the night it began
+        night = lambda n: {"date": n[0].isoformat(), "minutes": round(n[1]), "rowid": n[4]}  # noqa: E731
+        sleep = {"nights": len(nights), "avg_min": avg([n[1] for n in nights]),
+                 "years": {y: {"nights": len(v), "avg_min": avg([n[1] for n in v]), "bedtime": med([n[2] for n in v]), "wake": med([n[3] for n in v]),
+                               "weekday": weekdays(v), "longest": night(max(v, key=lambda n: n[1]))}
+                           for y, v in sorted(by_year.items())},
+                 "bedtime_months": {m: med(v) for m, v in sorted(bed_months.items()) if len(v) >= 5},
+                 "weekday": weekdays(nights),
+                 "longest": night(max(nights, key=lambda n: n[1])), "shortest": night(min(nights, key=lambda n: n[1]))}
+    pg.step(2)
+    # Your biggest days (of all, and each year's), and where you were (the place your photos that day name most), and
+    # steps on trips.
+    biggest = lambda ds: sorted(ds, key=lambda d: -days[d][0])[:10]  # noqa: E731
+    top = biggest(ordered)
+    where_on = collections.defaultdict(collections.Counter)
+    if top:
+        wanted = set(top).union(*(biggest(v) for v in years.values()))
+        for t, _, _, place, _, _ in located(con):
+            if t.date() in wanted and place:
+                where_on[t.date()][place] += 1
+    trip_days = set()
+    if ordered:
+        try:
+            for tr in cached("places", places)["trips"]:
+                trip_days |= {date.fromisoformat(tr["start"]) + timedelta(days=i) for i in range(tr["days"])}
+        except FileNotFoundError:
+            pass
+    on_trips = [days[d][0] for d in ordered if d in trip_days]
+    top_day = lambda d: {**dayrec(d), "place": where_on[d].most_common(1)[0][0] if where_on[d] else None, "trip": d in trip_days}  # noqa: E731
+    return {
+        "days": len(ordered), "first": ordered[0].isoformat() if ordered else None, "last": ordered[-1].isoformat() if ordered else None,
+        "steps": round(sum(days[d][0] for d in ordered)), "km": round(sum(days[d][1] for d in ordered)), "avg": avg([days[d][0] for d in ordered]),
+        "best": dayrec(top[0]) if top else None, "goal": STEP_GOAL, "goal_days": sum(1 for d in ordered if days[d][0] >= STEP_GOAL),
+        "streak": streak(ordered),
+        "years": {y: {"days": len(v), "avg": avg([days[d][0] for d in v]), "steps": round(sum(days[d][0] for d in v)), "km": round(sum(days[d][1] for d in v)),
+                      "flights": round(sum(days[d][2] for d in v)), "best": dayrec(max(v, key=lambda d: days[d][0])),
+                      "goal_days": sum(1 for d in v if days[d][0] >= STEP_GOAL), "streak": streak(v),
+                      "weekday": [avg([days[d][0] for d in v if d.weekday() == w]) for w in range(7)], "top_days": [top_day(d) for d in biggest(v)]}
+                  for y, v in sorted(years.items())},
+        "months": {m: avg(v) for m, v in sorted(months.items())}, "weekday": [avg(v) for v in weekday],
+        "top_days": [top_day(d) for d in top],
+        "trips": {"avg": avg(on_trips), "days": len(on_trips), "home_avg": avg([days[d][0] for d in ordered if d not in trip_days])} if on_trips else None,
+        "sleep": sleep,
+    }
+
+
+# ---------------------------------------------------------------- curiosity
+
+SEARCH_FROM = SEARCHES + (("phone_safariwebsearch", "search"), ("phone_safarirecentwebsearches", "search"))
+QUESTION = re.compile(r"^(who|what|when|where|why|how|is|are|can|does|do|did|should|will|which)\b", re.I)
+# Words that say how you searched, not what about.
+SEARCH_WORDS = set("""best near nearby free online com www http https org net google search youtube reddit wiki wikipedia
+amazon review reviews vs versus meaning definition define example examples tutorial guide list open hours time today tomorrow
+week year 2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027 price cost cheap login sign download app apps pdf
+recipe recipes ticket tickets reservation reservations hours tips ideas plan plans map schedule restaurant restaurants things
+neighborhoods airport worth is to of my in on at an do it be by or as if me we us so up no vs""".split())
+# The first word of a place's name: "new" in New York isn't a word to drop.
+PLACE_START = {"new", "san", "santa", "los", "las", "saint", "st", "el", "la", "le", "rio", "west", "east", "north", "south"}
+
+
+def searches(con, pg=None):
+    """(local time, query, rowid) for every search, once: the same words searched in two places (Chrome's history and
+    Google's, within the minute) count once. Searches inside Gmail and the Play Store aren't curiosity."""
+    where = "ts is not null and (" + " or ".join(f"(source = '{s}' and kind = '{k}')" for s, k in SEARCH_FROM) + ")"
+    if pg:
+        pg.step(0, count_where(con, where))
+    out, seen = [], set()
+    for i, (rowid, source, ts, title, text, meta) in enumerate(con.execute(f"select rowid, source, ts, title, text, meta from records where {where}")):
+        if pg:
+            pg.tick(i)
+        if source == "google_activity" and meta_of(meta).get("product") in ("Gmail", "Google Play Store"):
+            continue
+        q = re.sub(r"^Searched for\s+", "", str(title or (text or "").split("\n")[0]).strip())
+        q = re.sub(r"\s+", " ", q).strip()
+        t = parse(ts)
+        if not q or not t or len(q) > 200:
+            continue
+        k = (q.casefold(), t.strftime("%Y-%m-%d %H:%M"))
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append((t, q, rowid))
+    out.sort(key=lambda s: s[0])
+    return out
+
+
+def search_terms(q):
+    """A search's words, and its phrases of two to four words ("mexico city", "day of the dead"), without the words
+    that only say how you searched; a phrase doesn't start or end with one of those."""
+    words = re.findall(r"[^\W_]+(?:'[^\W_]+)?", q.casefold())  # a number stays, so a phrase doesn't run across it
+    how = lambda w: w in SEARCH_WORDS or (w in STOPWORDS and w not in PLACE_START) or len(w) < 2 or any(c.isdigit() for c in w)  # noqa: E731
+    out = {w for w in words if (len(w) > 2 or UNSPACED.search(w)) and not how(w) and w not in PLACE_START}
+    for n in (2, 3, 4, 5):
+        for i in range(len(words) - n + 1):
+            g = words[i:i + n]
+            if not how(g[0]) and not how(g[-1]) and g[-1] not in PLACE_START and not any(w in SEARCH_WORDS or any(c.isdigit() for c in w) for w in g):
+                out.add(" ".join(g))
+    return out
+
+
+def first_asked(ss):
+    """Each question once, the first time it was asked."""
+    seen, out = set(), []
+    for t, q, rowid in ss:
+        if QUESTION.match(q) and q.casefold() not in seen:
+            seen.add(q.casefold())
+            out.append((t, q, rowid))
+    return out
+
+
+def curiosity():
+    with Progress(["Your searches", "What you were curious about", "What you looked up before a trip"]) as pg:
+        return _curiosity(connect(), pg)
+
+
+def _curiosity(con, pg):
+    ss = searches(con, pg)
+    pg.step(1)
+    queries, months, by_hour = {}, collections.Counter(), [0] * 24
+    years = collections.defaultdict(list)
+    term_years = collections.defaultdict(collections.Counter)
+    term_example = {}
+    term_queries = collections.defaultdict(set)  # a few of the searches each word came in, a year at a time
+    year_queries = collections.defaultdict(dict)  # a year's searches, each with how often and its latest
+    year_hours = collections.defaultdict(lambda: [0] * 24)
+    for t, q, rowid in ss:
+        k = q.casefold()
+        e = queries.setdefault(k, {"q": q, "count": 0, "first": t.isoformat(), "last": t.isoformat(), "rowid": rowid})
+        e["count"] += 1
+        e["last"], e["rowid"] = t.isoformat(), rowid
+        ye = year_queries[str(t.year)].setdefault(k, {"q": q, "count": 0, "first": t.isoformat(), "last": t.isoformat(), "rowid": rowid})
+        ye["count"] += 1
+        ye["last"], ye["rowid"] = t.isoformat(), rowid
+        months[t.strftime("%Y-%m")] += 1
+        by_hour[t.hour] += 1
+        year_hours[str(t.year)][t.hour] += 1
+        years[str(t.year)].append((t, q, rowid))
+        for term in search_terms(q):
+            term_years[term][str(t.year)] += 1
+            term_example.setdefault((term, str(t.year)), rowid)
+            if " " not in term and len(term_queries[(term, str(t.year))]) < 2:
+                term_queries[(term, str(t.year))].add(k)
+    n_years = max(1, len(years))
+
+    weight = {1: 1.0, 2: 1.7, 3: 2.1, 4: 2.3, 5: 2.4}  # a phrase says more than a word
+
+    def topics(y, n=12):
+        """The year's own words: much more searched that year than in the others. Nothing that shares a word with
+        one already picked (no "place market" after "pike place market")."""
+        scored = []
+        for term, c in term_years.items():
+            here = c.get(y, 0)
+            if here < 3:
+                continue
+            others = (sum(c.values()) - here) / max(1, n_years - 1)
+            scored.append((here / (1 + others) * weight[len(term.split(" "))], term, here))
+        scored.sort(reverse=True)
+        out, used = [], set()
+        for score, term, here in scored:
+            ws = set(term.split(" ")) - PLACE_START
+            if ws & used:
+                continue
+            if score < 0.2 * scored[0][0] or (" " not in term and (here < 5 or len(term) < 4 or len(term_queries[(term, y)]) < 2)):
+                continue  # the tail: a word searched a few times, or in only one search, isn't what a year was about
+            used |= ws
+            out.append({"word": term, "count": here, "rowid": term_example[(term, y)]})
+            if len(out) >= n:
+                break
+        return out
+
+    # Each question once, in the year you first asked it: every year's add up to the number asked.
+    asked = first_asked(ss)
+    asked_in = collections.defaultdict(list)
+    for t, q, rowid in asked:
+        asked_in[str(t.year)].append({"q": q, "ts": t.isoformat(), "rowid": rowid})
+    again = lambda qs: sorted((x for x in qs if x["count"] > 1), key=lambda x: -x["count"])[:25]  # noqa: E731
+    pg.step(2)
+    before = []
+    try:
+        for tr in cached("places", places)["trips"]:
+            start = date.fromisoformat(tr["start"])
+            # Where it was, by every name the trip's own photos give it (not the ones from home either side of it): a
+            # trip is named for its city (Tokyo), and searched for by a neighborhood (Shinjuku) or its country.
+            names = {p.casefold() for p in tr["places"] + tr["countries"] if p}
+            ids = tr.get("photo_ids") or tr["sample"]
+            for i in range(0, len(ids), 500):
+                part = ids[i:i + 500]
+                for (text,) in con.execute(f"select text from records where rowid in ({','.join('?' * len(part))})", part):
+                    m = re.search(r"^Place: (.+)$", text or "", re.M)
+                    names |= {p.strip().casefold() for p in (m.group(1).split(",") if m else []) if len(p.strip()) > 2}
+            said = re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True)) + r")\b") if names else None
+            hits = {}
+            for t, q, rowid in ss:
+                if said and start - timedelta(days=60) <= t.date() <= start and said.search(q.casefold()):
+                    hits.pop(q.casefold(), None)
+                    hits[q.casefold()] = {"q": q, "ts": t.isoformat(), "rowid": rowid}  # each search once, at its latest
+            hits = list(hits.values())
+            if hits:
+                before.append({"trip": tr["id"], "places": tr["places"], "start": tr["start"], "days": tr["days"], "searches": hits[-8:], "count": len(hits)})
+    except FileNotFoundError:
+        pass
+    return {
+        "searches": len(ss), "queries": len(queries), "questions": len(asked),
+        "first": {"q": ss[0][1], "ts": ss[0][0].isoformat(), "rowid": ss[0][2]} if ss else None, "last": ss[-1][0].isoformat() if ss else None,
+        "top": again(queries.values()),
+        "years": {y: {"count": len(v), "topics": topics(y), "questions": asked_in.get(y, []), "top": again(year_queries[y].values()), "by_hour": year_hours[y]}
+                  for y, v in sorted(years.items())},
+        "months": dict(sorted(months.items())), "by_hour": by_hour, "before_trips": sorted(before, key=lambda b: b["start"], reverse=True),
+    }
+
+
+# ---------------------------------------------------------------- watching
+
+VIDEO_APPS = ("netflix", "youtube", "disney", "hulu", "max", "prime video", "apple tv", "tv", "twitch", "plex", "vlc", "iina", "infuse")
+
+
+def videos(con, pg=None):
+    """(local time, title, channel or show, service, rowid) for every video: YouTube (Google's history of it; artist
+    channels are songs, and count in Listening), Netflix, TikTok, and video apps the Mac said were playing."""
+    where = ("ts is not null and ((source = 'google_activity' and kind = 'media') or (source = 'phone_netflix' and kind = 'media') "
+             "or (source = 'tiktok' and kind = 'watch') or (source = 'app_usage' and kind = 'media'))")
+    if pg:
+        pg.step(0, count_where(con, where))
+    out = []
+    for i, (rowid, source, ts, title, text, meta, url, author) in enumerate(con.execute(f"select rowid, source, ts, title, text, meta, url, author from records where {where}")):
+        if pg:
+            pg.tick(i)
+        m = meta_of(meta)
+        if source == "google_activity":
+            if m.get("product") != "YouTube" and "youtube.com/watch" not in (url or ""):
+                continue
+            lines = (text or "").split("\n")
+            channel = lines[1].strip() if len(lines) > 1 else None
+            if channel and channel.endswith(" - Topic"):
+                continue
+            name, service = re.sub(r"^Watched\s+", "", str(title or lines[0])), "YouTube"
+        elif source == "phone_netflix":
+            f = m.get("fields") or {}
+            name, service = str(f.get("Displayed Title") or f.get("Cached Title") or title or ""), "Netflix"
+            channel = name.split(":")[0].strip() if ":" in name else name  # the show, before ": Season 1: Episode"
+        elif source == "tiktok":
+            name, channel, service = str(title or text or "A TikTok")[:120], author if author and author != "me" else None, "TikTok"
+        else:
+            app = str(m.get("app") or "")
+            if not any(a == app.casefold() or app.casefold().startswith(a + " ") for a in VIDEO_APPS):
+                continue
+            name, channel, service = str(title or ""), m.get("artist") or None, app
+        t = parse(ts)
+        if t and name.strip():
+            out.append((t, name.strip(), channel or None, service, rowid))
+    out.sort(key=lambda v: v[0])
+    return out
+
+
+def watching():
+    with Progress(["Videos you watched", "Channels and shows"]) as pg:
+        return _watching(connect(), pg)
+
+
+def _watching(con, pg):
+    vs = videos(con, pg)
+    pg.step(1)
+    # Each opens its latest: a channel's latest video (in the year, for a year's), a video's latest watch.
+    channels, titles, nights = {}, {}, collections.Counter()
+    years = collections.defaultdict(lambda: {"count": 0, "channels": collections.Counter(), "latest": {}, "hours": [0] * 24, "titles": collections.Counter()})
+    months, by_hour, weekday, services = collections.Counter(), [0] * 24, [0] * 7, collections.Counter()
+    night_rowid, night_channels = {}, collections.defaultdict(collections.Counter)
+    for t, name, channel, service, rowid in vs:
+        y = years[str(t.year)]
+        if channel:
+            c = channels.setdefault(channel, {"name": channel, "count": 0, "first": t.isoformat(), "last": t.isoformat(), "rowid": rowid, "service": service, "years": collections.Counter()})
+            c["count"] += 1
+            c["last"], c["rowid"] = t.isoformat(), rowid
+            c["years"][str(t.year)] += 1
+            y["channels"][channel] += 1
+            y["latest"][channel] = rowid
+        tk = name.casefold()
+        tt = titles.setdefault(tk, {"title": name, "channel": channel, "count": 0, "rowid": rowid, "service": service})
+        tt["count"] += 1
+        tt["rowid"] = rowid
+        y["count"] += 1
+        y["hours"][t.hour] += 1
+        y["titles"][tk] += 1
+        y["latest"][("title", tk)] = rowid
+        months[t.strftime("%Y-%m")] += 1
+        by_hour[t.hour] += 1
+        weekday[t.weekday()] += 1
+        services[service] += 1
+        night = (t - timedelta(hours=5)).date().isoformat()  # an evening that runs past midnight is one evening
+        nights[night] += 1
+        night_rowid.setdefault(night, rowid)
+        if channel:
+            night_channels[night][channel] += 1
+    top_ch = sorted(channels.values(), key=lambda c: -c["count"])[:25]
+
+    def binges(year=None):
+        """The evenings you watched most (four videos or more), most first."""
+        return [{"date": d, "count": n, "rowid": night_rowid[d], "channel": night_channels[d].most_common(1)[0][0] if night_channels[d] else None}
+                for d, n in nights.most_common() if n >= 4 and (year is None or d[:4] == year)][:8]
+
+    def late(hours):
+        return round(sum(hours[h] for h in range(0, 5)) / sum(hours), 3) if sum(hours) else 0
+    return {
+        "videos": len(vs), "channels": len(channels), "from": dict(services.most_common()),
+        "first": {"title": vs[0][1], "channel": vs[0][2], "ts": vs[0][0].isoformat(), "rowid": vs[0][4]} if vs else None,
+        "last": vs[-1][0].isoformat() if vs else None,
+        "top_channels": [{**c, "years": dict(sorted(c["years"].items()))} for c in top_ch],
+        "rewatched": sorted((x for x in titles.values() if x["count"] >= 2), key=lambda x: -x["count"])[:15],
+        "years": {y: {"count": v["count"], "channels": len(v["channels"]),
+                      "top_channels": [{"name": c, "count": n, "rowid": v["latest"][c]} for c, n in v["channels"].most_common(10)],
+                      "rewatched": [{**titles[k], "count": n, "rowid": v["latest"][("title", k)]} for k, n in v["titles"].most_common() if n >= 2][:15],
+                      "binges": binges(y), "after_midnight": late(v["hours"]), "by_hour": v["hours"]}
+                  for y, v in sorted(years.items())},
+        "binges": binges(),
+        "after_midnight": late(by_hour),
+        "months": dict(sorted(months.items())), "by_hour": by_hour, "weekday": weekday,
+    }
+
+
+# ---------------------------------------------------------------- what they know
+
+# What advertisers and the services keep about you, from your exports (connectors/imports.py: kind advertiser,
+# inference, off_platform and ad). An older import kept some of it under the file it came from: that's read too.
+SERVICE_OF = {"facebook_activity": "Facebook", "instagram_activity": "Instagram", "x": "X", "linkedin": "LinkedIn",
+              "tiktok": "TikTok", "google_activity": "Google"}
+WHAT_OF_FILE = {"interest_categories": "interest", "see_less_topics": "see less", "inferences_about_you.csv": "Inferences",
+                "other_categories_used_to_reach_you": "category"}
+# Guesses at who you are (as against what you're into), and what you're into.
+GUESSES = {"gender", "age", "language", "location", "audiences", "category", "Member Age", "Member Gender", "Member Traits",
+           "High Value Audience Segments", "Standard Audience Segments", "Buyer Groups", "Job Seniorities", "Years of Experience",
+           "Inferred personal characteristics", "Career inferences", "Profile Locations", "Job Functions", "Inferences"}
+INTERESTS = {"interest", "Member Interests", "Inferred interests", "partner interest", "show", "see less"}
+WHAT_LABEL = {"interest": "Interests", "show": "Shows you watch", "category": "Categories you're reached under", "gender": "Your gender",
+              "age": "Your age", "language": "Languages", "location": "Where you are", "audiences": "Audiences you're in",
+              "see less": "Topics you asked to see less of", "partner interest": "Interests from its partners"}
+AD_FILES = ("ads_viewed",)
+
+
+def they_know():
+    with Progress(["Advertisers that have you", "What they decided about you", "Who told them what you did elsewhere"]) as pg:
+        return _they_know(connect(), pg)
+
+
+def _alnum(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").casefold())
+
+
+def _they_know(con, pg):
+    def svc(source, m):
+        return m.get("service") or SERVICE_OF.get(source, source)
+
+    # Advertisers: one entry a name, with each service it has you on and how it got you there.
+    adv, hows = {}, collections.defaultdict(collections.Counter)
+    for rowid, source, title, meta in con.execute("select rowid, source, title, meta from records where kind = 'advertiser'"):
+        m, name = meta_of(meta), (title or "").strip()
+        if not name:
+            continue
+        s, how = svc(source, m), m.get("how") or "list"
+        # One entry for a company however it's written: X's "@airbnb" is Meta's "Airbnb". Its name, not its handle.
+        a = adv.setdefault(_alnum(name.lstrip("@")) or name, {"name": name, "services": {}, "rowid": rowid})
+        if a["name"].startswith("@") and not name.startswith("@"):
+            a["name"], a["rowid"] = name, rowid
+        if how not in a["services"].setdefault(s, []):
+            a["services"][s].append(how)
+            hows[s][how] += 1
+    # Which of them you've heard from: an advertiser named like an email's sender, or like its domain.
+    senders = set()
+    for (frm,) in con.execute("select json_extract(meta, '$.from') from records where kind = 'email' and json_extract(meta, '$.from') is not null"):
+        mm = re.match(r'\s*"?([^"<]*?)"?\s*<([^>]*)>', str(frm))
+        name_, addr = (mm.group(1), mm.group(2)) if mm else ("", str(frm))
+        if name_.strip():
+            senders.add(_alnum(name_))
+        parts = [p for p in addr.split("@")[-1].lower().split(".") if p not in ("com", "net", "org", "co", "io", "us", "uk", "mail", "email", "e", "em", "news", "info", "www")]
+        if "@" in addr and parts:
+            senders.add(_alnum(parts[-1]))
+    for a in adv.values():
+        k = _alnum(a["name"].lstrip("@"))
+        a["emailed"] = len(k) >= 3 and k in senders
+    pg.step(1)
+
+    # What each service decided about you, by what it is (an interest, your age, a segment, a LinkedIn targeting
+    # column...). X lets you turn an interest off: those say so.
+    decided = {}
+    for rowid, source, title, meta in con.execute("select rowid, source, title, meta from records where kind = 'inference'"):
+        m, value = meta_of(meta), (title or "").strip()
+        what = m.get("what") or WHAT_OF_FILE.get(str(m.get("file")), str(m.get("file") or "inference"))
+        if not value or what == "ad_targeting.csv":  # an older import's whole LinkedIn targeting file, as one record
+            continue
+        s = svc(source, m)
+        g = decided.setdefault((s, what), {"service": s, "what": what, "label": WHAT_LABEL.get(what, what), "items": [],
+                                           "group": "guess" if what in GUESSES else "interest" if what in INTERESTS else "other"})
+        g["items"].append({"value": value, "rowid": rowid, **({"off": True} if m.get("turned_off") else {})})
+    pg.step(2)
+
+    # Who told them what you did elsewhere: companies (an app, a shop's website) that sent a service your activity.
+    told, told_months = [], collections.Counter()
+    for rowid, source, kind, title, ts, text, meta in con.execute(
+            "select rowid, source, kind, title, ts, text, meta from records where kind = 'off_platform' "
+            "or (kind = 'record' and json_extract(meta, '$.file') = 'your_activity_off_meta_technologies')"):
+        m = meta_of(meta)
+        ev = m.get("events") or ([{"type": t, "ts": None} for t in re.findall(r"^Event: (.+)$", text or "", re.M)] if kind == "record" else [])
+        types = collections.Counter(e.get("type") for e in ev if e.get("type"))
+        times = sorted(e["ts"] for e in ev if e.get("ts"))
+        for t in times:
+            told_months[t[:7]] += 1
+        told.append({"name": (title or "").strip() or "A company", "service": svc(source, m), "events": len(ev), "types": dict(types.most_common()),
+                     "first": times[0] if times else ts, "last": times[-1] if times else ts, "rowid": rowid,
+                     # each one, for the timeline (the most recent 400)
+                     "timeline": sorted(({"type": e.get("type"), "ts": e["ts"]} for e in ev if e.get("ts")), key=lambda e: e["ts"])[-400:]})
+    told.sort(key=lambda x: (-x["events"], x["name"].casefold()))
+
+    # Ads you were shown: Instagram's and X's, and your Google ad activity.
+    ads, ad_by, ad_months, ad_rowid = collections.Counter(), collections.Counter(), collections.Counter(), {}
+    for rowid, source, title, ts, meta in con.execute(
+            "select rowid, source, title, ts, meta from records where kind = 'ad' or (source = 'google_activity' and json_extract(meta, '$.product') = 'Ads') "
+            "or (kind = 'record' and json_extract(meta, '$.file') = 'ads_viewed')"):
+        m = meta_of(meta)
+        s = svc(source, m)
+        ads[s] += 1
+        if ts:
+            ad_months[ts[:7]] += 1
+        if s != "Google" and title and title not in ("An ad", "ads viewed"):
+            ad_by[title] += 1
+            ad_rowid.setdefault(title, rowid)
+
+    # Meta keeps one ad profile for Facebook and Instagram: the same list from both is said once, as both's.
+    merged = {}
+    for g in decided.values():
+        k = (g["what"], tuple(sorted(i["value"] for i in g["items"])))
+        if k in merged:
+            merged[k]["services"].append(g["service"])
+        else:
+            merged[k] = {**g, "services": [g["service"]]}
+    for g in merged.values():
+        g["service"] = " and ".join(g["services"])
+
+    services = sorted({s for a in adv.values() for s in a["services"]} | {g["service"] for g in decided.values()} | {t["service"] for t in told} | set(ads),
+                      key=lambda s: -(sum(1 for a in adv.values() if s in a["services"]) + sum(len(g["items"]) for g in decided.values() if g["service"] == s)))
+    order = {"guess": 0, "interest": 1, "other": 2}
+    return {
+        "advertisers": len(adv),
+        "on_lists": sum(1 for a in adv.values() if any("list" in h for h in a["services"].values())),
+        "from_activity": sum(1 for a in adv.values() if any(set(h) & {"activity", "store"} for h in a["services"].values())),
+        "emailed": sum(1 for a in adv.values() if a["emailed"]),
+        "decided_count": sum(len(g["items"]) for g in merged.values()), "told_count": len(told), "ads_count": sum(ads.values()),
+        "services": [{"service": s, "advertisers": sum(1 for a in adv.values() if s in a["services"]), "how": dict(hows[s]),
+                      "decided": sum(len(g["items"]) for g in decided.values() if g["service"] == s),
+                      "told": sum(1 for t in told if t["service"] == s), "ads": ads.get(s, 0)} for s in services],
+        "advertiser_list": sorted(adv.values(), key=lambda a: (-len(a["services"]), not any("list" in h for h in a["services"].values()), a["name"].casefold())),
+        "decided": sorted(merged.values(), key=lambda g: (services.index(g["services"][0]) if g["services"][0] in services else 99, order[g["group"]], -len(g["items"]))),
+        "told": told, "told_months": dict(sorted(told_months.items())),
+        "ads": {"by_service": dict(ads.most_common()), "top": [{"name": n, "count": c, "rowid": ad_rowid[n]} for n, c in ad_by.most_common(30)],
+                "months": dict(sorted(ad_months.items()))},
+    }
 
 
 # ---------------------------------------------------------------- group chats
@@ -1137,7 +1850,8 @@ def superlatives(g, n):
         out.append({"title": "Night owl", "glyph": "clock", "name": night, "value": f"{round(100 * g['night'][night] / g['by'][night])}% after midnight"})
     emo = max(who, key=lambda w: g["emoji_msgs"][w] / g["by"][w])
     if g["emoji_msgs"][emo] / g["by"][emo] >= 0.05:
-        out.append({"title": "Most emoji", "glyph": "sparkle", "name": emo, "value": f"in {round(100 * g['emoji_msgs'][emo] / g['by'][emo])}% of their messages"})
+        out.append({"title": "Uses the most emoji", "glyph": "sparkle", "name": emo,
+                    "value": f"in {round(100 * g['emoji_msgs'][emo] / g['by'][emo])}% of {'your' if emo == 'You' else 'their'} messages"})
     long_ = max(who, key=lambda w: g["chars"][w] / g["by"][w])
     out.append({"title": "Writes the longest", "glyph": "note", "name": long_, "value": f"{round(g['chars'][long_] / g['by'][long_])} characters a message"})
     return out
@@ -1202,7 +1916,7 @@ def _journeys(con, pg):
         flew = d >= 300 and (d / hours >= 250 or (d >= 2500 and hours <= 72))
         legs.append({"from": where(a), "to": where(b), "left": a["end"].date().isoformat(), "arrived": b["start"].date().isoformat(),
                      "km": round(d), "flew": flew, "from_rowid": a["last"], "to_rowid": b["first"]})
-    by_year = collections.defaultdict(lambda: {"km": 0, "flights": 0, "legs": 0, "countries": set()})
+    by_year = collections.defaultdict(lambda: {"km": 0, "flights": 0, "legs": 0, "countries": set(), "order": {}, "cities": collections.defaultdict(lambda: {"days": set(), "rowid": None, "country": None})})
     for leg in legs:
         y = by_year[leg["arrived"][:4]]
         y["km"] += leg["km"]
@@ -1210,22 +1924,29 @@ def _journeys(con, pg):
         y["flights"] += leg["flew"]
     countries, cities = {}, collections.defaultdict(lambda: {"days": set(), "rowid": None, "country": None})
     for t, lat, lon, place, country, rowid in pts:
+        y = by_year[str(t.year)]
         if country:
-            by_year[str(t.year)]["countries"].add(country)
+            y["countries"].add(country)
             countries.setdefault(country, {"country": country, "date": t.date().isoformat(), "rowid": rowid})
+            y["order"].setdefault(country, {"country": country, "date": t.date().isoformat(), "rowid": rowid})
         if place:
-            c = cities[(place, country)]
-            c["days"].add(t.date())
-            c["rowid"] = c["rowid"] or rowid
-            c["country"] = country
-    top_cities = sorted(cities.items(), key=lambda kv: -len(kv[1]["days"]))[:16]
+            for c in (cities[(place, country)], y["cities"][(place, country)]):
+                c["days"].add(t.date())
+                c["rowid"] = c["rowid"] or rowid
+                c["country"] = country
+
+    def most_days(cs):
+        return [{"place": p, "country": c["country"], "days": len(c["days"]), "rowid": c["rowid"]}
+                for (p, _), c in sorted(cs.items(), key=lambda kv: -len(kv[1]["days"]))[:16]]
     total = sum(leg["km"] for leg in legs)
     return {"legs": legs[::-1], "km": total, "flights": sum(leg["flew"] for leg in legs),
             "km_flown": sum(leg["km"] for leg in legs if leg["flew"]),
             "longest": max(legs, key=lambda leg: leg["km"]) if legs else None,
-            "by_year": {y: {**v, "countries": sorted(v["countries"])} for y, v in sorted(by_year.items())},
+            # A year's countries in the order you went that year, and where its days were.
+            "by_year": {y: {**v, "countries": sorted(v["countries"]), "order": list(v["order"].values()), "cities": most_days(v["cities"])}
+                        for y, v in sorted(by_year.items())},
             "countries": list(countries.values()),
-            "cities": [{"place": p, "country": c["country"], "days": len(c["days"]), "rowid": c["rowid"]} for (p, _), c in top_cities],
+            "cities": most_days(cities),
             "points": len(pts), "first": pts[0][0].date().isoformat() if pts else None}
 
 
@@ -1275,12 +1996,15 @@ def located(con, pg=None, step=0):
 
 # ---------------------------------------------------------------- your year
 
-# What you did, by kind, for the year in numbers; kinds this file doesn't know still count toward your busiest day.
+# What you did, by kind, for your busiest day; kinds this file doesn't know still count toward it.
 YEAR_KINDS = {"message": "messages", "photo": "photos", "video": "videos", "email": "emails", "search": "searches",
               "visit": "pages visited", "commit": "commits", "note": "notes", "document": "documents", "post": "posts",
               "call": "calls", "voice_memo": "voice memos", "ai_turn": "AI prompts", "event": "events", "transaction": "payments",
-              "media": "videos watched"}
-BUSY_SKIP = ("visit", "media", "event", "transaction", "activity")
+              "media": "videos watched", "song": "songs played"}
+# For the year in numbers: the kinds counted from the year's records. The rest come from the page that shows them,
+# counted the way it counts (each search once, every video service, songs past a skip), so the numbers agree.
+YEAR_OWN = ("message", "photo", "video", "email", "call", "voice_memo", "event", "transaction")
+BUSY_SKIP = ("visit", "media", "song", "event", "transaction", "activity")
 NOT_YOURS = ("health_sample", "health_day", "sleep", "app_usage", "app_usage_day", "interaction", "contact", "record", "app",
              "profile", "inference", "follow", "invitation")
 
@@ -1310,7 +2034,8 @@ def years_present(con):
 
 def year(y):
     con = connect()
-    steps = ["Your people", "Your places", "Your journeys", "Your rhythms", "Your firsts", "What you made", "The year, day by day"]
+    steps = ["Your people", "Your places", "Your journeys", "Your rhythms", "Your firsts", "What you made",
+             "Your listening, watching and searches", "The year, day by day"]
     with Progress(steps) as pg:
         pg.step(0)
         P = cached("people", people)
@@ -1325,10 +2050,12 @@ def year(y):
         pg.step(5)
         M = cached("made", made)
         pg.step(6)
-        return _year(con, y, P, PL, J, R, F, M, pg)
+        media = {k: cached(k, fn) for k, fn in (("listening", listening), ("watching", watching), ("curiosity", curiosity))}
+        pg.step(7)
+        return _year(con, y, P, PL, J, R, F, M, media, pg)
 
 
-def _year(con, y, P, PL, J, R, F, M, pg):
+def _year(con, y, P, PL, J, R, F, M, media, pg):
     today = datetime.now(TZ).date()
     lo = datetime(int(y), 1, 1, tzinfo=TZ).astimezone(timezone.utc) - timedelta(days=1)
     hi = datetime(int(y) + 1, 1, 1, tzinfo=TZ).astimezone(timezone.utc) + timedelta(days=1)
@@ -1344,6 +2071,8 @@ def _year(con, y, P, PL, J, R, F, M, pg):
         t = parse(ts, meta_of(meta).get("timezone") if meta else None)
         if not t or t.year != int(y):
             continue
+        if kind == "media" and source in ("spotify", "app_usage"):
+            kind = "song"  # a song played, not a video watched
         counts[kind] += 1
         mine = str(is_me) == "1"
         if kind == "message":
@@ -1390,9 +2119,18 @@ def _year(con, y, P, PL, J, R, F, M, pg):
         "select ts, meta from records where kind = 'health_day' and ts like ?", (f"{y}-%",))]
     steps = [(d, s) for d, s in steps if s]
     best_steps = max(steps, key=lambda x: x[1]) if steps else None
+    made_y = M["totals"].get(y, {})
+    browsing = R["kinds"].get("browsing")
+    numbers = collections.Counter({YEAR_KINDS[k]: n for k, n in counts.items() if k in YEAR_OWN})
+    numbers.update({"searches": media["curiosity"]["years"].get(y, {}).get("count", 0),
+                    "videos watched": media["watching"]["years"].get(y, {}).get("count", 0),
+                    "songs played": media["listening"]["years"].get(y, {}).get("plays", 0),
+                    "pages visited": sum(browsing["years"].get(y, [])) if browsing else 0,
+                    "commits": made_y.get("code", 0), "notes and documents": made_y.get("writing", 0), "posts": made_y.get("posts", 0),
+                    "AI conversations": made_y.get("ai", 0)})
     return {
         "year": y, "years": years_present(con), "so_far": int(y) == today.year, "through": today.isoformat() if int(y) == today.year else None,
-        "counts": {YEAR_KINDS.get(k, k): n for k, n in counts.most_common() if k in YEAR_KINDS},
+        "counts": {k: n for k, n in numbers.most_common() if n},
         "messages": {"sent": sent, "received": received, "apps": [{"app": a, "messages": n} for a, n in apps.most_common(6)]},
         "people": {"count": len(in_year), "top": [{"key": p["key"], "name": p["name"], "messages": p["messages"]} for p in P["circle"].get(y, [])[:5]],
                    "new": len(new), "new_top": [{"key": p["key"], "name": p["name"], "messages": p["years"][y]} for p in new[:6]]},
@@ -1664,6 +2402,10 @@ def main(argv):
         out = cached("made", made)
     elif cmd == "groups":
         out = cached("groups", groups)
+    elif cmd == "they-know":
+        out = cached("they-know-v2", they_know)  # v2: who told on you has each time it told
+    elif cmd in ("listening", "movement", "curiosity", "watching"):
+        out = cached(cmd, {"listening": listening, "movement": movement, "curiosity": curiosity, "watching": watching}[cmd])
     elif cmd == "journeys":
         out = cached("journeys", journeys)
     elif cmd == "year":

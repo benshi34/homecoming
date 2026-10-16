@@ -185,7 +185,9 @@ export function errorsBySource(job: Job, result: StreamResult, connectorToSource
     else for (const s of job.sourceIds) out[s] ??= msg;
   }
   if (!Object.keys(result.errors).length && result.code !== 0 && result.code !== null) {
-    for (const s of job.sourceIds) out[s] = `Stopped with exit code ${result.code}. ${job.log.slice(-3).join(' ')}`.trim();
+    // Stopped without saying why: what it printed last is the best clue there is.
+    const last = job.log.slice(-3).join(' ').trim();
+    for (const s of job.sourceIds) out[s] = `It stopped before it finished.${last ? ` The last thing it said: ${last}` : ''}`;
   }
   return out;
 }

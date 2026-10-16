@@ -62,10 +62,14 @@ test('its status: not asked yet, asked, then collected', () => {
   const fresh = view('svc_wattpad', { state: st() });
   assert.equal(fresh.section, 'needs');
   assert.equal(fresh.status, 'Not requested yet');
-  assert.deepEqual(actionIds(fresh), ['open', 'mark-requested', 'add-file', 'draft-request', 'remove-service']);
+  assert.deepEqual(actionIds(fresh), ['open', 'mark-requested', 'add-file', 'draft-request', 'skip', 'remove-service']);
   const asked = view('svc_wattpad', { state: st((s) => (s.sources.svc_wattpad = { requestedAt: hoursAgo(2) })) });
   assert.equal(asked.section, 'working');
-  assert.match(asked.status, /^Requested 2 h ago\. Usually ready in/);
+  assert.match(asked.status, /^Requested 2 h ago\. Most services answer in a day or two; by law they have about 30 days\./);
+  const day3 = view('svc_wattpad', { state: st((s) => (s.sources.svc_wattpad = { requestedAt: hoursAgo(72) })) });
+  assert.equal(day3.section, 'working', 'no nudging after a day: it has the law\'s 30 days');
+  assert.ok(actionIds(asked).includes('remove-service'), 'can still be removed once asked for');
+  assert.ok(asked.actions.find((a) => a.id === 'remove-service')?.confirm, 'and asks first');
   const done = view('svc_wattpad', { state: st(), stats: { ...stats({ wattpad_other: { count: 40 } }), facets: { imported_documents: { wattpad: 2, linkedin: 9 } } } });
   assert.equal(done.section, 'done');
   assert.equal(done.records, 42, 'its documents count too, and only its own');

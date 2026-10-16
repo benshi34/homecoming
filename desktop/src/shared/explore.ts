@@ -30,13 +30,15 @@ export interface OnThisDay {
   date: string; // MM-DD
   label: string; // "October 12"
   years: OnThisDayYear[];
+  nearest?: { before: number | null; after: number | null }; // for a day with nothing: how many days away the nearest with something are
 }
 export interface OnThisDayYear {
   year: number;
   date: string;
   ago: number;
-  photos: { count: number; sample: number[]; places: string[] };
-  messages: { count: number; conversations: number; threads: { name: string; app: string; messages: number; rowid: number }[] };
+  photos: { count: number; sample: number[]; ids?: number[]; places: string[] }; // ids: every one; sample: a dozen through the day
+  // One a person (whichever apps: `apps`, the busiest conversation's rowid) or a group chat (members: who wrote).
+  messages: { count: number; conversations: number; threads: { name: string; app: string; apps?: string[]; messages: number; rowid: number; group?: boolean; members?: string[]; key?: string | null }[] };
   calls: { name: string; rowid: number; minutes: number }[];
   searches: { text: string; rowid: number }[];
   search_count: number;
@@ -104,6 +106,7 @@ export interface Trip {
   lat: number;
   lon: number;
   sample: number[];
+  photo_ids?: number[]; // every photo of the trip, in order
   people: { key: string; name: string; messages: number }[];
   money: number;
 }
@@ -140,6 +143,67 @@ export interface Made {
 
 export interface World { rings: [number, number][][] }
 
+// Listening (explore.py listening): every song played, from Spotify's history, the Mac's Now Playing (music apps) and
+// YouTube's artist channels.
+export interface ArtistPlays { name: string; plays: number; minutes: number; first: string; last: string; rowid: number; years: Record<string, number> }
+export interface TrackPlays { title: string; artist: string; plays: number; rowid: number; first?: string }
+export interface OnRepeat { title: string; artist: string; date: string; plays: number; rowid: number }
+export interface Listening {
+  plays: number; minutes: number; artists: number; songs: number;
+  first: { title: string; artist: string; ts: string; rowid: number } | null; last: string | null; from: Record<string, number>;
+  top_artists: ArtistPlays[]; top_tracks: TrackPlays[];
+  // A year's own: its top lists (each opening its latest play that year), when you listened, its songs on repeat.
+  years: Record<string, { plays: number; minutes: number; artists: number; new_artists: number; top_artists: { name: string; plays: number; rowid: number }[]; top_tracks: TrackPlays[];
+    by_hour?: number[]; on_repeat?: OnRepeat[] }>;
+  eras: { artist: string; start: string; end: string; plays: number; rowid: number }[]; // quarters, "2024-Q3"
+  on_repeat: OnRepeat[];
+  months: Record<string, number>; by_hour: number[]; weekday: number[];
+}
+
+// Moving and sleep (explore.py movement): Health's days and nights.
+export interface StepDay { date: string; steps: number; km: number; rowid: number }
+export interface Movement {
+  days: number; first: string | null; last: string | null; steps: number; km: number; avg: number;
+  best: StepDay | null; goal: number; goal_days: number; streak: { days: number; start: string | null; end: string | null };
+  years: Record<string, { days: number; avg: number; steps: number; km: number; flights: number; best: StepDay; goal_days?: number;
+    streak?: { days: number; start: string | null; end: string | null }; weekday?: number[]; top_days?: (StepDay & { place: string | null; trip: boolean })[] }>;
+  months: Record<string, number>; weekday: number[];
+  top_days: (StepDay & { place: string | null; trip: boolean })[];
+  trips: { avg: number; days: number; home_avg: number } | null;
+  sleep: {
+    nights: number; avg_min: number;
+    years: Record<string, { nights: number; avg_min: number; bedtime: number; wake: number; weekday?: number[]; longest?: { date: string; minutes: number; rowid: number } }>; // hours after midnight; 25 = 1 am
+    bedtime_months: Record<string, number>; weekday: number[];
+    longest: { date: string; minutes: number; rowid: number }; shortest: { date: string; minutes: number; rowid: number };
+  } | null;
+}
+
+// Curiosity (explore.py curiosity): every search, once.
+export interface SearchRef { q: string; ts: string; rowid: number }
+export interface Curiosity {
+  searches: number; queries: number; questions: number; first: SearchRef | null; last: string | null;
+  top: { q: string; count: number; first: string; last: string; rowid: number }[];
+  // A year's: its own words, every question first asked that year, what it searched again and again, by hour.
+  years: Record<string, { count: number; topics: { word: string; count: number; rowid: number }[]; questions: SearchRef[];
+    top?: { q: string; count: number; first: string; last: string; rowid: number }[]; by_hour?: number[] }>;
+  months: Record<string, number>; by_hour: number[];
+  before_trips: { trip: string; places: string[]; start: string; days: number; searches: SearchRef[]; count: number }[];
+}
+
+// Watching (explore.py watching): YouTube, Netflix, TikTok, and video apps the Mac said were playing.
+export interface Rewatched { title: string; channel: string | null; count: number; rowid: number; service: string }
+export interface Binge { date: string; count: number; rowid: number; channel: string | null }
+export interface Watching {
+  videos: number; channels: number; from: Record<string, number>;
+  first: { title: string; channel: string | null; ts: string; rowid: number } | null; last: string | null;
+  top_channels: { name: string; count: number; first: string; last: string; rowid: number; service: string; years: Record<string, number> }[];
+  rewatched: Rewatched[];
+  years: Record<string, { count: number; channels: number; top_channels: { name: string; count: number; rowid: number }[]; rewatched?: Rewatched[]; binges?: Binge[];
+    after_midnight?: number; by_hour?: number[] }>;
+  binges: Binge[];
+  after_midnight: number; months: Record<string, number>; by_hour: number[]; weekday: number[];
+}
+
 // Group chats (explore.py groups): every conversation with two or more others, from any app.
 export interface GroupChat {
   key: string;
@@ -172,7 +236,9 @@ export interface Journeys {
   flights: number;
   km_flown: number;
   longest: Leg | null;
-  by_year: Record<string, { km: number; flights: number; legs: number; countries: string[] }>;
+  // A year's: its countries in the order you went that year, and the places its days were.
+  by_year: Record<string, { km: number; flights: number; legs: number; countries: string[]; order?: { country: string; date: string; rowid: number }[];
+    cities?: { place: string; country: string | null; days: number; rowid: number }[] }>;
   countries: { country: string; date: string; rowid: number }[]; // in the order you first went
   cities: { place: string; country: string | null; days: number; rowid: number }[];
   points: number;
@@ -207,6 +273,42 @@ export interface Thread { rowid: number; app: string; name: string; group: boole
 export interface ChatEmbed { kind: 'chat'; rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: (ThreadMessage & { thumb?: string })[]; anchors: number[] }
 export interface PhotosEmbed { kind: 'photos'; photos: { rowid: number; ts: string | null; place: string | null; thumb: string }[] }
 export type EmbedData = ChatEmbed | PhotosEmbed;
+
+// A record's kind in plain words, for a record shown by itself ("health_day" -> "A day in Health"). A media record
+// is a song from Spotify or the Mac's Now Playing, a video elsewhere.
+const KIND_NAME: Record<string, string> = {
+  message: 'Message', reaction: 'Reaction', call: 'Call', email: 'Email', photo: 'Photo', video: 'Video', search: 'Search', visit: 'Page you visited',
+  song: 'Song you played', watch: 'Video you watched', event: 'Calendar event', reminder: 'Reminder', note: 'Note', document: 'Document',
+  voice_memo: 'Voice memo', commit: 'Commit', ai_turn: 'Message to an AI', post: 'Post', comment: 'Comment', like: 'Like', transaction: 'Payment',
+  payment: 'Payment', health_day: 'A day in Health', health_sample: 'A Health reading', sleep: 'A night\'s sleep', checkin: 'Check-in',
+  location: 'Where you were', contact: 'Contact', app_usage: 'App you used', app_usage_day: 'A day of apps you used', advertiser: 'An advertiser that has you',
+  inference: 'Something a service decided about you', off_platform: 'What a company told a service you did', ad: 'An ad you saw', follow: 'Follow',
+  profile: 'Profile', trip: 'Trip', flight: 'Flight', invitation: 'Invitation', interaction: 'Something you did', record: 'Record',
+};
+export function kindName(kind: string, source?: string): string {
+  if (kind === 'media') return source === 'spotify' || source === 'app_usage' ? 'Song you played' : 'Something you watched';
+  return KIND_NAME[kind] ?? (kind ? kind[0].toUpperCase() + kind.slice(1).replace(/_/g, ' ') : 'Record');
+}
+
+// A record's title in plain words: a photo by where it was taken ("Photo in the West Loop"), a day in Health by its
+// date, else what its source called it. Null when there's nothing better than a file name, or nothing.
+export function recordTitle(r: { kind: string; source: string; title?: string | null; text?: string | null }): string | null {
+  const what = kindName(r.kind, r.source);
+  if (r.kind === 'photo' || r.kind === 'video') {
+    // Photos lists a place from the spot out to the country ("the Lakefront Trail, Chicago, Illinois, United
+    // States"): the city is the part before the state, or the one named twice ("Tokyo, Tokyo, Japan").
+    const parts = (/^Place: (.+)$/m.exec(r.text ?? '')?.[1] ?? '').split(',').map((p) => p.trim()).filter(Boolean);
+    const inner = parts.length > 1 ? parts.slice(0, -1) : parts;
+    const twice = inner.find((p, i) => i > 0 && p.toLowerCase() === inner[i - 1].toLowerCase());
+    const city = twice ?? (inner.length >= 3 ? inner[inner.length - 2] : inner[0]);
+    if (city) return inner[0] && inner[0] !== city ? `${what} at ${inner[0]}, ${city}` : `${what} in ${city}`;
+  }
+  const t = (r.title ?? '').trim();
+  const day = /^Health (\d{4}-\d\d-\d\d)$/.exec(t);
+  if (day) return `${what}: ${new Date(`${day[1]}T12:00:00`).toLocaleDateString(undefined, { dateStyle: 'medium' })}`;
+  if (!t || /^[\w\- .()]+\.(heic|heif|jpe?g|png|gif|webp|tiff?|dng|mov|mp4|m4v)$/i.test(t)) return null;
+  return t;
+}
 
 // "imessage" -> "Messages": the apps a person's messages came from, in plain words.
 export const APP_LABEL: Record<string, string> = {
@@ -312,4 +414,21 @@ export function streamMatches(e: StreamEvent, q: string): boolean {
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
   const hay = [e.title, e.app, e.device ?? '', ...e.people, ...e.lines].join('\n').toLowerCase();
   return words.every((w) => hay.includes(w));
+}
+
+// What They Know (explore.py they-know): what advertisers and the services keep about you, from your exports. How an
+// advertiser got you: a list it uploaded (customers, subscribers, contacts) that matched you; your activity on its
+// website, app or store; a store visit; people like those on its lists (X's lookalikes); its catalog; or it chose
+// not to reach you.
+export type AdHow = 'list' | 'activity' | 'store' | 'lookalike' | 'catalog' | 'excluded';
+export interface Advertiser { name: string; services: Record<string, AdHow[]>; emailed: boolean; rowid: number }
+// service: who decided it, "Facebook and Instagram" when both did (services, each).
+export interface Decided { service: string; services: string[]; what: string; label: string; group: 'guess' | 'interest' | 'other'; items: { value: string; rowid: number; off?: boolean }[] }
+export interface Told { name: string; service: string; events: number; types: Record<string, number>; first: string | null; last: string | null; rowid: number;
+  timeline: { type: string | null; ts: string }[] }
+export interface TheyKnow {
+  advertisers: number; on_lists: number; from_activity: number; emailed: number; decided_count: number; told_count: number; ads_count: number;
+  services: { service: string; advertisers: number; how: Partial<Record<AdHow, number>>; decided: number; told: number; ads: number }[];
+  advertiser_list: Advertiser[]; decided: Decided[]; told: Told[]; told_months: Record<string, number>;
+  ads: { by_service: Record<string, number>; top: { name: string; count: number; rowid: number }[]; months: Record<string, number> };
 }

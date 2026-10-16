@@ -1,5 +1,5 @@
-// AI turned off while it's at work, and what still happens without it: Do It for Me stops quietly and what it was doing
-// is set aside; an answer under way in Ask stops; a ready email still says so, but nothing downloads by itself.
+// AI (or Do It for Me) turned off while it's at work, and what still happens without it: Do It for Me stops quietly and
+// what it was doing is set aside; an answer under way in Ask stops; a ready email still says so, but nothing downloads by itself.
 // Stand-ins for Claude Code (test/fakes): in Chrome, and answering in Ask.
 
 import assert from 'node:assert/strict';
@@ -62,12 +62,27 @@ test('the Stop button stops it quietly too', async () => {
   await act(p, 'instagram', 'agent-request');
   await until(p, 'working', working, 15_000);
   await act(p, 'instagram', 'agent-stop');
-  await until(p, 'stopped', (x) => find(x, 'instagram').status === 'Not requested yet', 10_000);
+  const s = await until(p, 'stopped', (x) => find(x, 'instagram').status === 'Not requested yet', 10_000);
+  assert.match(find(s, 'instagram').detail ?? '', /^You stopped Claude just now\. If it had already asked Instagram for your data, choose I've Requested It\./, 'and what to do if it got that far');
   await new Promise((r) => setTimeout(r, 1000));
   assert.doesNotMatch(opened(), /Couldn't finish/);
 });
 
-test('a "needs you" left from before is set aside while AI is off, and back when it is on', async () => {
+test('turning Do It for Me off (AI staying on) stops it quietly too', async () => {
+  const p = run.page;
+  await on();
+  await act(p, 'instagram', 'agent-request');
+  await until(p, 'working', working, 15_000);
+  await settings({ agentExports: false });
+  await until(p, 'set aside', (x) => find(x, 'instagram').status === 'Not requested yet' && !x.jobs.length, 10_000);
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.equal(saved().sources.instagram?.agent, undefined, 'stopped, and nothing left of it');
+  assert.equal(saved().sources.instagram?.requestedAt, undefined);
+  assert.doesNotMatch(opened(), /Couldn't finish/);
+  await on();
+});
+
+test('a run cut short by quitting is set aside while AI is off, and back when it is on', async () => {
   const p = run.page;
   await settings({ aiOn: true });
   // As Homecoming leaves one when it quits mid-run.
@@ -80,12 +95,14 @@ test('a "needs you" left from before is set aside while AI is off, and back when
     FAKE_BROWSER_LOG: file('agent.log'), UMP_MAIL_DB: path.join(sb.home, 'Mail/V10/MailData/Envelope Index'), UMP_NOTIFICATIONS_DB: file('no-notifications/db'), UMP_SIGNAL_MS: '500',
     UMP_CLAUDE_CMD: path.join(DESKTOP, 'test/fakes/fake_claude.py'), FAKE_CLAUDE_PLAN: file('claude-plan.json') }));
   await run.page.emulateMedia({ reducedMotion: 'reduce' });
-  let s = await until(run.page, 'needs you', (x) => find(x, 'instagram').status.startsWith('Needs you'), 15_000);
-  assert.deepEqual(find(s, 'instagram').actions.map((a) => [a.id, !!a.ai]), [['agent-continue', true], ['agent-dismiss', false]], 'Continue is AI, and says so');
+  let s = await until(run.page, 'interrupted', (x) => find(x, 'instagram').status === 'Interrupted when Homecoming quit', 15_000);
+  assert.deepEqual(find(s, 'instagram').actions.map((a) => [a.label, !!a.ai]), [['Carry On', true], ['Start Over', true], ['I\'ll Do It Myself', false]], 'carrying on is AI, and says so');
+  await selectSource(run.page, 'instagram');
+  assert.equal(await run.page.locator('[data-testid=agent-reply]').count(), 0, 'nothing to answer');
   await settings({ aiOn: false });
   s = await until(run.page, 'set aside', (x) => find(x, 'instagram').status === 'Not requested yet', 10_000);
   await settings({ aiOn: true });
-  s = await until(run.page, 'back', (x) => find(x, 'instagram').status.startsWith('Needs you'), 10_000);
+  s = await until(run.page, 'back', (x) => find(x, 'instagram').status === 'Interrupted when Homecoming quit', 10_000);
   await act(run.page, 'instagram', 'agent-dismiss');
 });
 

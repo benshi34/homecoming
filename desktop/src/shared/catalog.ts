@@ -64,25 +64,25 @@ export const CATALOG: Source[] = [
     blurb: 'One permission unlocks Messages, Mail, Photos, Notes, Calendar, Reminders, call history, Safari and Screen Time.',
     steps: [
       { text: 'Open System Settings → Privacy & Security → Full Disk Access.' },
-      { text: 'Turn on the app that runs this one.', detail: 'In development that is the app you started it from (Terminal, or Claude). A packaged build lists itself as Homecoming.' },
-      { text: 'Come back here and choose Check again.' },
+      { text: 'Turn on Homecoming.', detail: 'If it isn\'t in the list, choose +, then pick Homecoming in Applications. macOS may ask to quit and reopen it: say yes, and the app carries on where it was.' },
+      { text: 'Come back here and choose Check Again.' },
     ],
   },
   {
-    id: 'python_env', name: 'Python for the connectors', group: 'setup',
-    blurb: 'The connectors run on Python 3 with two extra packages: cryptography (iPhone backups) and pypdf (documents).',
+    id: 'python_env', name: 'Python', group: 'setup',
+    blurb: 'The parts of the app that read your data run on Python 3, with two extra pieces: one for iPhone backups and one for PDFs.',
   },
   {
-    id: 'corpus_location', name: 'Where your corpus lives', group: 'setup',
-    blurb: 'The corpus holds every message and email you have. It should stay on this Mac, out of iCloud Drive.',
+    id: 'corpus_location', name: 'Where your library is', group: 'setup',
+    blurb: 'Your library holds every message and email you have. It should stay on this Mac, out of iCloud Drive.',
   },
   {
     id: 'disk_space', name: 'Free space', group: 'setup',
-    blurb: 'A full corpus can take tens of GB: the index, a decrypted iPhone backup, and the exports themselves.',
+    blurb: 'A full library can take tens of GB: the exports themselves, a decrypted iPhone backup, and the index that makes it searchable.',
   },
   {
     id: 'retention_claude', name: 'Keep Claude Code history', group: 'setup',
-    blurb: 'Claude Code deletes transcripts after 30 days unless cleanupPeriodDays is raised.',
+    blurb: 'Claude Code deletes its conversation transcripts after 30 days unless it\'s told to keep them.',
   },
   {
     id: 'retention_messages', name: 'Keep messages forever', group: 'setup',
@@ -101,11 +101,11 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'retention_shell', name: 'Keep Terminal history', group: 'setup',
-    blurb: 'zsh keeps only your last 1,000 commands, and no times, unless told otherwise.',
+    blurb: 'Terminal keeps only your last 1,000 commands, and not when you ran them, unless told otherwise.',
   },
   {
     id: 'retention_codex', name: 'Codex history', group: 'setup',
-    blurb: 'Codex keeps every session in ~/.codex/sessions until you delete it, so there is nothing to change.',
+    blurb: 'Codex keeps every session until you delete it, so there is nothing to change.',
   },
   {
     id: 'retention_google', name: 'Keep your Google activity', group: 'setup', url: 'https://myactivity.google.com/activitycontrols',
@@ -339,14 +339,14 @@ export const CATALOG: Source[] = [
 
   // ---------------------------------------------------------------- guided (the user does it, the app watches)
   {
-    id: 'other_mail', name: 'Other email accounts', group: 'guided', asksAccountName: true, gapKeys: ['*'],
+    id: 'other_mail', name: 'Outlook and other email', group: 'guided', asksAccountName: true, gapKeys: ['*'],
     blurb: 'Outlook.com, Hotmail, school and work mail. Outlook.com has no web export, so this goes through Mail.',
     importDir: 'other_mail',
     steps: [
       { text: 'System Settings → Internet Accounts → add the account with Mail turned on.', detail: 'Outlook.com and Hotmail: choose Microsoft Exchange.' },
       { text: 'Open Mail and leave it open until the mailbox finishes downloading.', detail: 'A large mailbox can take 10 hours or more. The count keeps rising until it is done.' },
       { text: 'In Mail, select the mailbox → Mailbox → Export Mailbox. Repeat for Sent and Archive.' },
-      { text: 'Name the account below, then drop the exported .mbox folders here or choose Add files.' },
+      { text: 'Give the account a name above, then drop the exported .mbox folders on this page, or choose Add the Download….' },
     ],
   },
   {
@@ -402,6 +402,11 @@ export const CATALOG: Source[] = [
 ];
 
 export const BY_ID: Record<string, Source> = Object.fromEntries(CATALOG.map((s) => [s.id, s]));
+// Services you set up by hand rather than request (Outlook and other mail through Mail, Maps Timeline from the phone,
+// Slack and Zoom from their own export pages): accounts like the rest, chosen with them, each with its page. The other
+// guided sources (a vCard, WhatsApp chats, Messages in iCloud) fill gaps the Mac and iPhone leave: not accounts.
+export const GUIDED_ACCOUNTS = ['other_mail', 'maps_timeline', 'slack', 'zoom'];
+export const isAccount = (s: { id: string; group: string }) => s.group === 'web' || GUIDED_ACCOUNTS.includes(s.id);
 
 // Domains of the built-in accounts, so a service found in your data that's already here isn't offered again.
 const BUILTIN_DOMAINS: Record<string, string[]> = {
@@ -429,7 +434,8 @@ export function serviceSource(e: ServiceEntry): Source {
     { text: 'No download? Ask for one: services have to send a copy of your data within about 30 days of an access request (GDPR in Europe, CCPA in California, and similar laws elsewhere).',
       detail: e.email ? `Draft a request writes the email to ${e.email} for you to send.` : 'Draft a request writes the email for you to send.' },
   ];
-  steps.push({ text: 'When it arrives, leave it in Downloads: the app picks it up from there. Or drop it on this window.' });
+  steps.push({ text: 'When it arrives, drop it on this page or choose Add the Download….',
+    detail: `Once you've said you requested it, a download in Downloads with "${e.name}" in its name is picked up by itself.` });
   const key = serviceKey(e.folder);
   return {
     id: e.id, name: e.name, group: 'web', custom: e.from, slug: e.slug, domains: e.domains, steps, waitHours: SERVICE_WAIT, importDir: e.folder,

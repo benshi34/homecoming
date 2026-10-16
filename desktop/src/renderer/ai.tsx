@@ -1,20 +1,24 @@
 // AI in Homecoming, in one place: on or off (agreed to once), which agent does the work for all of it (Claude Code or
-// Codex, signed in the way you choose, an API key, or a model on this Mac), and each thing that uses one. The Setup
-// Assistant shows the same as one of its steps, and the sidebar's AI page after. Everything AI does carries the AI mark.
+// Codex, signed in the way you choose, an API key, or a model on this Mac), with what that choice needs right under it,
+// and each thing that uses one. The Setup Assistant shows the same as one of its steps, and the sidebar's AI Settings
+// page after. Everything AI does carries the AI mark.
 
 import { type ReactNode, useState } from 'react';
-import { type AskProvider, LOCAL_SERVERS, PROVIDER, PROVIDERS, RETENTION, retentionOk } from '../shared/ask.ts';
+import { type AskProvider, PROVIDER, RETENTION, retentionOk } from '../shared/ask.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
-import { ProviderSheet, RetentionSheet } from './ask.tsx';
+import { AgentChoices, RetentionSheet } from './ask.tsx';
 import { Glyph, GlyphTile } from './icons.tsx';
 import { AiMark, Button, Group, GroupRow, Toggle } from './ui.tsx';
+
+// Turning AI on (agreed to then, the first time) or not.
+export const decideAi = (snap: Snapshot, on: boolean) =>
+  api.settings(on ? { aiOn: true, aiAgreedAt: snap.settings.aiAgreedAt ?? new Date().toISOString() } : { aiOn: false });
 
 // What turning it on means, said once.
 // actions: its own Not Now and Turn On buttons (the Setup Assistant has them in its footer instead).
 export function AiAgreement({ snap, onDecided, actions = true }: { snap: Snapshot; onDecided?: (on: boolean) => void; actions?: boolean }) {
-  const decide = (on: boolean) => void api.settings(on ? { aiOn: true, aiAgreedAt: snap.settings.aiAgreedAt ?? new Date().toISOString() } : { aiOn: false })
-    .then(() => onDecided?.(on));
+  const decide = (on: boolean) => void decideAi(snap, on).then(() => onDecided?.(on));
   return (
     <div className="ai-agree group-box" data-testid="ai-agreement">
       <div className="ai-agree-head"><AiMark size={22} /><b>Use AI in Homecoming?</b></div>
@@ -34,11 +38,11 @@ export function AiAgreement({ snap, onDecided, actions = true }: { snap: Snapsho
   );
 }
 
-// only: just the choice of agent (the Setup Assistant, before AI is turned on).
+// only: just the choice of agent (the Setup Assistant and Ask, before AI is turned on).
 export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) {
   const s = snap.settings;
   const a = snap.ask.settings;
-  const [sheet, setSheet] = useState<null | 'provider' | { retention: AskProvider }>(null);
+  const [sheet, setSheet] = useState<null | { retention: AskProvider }>(null);
   const [chrome, setChrome] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const decided = s.aiOn !== undefined && !!s.aiAgreedAt;
@@ -46,13 +50,7 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
   const p = PROVIDER[a.provider];
   const claudeCode = snap.ask.installed['claude-code'];
   const r = RETENTION[a.provider];
-  const company = a.provider === 'claude-code' || a.provider === 'anthropic' ? 'Anthropic' : 'OpenAI';
-  const status = (x: (typeof PROVIDERS)[number]) => {
-    if (!snap.ask.installed[x.harness]) return `${x.name} isn't on this Mac`;
-    if (x.needsKey) return snap.ask.keys[x.needsKey] ? 'Key saved' : 'Needs a key';
-    if (x.id === 'local') return `${LOCAL_SERVERS[a.localServer].name}, ${a.localUrl}`;
-    return `Uses the sign-in in ${x.name} on this Mac`;
-  };
+  const company = p.harness === 'codex' ? 'OpenAI' : 'Anthropic';
   const check = () => {
     setChecking(true);
     void api.aiChrome().then((x) => {
@@ -66,6 +64,8 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
     : `Claude Code works in your Chrome, where you're signed in, through the Claude in Chrome extension.${p.harness === 'codex' ? ' It\'s Claude even with Codex picked above: Codex can use a browser only inside its own app.' : ''}${
       chrome === 'connected' ? ' The extension is connected.' : chrome === 'not connected' ? ' The extension isn\'t connected: open Chrome and turn it on.' : ''}`;
   const off = <span className="tag">Off</span>;
+  // Ask and making sense of a download only ever run when you ask: no switch, just who answers.
+  const who = on ? <span className="tag">{p.name}</span> : off;
   return (
     <div className="ai-settings" data-testid="ai-settings">
       {only ? null : decided ? (
@@ -77,23 +77,17 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
       ) : <AiAgreement snap={snap} />}
 
       <Group title="Who does the work" footer="Ask and making sense of downloads use it. Do It for Me uses Claude Code.">
-        {PROVIDERS.map((x) => (
-          <GroupRow key={x.id} title={<>{x.name} <span className="sub">· {x.auth}</span></>} subtitle={status(x)} selected={x.id === a.provider} chevron={false}
-            style={snap.ask.installed[x.harness] ? undefined : { opacity: 0.5 }}
-            onClick={() => void api.ask({ op: 'settings', patch: { provider: x.id } })} testId={`ai-provider-${x.id}`}
-            trailing={x.id === a.provider ? <Glyph name="check" size={14} strokeWidth={2.6} /> : undefined} />
-        ))}
-        <GroupRow title="Model, key and server…" onClick={() => setSheet('provider')} testId="ai-model" />
+        <AgentChoices snap={snap} testPrefix="ai-provider" />
         {r && (
           <GroupRow title="Data settings" onClick={() => setSheet({ retention: a.provider })} testId="ai-retention"
-            subtitle={retentionOk(a, a.provider) ? r.short : `Check that ${company} won't keep what it's sent`}
-            trailing={retentionOk(a, a.provider) ? <Glyph name="checkCircle" size={15} /> : <Glyph name="warning" size={15} />} />
+            subtitle={retentionOk(a, a.provider) ? r.done : `Check that ${company} won't keep what it's sent`}
+            trailing={retentionOk(a, a.provider) ? <Glyph name="checkCircle" size={15} /> : <span className="warn-text"><Glyph name="warning" size={15} /></span>} />
         )}
       </Group>
 
-      {!only && <Group title="What uses it">
+      {!only && <Group title="What uses it" footer="Ask and making sense of a download send nothing until you ask. Do It for Me works on its own, so it has a switch.">
         <GroupRow icon={<GlyphTile glyph="bubble" color="blue" />} title="Ask" chevron={false}
-          subtitle={`Answers questions about your data and cites the records it used. ${p.name} sees only what it looks up.`} trailing={on ? <span className="tag">On</span> : off} />
+          subtitle={`Answers questions about your data when you ask, and cites the records it used. ${p.name} sees only what it looks up.`} trailing={who} />
         <GroupRow icon={<GlyphTile glyph="sparkle" color="purple" />} title="Do It for Me" chevron={false} subtitle={doIt}
           trailing={on && claudeCode ? (
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -105,12 +99,10 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
           subtitle="When a service says your data is ready, or Claude finds it on a check, Claude downloads it and the app reads it."
           trailing={on && claudeCode && s.agentExports ? <Toggle checked={s.agentDownloads !== false} onChange={(v) => void api.settings({ agentDownloads: v })} label="Download when ready" testId="toggle-agent-downloads" /> : off} />
         <GroupRow icon={<GlyphTile glyph="layers" color="teal" />} title="Make sense of new downloads" chevron={false}
-          subtitle="For a download in a format the app doesn't know: the agent writes a mapping from a sample of its layout."
-          trailing={<span className="tag">{!on ? 'Off' : snap.claude === 'codex' ? 'Codex' : snap.claude ? 'Claude Code' : 'Needs Claude Code or Codex'}</span>} />
+          subtitle="For a download in a format the app doesn't know, when you ask: the agent writes a mapping from a sample of its layout." trailing={who} />
       </Group>}
 
-      {sheet === 'provider' && <ProviderSheet snap={snap} onClose={() => setSheet(null)} onRetention={(x) => setSheet({ retention: x })} />}
-      {sheet && typeof sheet === 'object' && RETENTION[sheet.retention] && (
+      {sheet && RETENTION[sheet.retention] && (
         <RetentionSheet provider={sheet.retention} confirmed={retentionOk(a, sheet.retention)} onClose={() => setSheet(null)}
           onConfirm={() => void api.ask({ op: 'confirm-retention', provider: sheet.retention }).then(() => setSheet(null))} />
       )}
@@ -118,15 +110,43 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
   );
 }
 
-// The sidebar's AI page.
+// Ask while AI isn't on: the first time, what turning it on means with the agents to pick from; after Not Now or
+// turning it off, "AI is off", turned on again right here (through the agreement, if it was never agreed to).
+export function AskAiGate({ snap, onSettings }: { snap: Snapshot; onSettings: () => void }) {
+  const s = snap.settings;
+  const [agreeing, setAgreeing] = useState(false);
+  if (s.aiOn === false && !agreeing) {
+    const agreed = !!s.aiAgreedAt;
+    return (
+      <div className="empty" data-testid="ask-ai-off"><AiMark size={30} /><h2>AI is off</h2>Ask uses an AI agent to look things up in your data.
+        <div className="empty-actions">
+          <Button onClick={onSettings} testAction="open-ai">AI Settings…</Button>
+          <Button kind="primary" ai onClick={() => (agreed ? void decideAi(snap, true) : setAgreeing(true))} testAction="ask-ai-on">{agreed ? 'Turn On AI' : 'Turn On AI…'}</Button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="ai-page" data-testid="ask-ai-gate">
+      <AiAgreement snap={snap} actions={false} />
+      <AiSettings snap={snap} only="agents" />
+      <div className="ai-gate-actions">
+        <Button onClick={() => (agreeing ? setAgreeing(false) : void decideAi(snap, false))} testAction="ai-not-now">Not Now</Button>
+        <Button kind="primary" ai onClick={() => void decideAi(snap, true)} testAction="ai-on">Turn On AI</Button>
+      </div>
+    </div>
+  );
+}
+
+// The sidebar's AI Settings page.
 export function AiPage({ snap, toolbar }: { snap: Snapshot; toolbar?: ReactNode }) {
   return (
     <div className="column grouped" data-testid="ai-page">
-      <div className="toolbar drag"><h1>AI</h1><div className="spacer" />{toolbar}</div>
+      <div className="toolbar drag"><h1>AI Settings</h1><div className="spacer" />{toolbar}</div>
       <div className="scroll">
         <div className="ai-page">
-          <div className="ai-hero"><AiMark size={40} /><h2>AI</h2>
-            <p>One agent does the AI work in Homecoming. Pick it here, and turn each use of it on or off.</p></div>
+          <div className="ai-hero"><AiMark size={40} /><h2>AI Settings</h2>
+            <p>One agent does the AI work in Homecoming: pick it here, with its key or model. Ask and making sense of a download use it only when you ask; Do It for Me can be turned on or off.</p></div>
           <AiSettings snap={snap} />
         </div>
       </div>

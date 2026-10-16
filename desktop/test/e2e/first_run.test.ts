@@ -47,7 +47,7 @@ test('identity comes pre-filled from the Mac, validates, saves, and re-labels wh
   assert.ok(await row('phone:+14155550100').locator('input').isChecked());
   for (const box of await form.locator('.cand-row input').all()) if (await box.isChecked()) await box.uncheck();
   await form.locator('button[type=submit]').click();
-  assert.match(await form.locator('.error').innerText(), /at least one name and one email/);
+  assert.match(await form.locator('.error').innerText(), /Add your name and an email address/);
   await row('name:ada lovelace').locator('input').check();
   await row('email:ada@example.com').locator('input').check();
   await run.page.fill('#add-email', 'ada.old@example.com');
@@ -86,6 +86,10 @@ test('one click keeps Claude Code transcripts, leaving other settings alone', as
   assert.equal(find(s, 'retention_claude').status, 'Transcripts are deleted after 7 days');
   await selectSource(run.page, 'retention_claude');
   await clickAction(run.page, 'fix-claude-retention');
+  // It changes Claude Code's own settings file: it asks first, saying exactly what.
+  const confirm = run.page.locator('[data-testid=confirm]');
+  assert.match(await confirm.innerText(), /cleanupPeriodDays/);
+  await confirm.locator('button', { hasText: 'Continue' }).click();
   s = await until(run.page, 'retention fixed', (x) => find(x, 'retention_claude').section === 'done');
   assert.deepEqual(readJson(path.join(sb.home, '.claude/settings.json')), { theme: 'dark', cleanupPeriodDays: 100000 });
 });

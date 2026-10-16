@@ -7,66 +7,155 @@
 // Charts follow one rule set: a single blue for single series, a validated light->dark blue ramp for heatmaps
 // (its own steps in dark mode), hover on every mark, and a list or table beside each chart.
 
-import { createContext, type CSSProperties, type ReactNode, type RefObject, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createContext, type CSSProperties, type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { count } from '../shared/format.ts';
 import {
-  APP_LABEL, type ExploreProgress, type FirstItem, type FirstKind, type Firsts, type GroupChat, type GroupChats, hourLabel, isError,
-  type JourneyPlace, type Journeys, type Leg, type Made, type MadeKind, type OnThisDay, type OnThisDayYear, type People, type Person,
+  APP_LABEL, type Curiosity, type ExploreProgress, type FirstItem, type FirstKind, type Firsts, type GroupChat, type GroupChats, hourLabel, isError,
+  type JourneyPlace, type Journeys, type Leg, type Listening, type Made, type MadeKind, type Movement, type OnThisDay, type OnThisDayYear, type People, type Person,
   type PersonDetail, type Places, type RecordBrief, type Rhythms, type Stream, type StreamEvent, clockOf, GROUP_OF, STREAM_GROUPS, streamDays,
-  streamMatches, type Thread, type Trip, WEEKDAYS, type World, type YearStory,
+  streamMatches, type Thread, type Trip, type Watching, WEEKDAYS, type World, type YearStory, type AdHow, type Advertiser, type Decided, kindName,
+  type TheyKnow, type Told,
 } from '../shared/explore.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { RecordSheet } from './ask.tsx';
-import { Glyph } from './icons.tsx';
-import { animate, Button, Checkmark, ProgressBar, reducedMotion, Sheet, Spinner } from './ui.tsx';
+import { Glyph, SourceIcon } from './icons.tsx';
+import { animate, Button, Checkmark, ProgressBar, reducedMotion, Sheet, sheetOpen, Spinner } from './ui.tsx';
 
 type View = { id: 'home' } | { id: 'on-this-day' } | { id: 'people' } | { id: 'person'; key: string; name: string }
   | { id: 'places' } | { id: 'trip'; trip: Trip } | { id: 'rhythms' } | { id: 'firsts' } | { id: 'made' }
-  | { id: 'year' } | { id: 'journeys' } | { id: 'groups' } | { id: 'group'; key: string; name: string } | { id: 'stream' };
+  | { id: 'year' } | { id: 'journeys' } | { id: 'groups' } | { id: 'group'; key: string; name: string } | { id: 'stream'; month?: string; day?: string }
+  | { id: 'listening' } | { id: 'movement' } | { id: 'curiosity' } | { id: 'watching' } | { id: 'they-know' } | { id: 'locked'; tile: HomeId };
 
 const TITLES: Record<View['id'], string> = {
   home: 'Explore', 'on-this-day': 'On This Day', people: 'Your People', person: '', places: 'Places and Trips', trip: 'Trip',
   rhythms: 'Your Rhythms', firsts: 'Firsts', made: 'What You Made', year: 'Your Year', journeys: 'Journeys', groups: 'Group Chats', group: '',
-  stream: 'Your Stream',
+  stream: 'Your Stream', listening: 'Listening', movement: 'Moving and Sleep', curiosity: 'Curiosity', watching: 'Watching', locked: '',
+  'they-know': 'What They Know',
 };
 
 // The home tile an artifact page zooms back into.
 let returnTo: string | null = null;
+
+// Where Explore is: the pages you came through (Back's history), each with what you chose on it (a year, a slide,
+// a search, a sort, Show All) and how far down it was scrolled, so Back lands exactly where you were. It's kept out
+// here, so leaving Explore for another part of the window and coming back reopens it where you left it.
+interface Entry { view: View; kept: Map<string, unknown>; scroll: number; n: number }
+let entries = 0;
+const entryOf = (view: View): Entry => ({ view, kept: new Map(), scroll: 0, n: ++entries });
+let history: Entry[] = [entryOf({ id: 'home' })];
+const onHome = new Set<() => void>();
+
+// Explore back to its home page (the sidebar's Explore, clicked on Explore), now or the next time it opens.
+export function exploreHome() {
+  history = [entryOf({ id: 'home' })];
+  returnTo = null;
+  for (const f of onHome) f();
+}
+
+// Explore on one of its pages, with Back to its home (a source's page links to where its data is explored).
+export type ExplorePage = 'people' | 'places' | 'listening' | 'movement' | 'curiosity' | 'watching' | 'made' | 'stream' | 'rhythms' | 'groups' | 'they-know';
+export function exploreOpen(id: ExplorePage) {
+  history = [entryOf({ id: 'home' }), entryOf({ id } as View)];
+  returnTo = null;
+  for (const f of onHome) f();
+}
+export const explorePageTitle = (id: ExplorePage) => TITLES[id];
+
+// A page's choice, kept in its entry in Back's history under a name unique on the page: useState that comes back as
+// it was. No name: not kept.
+const Kept = createContext<Map<string, unknown> | null>(null);
+function useKept<T>(name: string | null, initial: T | (() => T)): [T, (v: T | ((prev: T) => T)) => void] {
+  const ctx = useContext(Kept);
+  const bag = name === null ? null : ctx;
+  const [v, setV] = useState<T>(() => (bag?.has(name!) ? (bag.get(name!) as T) : typeof initial === 'function' ? (initial as () => T)() : initial));
+  const set = useCallback((x: T | ((prev: T) => T)) => setV((prev) => {
+    const next = typeof x === 'function' ? (x as (prev: T) => T)(prev) : x;
+    bag?.set(name!, next);
+    return next;
+  }), [bag, name]);
+  return [v, set];
+}
 
 // Example data in place of the corpus (the welcome page's tour): every artifact comes from `data`, every photo is
 // `thumb`, and nothing opens a record, so no real record or photo can show up in an example.
 export interface ExampleSet { data: Record<string, unknown>; thumb: (rowid: number) => string }
 const Examples = createContext<ExampleSet | null>(null);
 
-export function ExplorePage({ toolbar, example }: { snap?: Snapshot; toolbar?: ReactNode; example?: ExampleSet }) {
-  const [stack, setStack] = useState<View[]>([{ id: 'home' }]);
+// onSource: show a source in the main window (a locked tile's "Add It…").
+export function ExplorePage({ snap, toolbar, example, onSource }: { snap?: Snapshot; toolbar?: ReactNode; example?: ExampleSet; onSource?: (id: string) => void }) {
+  // The welcome tour's Explore keeps its own history, apart from yours.
+  const [stack, setStackNow] = useState<Entry[]>(() => (example ? [entryOf({ id: 'home' })] : history));
+  const setStack = (f: (s: Entry[]) => Entry[]) => setStackNow((s) => {
+    const next = f(s);
+    if (!example) history = next;
+    return next;
+  });
   const [record, setRecord] = useState<number | null>(null);
   const [conversation, setConversation] = useState<number | null>(null);
   const [scrolled, setScrolled] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
-  const saved = useRef<number[]>([]); // scroll position at each depth, so going back lands where you were
-  const view = stack[stack.length - 1];
+  const top = stack[stack.length - 1];
+  const view = top.view;
   const depth = stack.length;
   // From home, the tile you clicked zooms into the page; deeper pages push in from the side, like System Settings.
   const open = (v: View, from?: HTMLElement) => {
-    saved.current[depth - 1] = scroller.current?.scrollTop ?? 0;
-    saved.current.length = depth;
     const zoom = depth === 1 && !!from;
     if (zoom) {
       for (const el of document.querySelectorAll('.explore-tile.morph')) el.classList.remove('morph');
       from.classList.add('morph');
       returnTo = v.id;
     }
-    animate(() => setStack((s) => [...s, v]), zoom ? 'zoom' : 'forward');
+    animate(() => setStack((s) => [...s, entryOf(v)]), zoom ? 'zoom' : 'forward');
   };
   const back = () => animate(() => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s)), depth === 2 ? 'zoom' : 'back');
+  const backRef = useRef(back);
+  backRef.current = depth > 1 ? back : () => {};
+  // Back is also ⌘[, and Esc when no sheet is open (and you aren't typing).
+  useEffect(() => {
+    if (example) return;
+    const k = (e: KeyboardEvent) => {
+      if (sheetOpen()) return;
+      const typing = !!(e.target as HTMLElement)?.closest?.('input, textarea, select, [contenteditable]');
+      if ((e.metaKey && e.key === '[') || (e.key === 'Escape' && !typing && !e.metaKey && !e.altKey)) {
+        e.preventDefault();
+        backRef.current();
+      }
+    };
+    window.addEventListener('keydown', k);
+    const home = () => setStackNow(history);
+    onHome.add(home);
+    return () => {
+      window.removeEventListener('keydown', k);
+      onHome.delete(home);
+    };
+  }, []);
+  // Each page opens where it was left: at the top the first time, else where it was scrolled to. A page can still be
+  // growing as it comes back (a chart measures its width first), so this tries again for a moment, until it fits or
+  // you scroll yourself.
   useLayoutEffect(() => {
-    if (scroller.current) scroller.current.scrollTop = saved.current[depth - 1] ?? 0;
-  }, [depth]);
-  const title = view.id === 'person' || view.id === 'group' ? view.name : view.id === 'trip' ? tripTitle(view.trip) : TITLES[view.id];
+    const el = scroller.current;
+    if (!el) return;
+    const want = top.scroll;
+    el.scrollTop = want;
+    if (el.scrollTop >= want - 1) return;
+    let tries = 0, raf = 0;
+    const stop = () => cancelAnimationFrame(raf);
+    const again = () => {
+      el.scrollTop = want;
+      top.scroll = want;
+      if (el.scrollTop < want - 1 && ++tries < 40) raf = requestAnimationFrame(again);
+    };
+    raf = requestAnimationFrame(again);
+    el.addEventListener('wheel', stop, { once: true, passive: true });
+    return () => {
+      stop();
+      el.removeEventListener('wheel', stop);
+    };
+  }, [top.n]);
+  const title = view.id === 'person' || view.id === 'group' ? view.name : view.id === 'trip' ? tripTitle(view.trip) : view.id === 'locked' ? ART[view.tile].title : TITLES[view.id];
   const none = () => {};
-  const ctx: Ctx = { open, onRecord: example ? none : setRecord, onConversation: example ? none : setConversation };
+  const ctx: Ctx = { open, onRecord: example ? none : setRecord, onConversation: example ? none : setConversation, snap, onSource: example ? undefined : onSource };
   const page = (
     <div className="column grouped" data-testid={example ? 'explore-example' : 'explore'}>
       <div className={`toolbar ${example ? '' : 'drag'}`}>
@@ -76,8 +165,12 @@ export function ExplorePage({ toolbar, example }: { snap?: Snapshot; toolbar?: R
         <div className="spacer" />
         {toolbar}
       </div>
-      <div className="scroll explore-scroll" ref={scroller} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 72)}>
-        <div className="explore" key={depth} data-view={view.id} data-depth={depth}>
+      <div className="scroll explore-scroll" ref={scroller} onScroll={(e) => {
+        top.scroll = e.currentTarget.scrollTop;
+        setScrolled(e.currentTarget.scrollTop > 72);
+      }}>
+        <Kept.Provider value={top.kept}>
+        <div className="explore" key={top.n} data-view={view.id} data-depth={depth}>
           {view.id === 'home' ? <Home ctx={ctx} />
             : view.id === 'on-this-day' ? <OnThisDayView ctx={ctx} />
               : view.id === 'people' ? <PeopleView ctx={ctx} />
@@ -90,9 +183,16 @@ export function ExplorePage({ toolbar, example }: { snap?: Snapshot; toolbar?: R
                             : view.id === 'journeys' ? <JourneysView ctx={ctx} />
                               : view.id === 'groups' ? <GroupsView ctx={ctx} />
                                 : view.id === 'group' ? <GroupView ctx={ctx} k={view.key} />
-                                  : view.id === 'stream' ? <StreamView ctx={ctx} />
-                                  : <MadeView ctx={ctx} />}
+                                  : view.id === 'stream' ? <StreamView ctx={ctx} month={view.month} day={view.day} />
+                                    : view.id === 'listening' ? <ListeningView ctx={ctx} />
+                                      : view.id === 'movement' ? <MovementView ctx={ctx} />
+                                        : view.id === 'curiosity' ? <CuriosityView ctx={ctx} />
+                                          : view.id === 'watching' ? <WatchingView ctx={ctx} />
+                                            : view.id === 'they-know' ? <TheyKnowView ctx={ctx} />
+                                            : view.id === 'locked' ? <LockedView ctx={ctx} id={view.tile} />
+                                              : <MadeView ctx={ctx} />}
         </div>
+        </Kept.Provider>
       </div>
       {conversation !== null && <ConversationSheet rowid={conversation} onClose={() => setConversation(null)} onRecord={setRecord} />}
       {record !== null && <RecordSheet rowid={record} onClose={() => setRecord(null)} />}
@@ -102,8 +202,9 @@ export function ExplorePage({ toolbar, example }: { snap?: Snapshot; toolbar?: R
 }
 
 // onRecord opens a record; onConversation opens the conversation a message is in, both sides, around it. open's
-// `from` is the tile the page zooms out of.
-interface Ctx { open: (v: View, from?: HTMLElement) => void; onRecord: (rowid: number) => void; onConversation: (rowid: number) => void }
+// `from` is the tile the page zooms out of. snap and onSource: the sources a locked tile needs, and showing one.
+interface Ctx { open: (v: View, from?: HTMLElement) => void; onRecord: (rowid: number) => void; onConversation: (rowid: number) => void;
+  snap?: Snapshot; onSource?: (id: string) => void }
 
 // ---------------------------------------------------------------- data
 
@@ -173,7 +274,8 @@ function useProgress(k: string): ExploreProgress | undefined {
   return progress.get(k);
 }
 
-type ArtifactId = 'on-this-day' | 'people' | 'person' | 'places' | 'rhythms' | 'firsts' | 'made' | 'year' | 'journeys' | 'groups' | 'group' | 'stream';
+type ArtifactId = 'on-this-day' | 'people' | 'person' | 'places' | 'rhythms' | 'firsts' | 'made' | 'year' | 'journeys' | 'groups' | 'group' | 'stream'
+  | 'listening' | 'movement' | 'curiosity' | 'watching' | 'they-know';
 type HomeId = Exclude<ArtifactId, 'person' | 'group'>;
 const ART: Record<ArtifactId, { glyph: string; tone: string; title: string }> = {
   'on-this-day': { glyph: 'calendar', tone: 'red', title: 'On This Day' },
@@ -188,10 +290,15 @@ const ART: Record<ArtifactId, { glyph: string; tone: string; title: string }> = 
   groups: { glyph: 'bubbles', tone: 'blue', title: 'Group Chats' },
   group: { glyph: 'bubbles', tone: 'blue', title: 'This Chat' },
   stream: { glyph: 'stream', tone: 'teal', title: 'Your Stream' },
+  listening: { glyph: 'music', tone: 'pink', title: 'Listening' },
+  movement: { glyph: 'heart', tone: 'red', title: 'Moving and Sleep' },
+  curiosity: { glyph: 'search', tone: 'yellow', title: 'Curiosity' },
+  watching: { glyph: 'play', tone: 'purple', title: 'Watching' },
+  'they-know': { glyph: 'eye', tone: 'graphite', title: 'What They Know' },
 };
 const OP_TITLE: Record<string, string> = { 'on-this-day': 'On This Day', people: 'Your People', person: 'a person', places: 'Places and Trips',
   rhythms: 'Your Rhythms', firsts: 'Firsts', made: 'What You Made', summary: 'Explore', year: 'Your Year', journeys: 'Journeys',
-  groups: 'Group Chats', stream: 'Your Stream' };
+  groups: 'Group Chats', stream: 'Your Stream', listening: 'Listening', movement: 'Moving and Sleep', curiosity: 'Curiosity', watching: 'Watching', 'they-know': 'What They Know' };
 const tone = (t: string) => ({ '--tone': `var(--${t})` } as CSSProperties);
 
 // "182,500 of 602,591" (or "182,500 so far" when the total isn't known).
@@ -251,20 +358,42 @@ function Ring({ value, size = 108, children }: { value?: number; size?: number; 
 // ---------------------------------------------------------------- pieces
 
 const thumbCache = new Map<string, string>(); // "size:rowid" -> data URL ('' when there's no picture)
+const thumbsComing = new Set<string>(); // asked for, not here yet
+const thumbsArrived = new Set<() => void>();
 
+// Photos' thumbnails, asked for sixty at a time (one after another, so a long grid doesn't start a crowd of them),
+// and shared: every grid showing a photo hears when it arrives.
 function useThumbs(rowids: number[], size = 240): { get(r: number): string | undefined; has(r: number): boolean } {
   const example = useContext(Examples);
   const [, bump] = useState(0);
-  const want = rowids.filter((r) => !thumbCache.has(`${size}:${r}`));
+  useEffect(() => {
+    const f = () => bump((n) => n + 1);
+    thumbsArrived.add(f);
+    return () => {
+      thumbsArrived.delete(f);
+    };
+  }, []);
+  const want = rowids.filter((r) => !thumbCache.has(`${size}:${r}`) && !thumbsComing.has(`${size}:${r}`));
   const k = want.join(',');
   useEffect(() => {
     if (example || !want.length) return;
     let live = true;
-    void api.explore<Record<string, string>>('thumbs', [k, String(size)]).then((r) => {
-      if (isError(r)) return;
-      for (const id of want) thumbCache.set(`${size}:${id}`, r[String(id)] ?? '');
-      if (live) bump((n) => n + 1);
-    });
+    for (const id of want) thumbsComing.add(`${size}:${id}`);
+    void (async () => {
+      for (let i = 0; i < want.length; i += 60) {
+        const part = want.slice(i, i + 60);
+        if (!live) {
+          for (const id of part) thumbsComing.delete(`${size}:${id}`);
+          continue;
+        }
+        const r = await api.explore<Record<string, string>>('thumbs', [part.join(','), String(size)]);
+        for (const id of part) {
+          thumbsComing.delete(`${size}:${id}`);
+          if (!isError(r)) thumbCache.set(`${size}:${id}`, r[String(id)] ?? '');
+        }
+        for (const f of thumbsArrived) f();
+      }
+    })();
     return () => {
       live = false;
     };
@@ -273,18 +402,42 @@ function useThumbs(rowids: number[], size = 240): { get(r: number): string | und
   return { get: (r) => thumbCache.get(`${size}:${r}`) || undefined, has: (r) => thumbCache.has(`${size}:${r}`) };
 }
 
-// A Photos-style grid: square, tight, edge to edge.
-function Thumbs({ rowids, onRecord, size = 96 }: { rowids: number[]; onRecord: (n: number) => void; size?: number }) {
-  const t = useThumbs(rowids);
+// A Photos-style grid: square, tight, edge to edge. A long one is drawn as you scroll down to it, a few rows at a time.
+export function Thumbs({ rowids, onRecord, size = 96, keep = null }: { rowids: number[]; onRecord: (n: number) => void; size?: number; keep?: string | null }) {
+  const [upto, setUpto] = useKept(keep && `${keep}-drawn`, 120);
+  const end = useRef<HTMLDivElement>(null);
+  const shown = rowids.length > upto ? rowids.slice(0, upto) : rowids;
+  const t = useThumbs(shown);
+  useEffect(() => {
+    const el = end.current;
+    if (!el || rowids.length <= upto) return;
+    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && setUpto((n) => n + 120), { root: el.closest('.scroll'), rootMargin: '800px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [rowids.length, upto]);
   if (!rowids.length) return null;
   return (
-    <div className="thumbs" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${size}px, 1fr))` }}>
-      {rowids.map((r) => (
-        <button key={r} className="thumb" onClick={() => onRecord(r)} title="Open this photo" data-testid="explore-thumb">
-          {t.get(r) ? <img src={t.get(r)} alt="" draggable={false} /> : t.has(r) ? <Glyph name="photo" size={18} /> : null}
-        </button>
-      ))}
-    </div>
+    <>
+      <div className="thumbs" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${size}px, 1fr))` }}>
+        {shown.map((r) => (
+          <button key={r} className="thumb" onClick={() => onRecord(r)} title="Open this photo" data-testid="explore-thumb">
+            {t.get(r) ? <img src={t.get(r)} alt="" draggable={false} /> : t.has(r) ? <Glyph name="photo" size={18} /> : null}
+          </button>
+        ))}
+      </div>
+      {rowids.length > upto && <div ref={end} className="thumbs-more" aria-hidden />}
+    </>
+  );
+}
+
+// A photo grid that shows the first rows, and every photo on request.
+function PhotoGrid({ rowids, onRecord, size, first = 60, keep }: { rowids: number[]; onRecord: (n: number) => void; size?: number; first?: number; keep: string }) {
+  const [all, setAll] = useKept(keep, false);
+  return (
+    <>
+      <Thumbs rowids={all ? rowids : rowids.slice(0, first)} onRecord={onRecord} size={size} keep={keep} />
+      {!all && rowids.length > first && <div className="more-row"><Button onClick={() => setAll(true)} testAction={`${keep}-all`}>Show All {count(rowids.length)} Photos</Button></div>}
+    </>
   );
 }
 
@@ -378,6 +531,25 @@ export function Num({ value, id, format = (n) => count(Math.round(n)) }: { value
   return <span className="tnum">{format(useCountUp(value, id && scope + id))}</span>;
 }
 const pct = (n: number) => `${Math.round(n)}%`;
+// "1 trip", "2 trips", "1,240 people": a number and the word that goes with it.
+const counted = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
+const word = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
+// A chart's unit for one: "messages" -> "message", "searches" -> "search", "steps on average" -> "step on average".
+function unitOf(n: number, unit: string): string {
+  if (n !== 1 || unit === 'km') return unit;
+  const [w, ...rest] = unit.split(' ');
+  return [w.replace(/ies$/, 'y').replace(/(ch|sh|x)es$/, '$1').replace(/(?<!s)s$/, ''), ...rest].join(' ');
+}
+// "Pacific time" for "America/Los_Angeles"; "your time zone" when it has no plain name.
+function zoneName(tz: string): string {
+  try {
+    const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longGeneric' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value;
+    if (!name || /^GMT/.test(name)) return tz === 'UTC' ? 'UTC' : 'your time zone';
+    return name === 'Coordinated Universal Time' ? 'UTC' : name.replace(/ Time$/, ' time');
+  } catch {
+    return 'your time zone';
+  }
+}
 
 // Big numbers with small labels over them, the way Health and Fitness show a summary.
 type BigStat = { label: string; value: number | string; id?: string; format?: (n: number) => string; sub?: string; onClick?: () => void };
@@ -418,7 +590,7 @@ function Panel({ title, note, right, children, testId, className = '' }: { title
 }
 
 // A segmented control whose selection slides from one choice to the next.
-function Segmented<T extends string>({ items, value, onChange, glass }: { items: { id: T; label: ReactNode; testId?: string }[]; value: T; onChange: (v: T) => void; glass?: boolean }) {
+export function Segmented<T extends string>({ items, value, onChange, glass }: { items: { id: T; label: ReactNode; testId?: string }[]; value: T; onChange: (v: T) => void; glass?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [thumb, setThumb] = useState<{ x: number; w: number } | null>(null);
   const measure = () => {
@@ -449,17 +621,40 @@ function Segmented<T extends string>({ items, value, onChange, glass }: { items:
   );
 }
 
+// The one year picker, on every page that has years: the year before and after, and a menu of them all, newest
+// first, after "All Years" where the page also shows all of them at once. From All Years, the year before is the
+// latest.
+function YearPicker({ years, value, onChange, all, testId }: { years: string[]; value: string; onChange: (y: string) => void; all?: boolean; testId: string }) {
+  const at = years.indexOf(value);
+  const earlier = value === 'all' ? years[0] : at >= 0 ? years[at + 1] : undefined;
+  const later = at > 0 ? years[at - 1] : undefined;
+  return (
+    <div className="year-picker" role="group" aria-label="Year">
+      <button className="icon-btn" disabled={!earlier} onClick={() => earlier && onChange(earlier)} title="The year before" aria-label="The year before" data-testid={`${testId}-prev`}>
+        <Glyph name="chevronLeft" size={14} />
+      </button>
+      <select className="select" value={value} onChange={(e) => onChange(e.target.value)} aria-label="Year" data-testid={testId}>
+        {all && <option value="all">All Years</option>}
+        {years.map((y) => <option key={y} value={y}>{y}</option>)}
+      </select>
+      <button className="icon-btn" disabled={!later} onClick={() => later && onChange(later)} title="The year after" aria-label="The year after" data-testid={`${testId}-next`}>
+        <Glyph name="chevronRight" size={14} />
+      </button>
+    </div>
+  );
+}
+
 // Horizontal bars with the value at the end: few enough rows that each can carry its number.
-function HBars({ rows, unit }: { rows: { key: string; label: string; value: number; onClick?: () => void }[]; unit: string }) {
+function HBars({ rows, unit }: { rows: { key: string; label: string; value: number; onClick?: () => void; on?: boolean }[]; unit: string }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
     <div className="hbars">
       {rows.map((r, i) => {
         const El = r.onClick ? 'button' : 'div';
         return (
-          <El key={r.key} className="hbar" onClick={r.onClick} title={`${r.label}: ${count(r.value)} ${unit}`}>
+          <El key={r.key} className={`hbar ${r.on ? 'on' : ''}`} onClick={r.onClick} title={`${r.label}: ${count(r.value)} ${unitOf(r.value, unit)}`}>
             <span className="hbar-label">{r.label}</span>
-            <span className="hbar-track"><span className="hbar-fill" style={{ width: `${Math.max(1.5, (r.value / max) * 100)}%`, animationDelay: `${i * 45}ms` }} /></span>
+            <span className="hbar-track"><span className="hbar-fill" style={{ width: `${Math.min(100, Math.max(1.5, (r.value / max) * 100))}%`, animationDelay: `${i * 45}ms` }} /></span>
             <span className="hbar-value">{count(r.value)}</span>
           </El>
         );
@@ -523,6 +718,11 @@ function Home({ ctx }: { ctx: Ctx }) {
   const journeys = useArtifact<Journeys>('journeys');
   const yearStory = useArtifact<YearStory>('year');
   const stream = useArtifact<Stream>('stream');
+  const listening = useArtifact<Listening>('listening');
+  const movement = useArtifact<Movement>('movement');
+  const curiosity = useArtifact<Curiosity>('curiosity');
+  const watching = useArtifact<Watching>('watching');
+  const theyKnow = useArtifact<TheyKnow>('they-know');
   const world = useArtifact<World>('world').data;
   const example = !!useContext(Examples);
   const [enter] = useState(() => example || !homeSeen); // the tiles rise in the first time only (an example's always)
@@ -530,10 +730,10 @@ function Home({ ctx }: { ctx: Ctx }) {
     if (!example) homeSeen = true;
   }, []);
   const covers = useMemo(() => otdCovers(otd.data, 4), [otd.data]);
-  if ([otd, people].some((x) => x.error && /doesn't exist yet/.test(x.error))) {
-    return <div className="empty" data-testid="explore-empty"><h2>Nothing to explore yet</h2>Explore builds on what's in your corpus: read some sources first.</div>;
-  }
-  const go = (id: HomeId) => (el: HTMLElement) => ctx.open({ id }, el);
+  if ([otd, people].some((x) => x.error && /doesn't exist yet/.test(x.error))) return <EmptyLibrary ctx={ctx} />;
+  // A tile without enough to say opens what it needs instead (never an example's: they have it all).
+  const lock = (id: HomeId, a: { data: unknown }) => !example && lockedBy(id, a.data);
+  const go = (id: HomeId, a?: { data: unknown }) => (el: HTMLElement) => ctx.open(a && lock(id, a) ? { id: 'locked', tile: id } : { id }, el);
   return (
     <div className="explore-home" data-testid="explore-home">
       <header className="large-title">
@@ -547,44 +747,93 @@ function Home({ ctx }: { ctx: Ctx }) {
         <Tile id="on-this-day" i={1} a={otd} onOpen={go('on-this-day')} look={covers.length > 0 ? 'photo' : undefined}>
           {otd.data && <OtdTile d={otd.data} covers={covers} />}
         </Tile>
-        <Tile id="people" i={2} a={people} onOpen={go('people')}>
+        <Tile id="people" i={2} a={people} onOpen={go('people', people)} locked={lock('people', people)}>
           {people.data && <PeopleTile d={people.data} />}
         </Tile>
-        <Tile id="places" i={3} a={places} onOpen={go('places')}>
+        <Tile id="places" i={3} a={places} onOpen={go('places', places)} locked={lock('places', places)}>
           {places.data && <PlacesTile d={places.data} world={world} />}
         </Tile>
-        <Tile id="rhythms" i={4} a={rhythms} onOpen={go('rhythms')}>
-          {rhythms.data && <RhythmsTile d={rhythms.data} />}
+        <Tile id="they-know" i={4} a={theyKnow} onOpen={go('they-know', theyKnow)} locked={lock('they-know', theyKnow)}>
+          {theyKnow.data && <TheyKnowTile d={theyKnow.data} />}
         </Tile>
-        <Tile id="groups" i={5} a={groupChats} onOpen={go('groups')}>
-          {groupChats.data && <GroupsTile d={groupChats.data} />}
+        <Tile id="listening" i={4} a={listening} onOpen={go('listening', listening)} locked={lock('listening', listening)}>
+          {listening.data && <ListeningTile d={listening.data} />}
         </Tile>
-        <Tile id="journeys" i={6} a={journeys} onOpen={go('journeys')} look="night">
+        <Tile id="movement" i={5} a={movement} onOpen={go('movement', movement)} locked={lock('movement', movement)}>
+          {movement.data && <MovementTile d={movement.data} />}
+        </Tile>
+        <Tile id="curiosity" i={6} a={curiosity} onOpen={go('curiosity', curiosity)} locked={lock('curiosity', curiosity)}>
+          {curiosity.data && <CuriosityTile d={curiosity.data} />}
+        </Tile>
+        <Tile id="journeys" i={7} a={journeys} onOpen={go('journeys', journeys)} look={lock('journeys', journeys) ? undefined : 'night'} locked={lock('journeys', journeys)}>
           {journeys.data && <JourneysTile d={journeys.data} world={world} />}
         </Tile>
-        <Tile id="made" i={7} a={made} onOpen={go('made')}>
-          {made.data && <MadeTile d={made.data} />}
+        <Tile id="watching" i={8} a={watching} onOpen={go('watching', watching)} locked={lock('watching', watching)}>
+          {watching.data && <WatchingTile d={watching.data} />}
         </Tile>
-        <Tile id="firsts" i={8} a={firsts} onOpen={go('firsts')}>
+        <Tile id="rhythms" i={9} a={rhythms} onOpen={go('rhythms', rhythms)} locked={lock('rhythms', rhythms)}>
+          {rhythms.data && <RhythmsTile d={rhythms.data} />}
+        </Tile>
+        <Tile id="groups" i={10} a={groupChats} onOpen={go('groups', groupChats)} locked={lock('groups', groupChats)}>
+          {groupChats.data && <GroupsTile d={groupChats.data} />}
+        </Tile>
+        <Tile id="firsts" i={11} a={firsts} onOpen={go('firsts', firsts)} locked={lock('firsts', firsts)}>
           {firsts.data && <FirstsTile d={firsts.data} />}
         </Tile>
-        <Tile id="stream" i={9} a={stream} onOpen={go('stream')}>
+        <Tile id="made" i={12} a={made} onOpen={go('made', made)} locked={lock('made', made)}>
+          {made.data && <MadeTile d={made.data} />}
+        </Tile>
+        <Tile id="stream" i={13} a={stream} onOpen={go('stream')}>
           {stream.data && <StreamTile d={stream.data} />}
         </Tile>
       </div>
-      <p className="explore-foot"><Glyph name="lock" size={11} /> Made on this Mac from your corpus. Nothing here leaves it, and everything opens the record it came from.</p>
+      <p className="explore-foot"><Glyph name="lock" size={11} /> Made on this Mac from your library. Nothing here leaves it, and everything opens the record it came from.</p>
     </div>
   );
 }
 
+// Before anything is read: what Explore will be, and the sources that bring the most of it, each one a click away.
+const FIRST_SOURCES = ['imessage', 'photos', 'iphone_backup', 'browser_history', 'google_takeout', 'spotify'];
+function EmptyLibrary({ ctx }: { ctx: Ctx }) {
+  return (
+    <div className="stagger" data-testid="explore-empty">
+      <section className="locked-hero">
+        <div className="lock-ring"><Glyph name="compass" size={34} strokeWidth={1.6} /></div>
+        <h2>Nothing to explore yet</h2>
+        <p>Explore is made from your library on this Mac. Once a source is read, your people, places and years show up here, a tile each.</p>
+      </section>
+      <SourceRows ids={FIRST_SOURCES} ctx={ctx} title="Where to start" note="These bring the most. Add any of them: Explore fills in as each is read." />
+    </div>
+  );
+}
+
+// Sources, each with how it's doing and a button that shows it in the main window.
+function SourceRows({ ids, ctx, title, note }: { ids: string[]; ctx: Ctx; title: string; note: string }) {
+  const sources = ids.map((s) => ctx.snap?.sources.find((v) => v.id === s)).filter((v): v is NonNullable<typeof v> => !!v);
+  if (!sources.length) return null;
+  return (
+    <Panel title={title} note={note}>
+      {sources.map((v) => (
+        <div key={v.id} className="person-row lock-source" data-testid={`unlock-${v.id}`}>
+          <SourceIcon id={v.id} size={30} />
+          <span className="person-main"><span className="truncate person-name">{v.name}</span><span className="person-sub">{v.status}</span></span>
+          {ctx.onSource && v.section !== 'unavailable' && <Button onClick={() => ctx.onSource!(v.id)} testAction={`unlock-${v.id}`}>{v.section === 'done' ? 'Show' : 'Add It…'}</Button>}
+        </div>
+      ))}
+    </Panel>
+  );
+}
+
 // look: 'photo' (a photo behind it), 'mesh' (a bright gradient) and 'night' (a dark map) all carry white text.
-function Tile({ id, i, a, onOpen, look, children }: { id: HomeId; i: number; a: { k: string; error: string | null; data: unknown }; onOpen: (el: HTMLElement) => void; look?: 'photo' | 'mesh' | 'night'; children?: ReactNode }) {
+// locked: built, but without enough to say: greyed, with what it needs.
+function Tile({ id, i, a, onOpen, look, locked, children }: { id: HomeId; i: number; a: { k: string; error: string | null; data: unknown }; onOpen: (el: HTMLElement) => void;
+  look?: 'photo' | 'mesh' | 'night'; locked?: boolean; children?: ReactNode }) {
   const art = ART[id];
   return (
-    <button className={`explore-tile t-${id} ${look ? `photo ${look}` : ''} ${returnTo === id ? 'morph' : ''}`} style={{ ...tone(art.tone), '--i': i } as CSSProperties}
-      onClick={(e) => onOpen(e.currentTarget)} data-testid={`explore-card-${id}`} data-ready={a.data ? 'yes' : 'no'}>
+    <button className={`explore-tile t-${id} ${look && !locked ? `photo ${look}` : ''} ${locked ? 'locked' : ''} ${returnTo === id ? 'morph' : ''}`} style={{ ...tone(art.tone), '--i': i } as CSSProperties}
+      onClick={(e) => onOpen(e.currentTarget)} data-testid={`explore-card-${id}`} data-ready={a.data ? 'yes' : 'no'} data-locked={locked ? 'yes' : undefined}>
       <Eyebrow glyph={art.glyph}>{art.title}</Eyebrow>
-      {a.data ? <div className="tile-body appear-soft">{children}</div> : a.error ? <div className="tile-note">Couldn't build this: {a.error}</div> : <TileProgress k={a.k} />}
+      {a.data ? <div className="tile-body appear-soft">{locked ? <LockedTile id={id} data={a.data} /> : children}</div> : a.error ? <div className="tile-note">Couldn't build this: {a.error}</div> : <TileProgress k={a.k} />}
     </button>
   );
 }
@@ -613,8 +862,8 @@ function OtdTile({ d, covers }: { d: OnThisDay; covers: number[] }) {
       <div className="tile-front bottom">
         <div className="tile-title">{d.label}</div>
         <div className="tile-sub">
-          {ys ? <><Num value={ys} id="home-otd-years" /> {ys === 1 ? 'year' : 'years'}</> : 'Nothing yet on this day'}
-          {photos > 0 && <> · <Num value={photos} id="home-otd-photos" /> photos</>}
+          {ys ? <><Num value={ys} id="home-otd-years" /> {word(ys, 'year')}</> : 'Nothing yet on this day'}
+          {photos > 0 && <> · <Num value={photos} id="home-otd-photos" /> {word(photos, 'photo')}</>}
         </div>
       </div>
     </>
@@ -627,7 +876,7 @@ function PeopleTile({ d }: { d: People }) {
       <TileNum value={d.people.length} unit={d.people.length === 1 ? 'person' : 'people'} id="home-people" />
       <div className="tile-people">
         {d.people.slice(0, 5).map((p, i) => (
-          <div key={p.key} className="tp" style={{ animationDelay: `${120 + i * 60}ms` }}>
+          <div key={p.key} className="tp" style={{ animationDelay: `${120 + i * 60}ms` }} title={`${p.name}: ${counted(p.messages, 'message')}`}>
             <Avatar name={p.name} size={28} /><span className="truncate">{short(p.name)}</span><span className="num">{count(p.messages)}</span>
           </div>
         ))}
@@ -643,7 +892,7 @@ function PlacesTile({ d, world }: { d: Places; world: World | null }) {
       {d.points.length > 0 && <div className="tile-bg map-bg"><MapView points={d.points} world={world} mini /></div>}
       <div className="tile-front">
         <TileNum value={n} unit={n === 1 ? 'country' : 'countries'} id="home-countries" />
-        <div className="tile-sub"><Num value={d.trips.length} id="home-trips" /> {d.trips.length === 1 ? 'trip' : 'trips'} · <Num value={d.places} id="home-places" /> places</div>
+        <div className="tile-sub"><Num value={d.trips.length} id="home-trips" /> {word(d.trips.length, 'trip')} · <Num value={d.places} id="home-places" /> {word(d.places, 'place')}</div>
       </div>
     </>
   );
@@ -655,6 +904,7 @@ function RhythmsTile({ d }: { d: Rhythms }) {
   return (
     <>
       <TileNum text={hourLabel(r.peak_hour)} unit="busiest hour" />
+      <div className="tile-sub">{r.label}, by day and hour</div>
       <MiniHeat grid={r.grid} />
     </>
   );
@@ -668,7 +918,7 @@ function FirstsTile({ d }: { d: Firsts }) {
   const max = Math.max(1, ...years.values());
   return (
     <>
-      <TileNum value={d.items.length} unit="firsts" id="home-firsts" />
+      <TileNum value={d.items.length} unit={word(d.items.length, 'first')} id="home-firsts" />
       {all.length > 0 && (
         <div className="mini-cols-wrap">
           <div className="mini-cols">{all.map((y, i) => <i key={y} style={{ height: `${Math.max(4, ((years.get(y) ?? 0) / max) * 100)}%`, animationDelay: `${150 + i * 25}ms` }} />)}</div>
@@ -684,9 +934,9 @@ function MadeTile({ d }: { d: Made }) {
   return (
     <div className="tile-split">
       <div>
-        {d.streak.days ? <TileNum value={d.streak.days} unit="days in a row" id="home-streak" /> : <TileNum value={active} unit="days you made something" id="home-made-days" />}
-        <div className="tile-sub">{d.streak.days ? `Longest streak${d.streak.start ? `, ${monthYear(d.streak.start)}` : ''}` : 'Code, writing and posts'}</div>
-        <div className="tile-sub"><Num value={active} id="home-made-active" /> days you made something</div>
+        {d.streak.days > 1 ? <TileNum value={d.streak.days} unit="days in a row, your longest" id="home-streak" /> : <TileNum value={active} unit={`${word(active, 'day')} you made something`} id="home-made-days" />}
+        <div className="tile-sub">{d.streak.days > 1 ? `Your longest streak${d.streak.start ? `, in ${monthYear(d.streak.start)}` : ''}` : 'Code, writing and posts'}</div>
+        {d.streak.days > 1 && <div className="tile-sub"><Num value={active} id="home-made-active" /> {word(active, 'day')} you made something</div>}
       </div>
       <MiniCalendar days={d.days} weeks={22} />
     </div>
@@ -727,10 +977,14 @@ function MiniCalendar({ days, weeks }: { days: Made['days']; weeks: number }) {
 // ---------------------------------------------------------------- on this day
 
 function OnThisDayView({ ctx }: { ctx: Ctx }) {
-  const [day, setDay] = useState(() => new Date());
+  const [shown, setShown] = useKept('day', () => iso(new Date()));
+  const day = new Date(`${shown}T12:00:00`);
+  const setDay = (d: Date) => setShown(iso(d));
   const md = `${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
   const { data, error, loading, k } = useArtifact<OnThisDay>('on-this-day', [md]);
-  const shift = (n: number) => setDay((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n));
+  const away = (n: number) => new Date(day.getFullYear(), day.getMonth(), day.getDate() + n);
+  const shift = (n: number) => setDay(away(n));
+  const near = data && !data.years.length && data.date === md ? data.nearest : undefined;
   const covers = useMemo(() => otdCovers(data, 5), [data]);
   const today = new Date();
   const isToday = day.getMonth() === today.getMonth() && day.getDate() === today.getDate();
@@ -748,27 +1002,55 @@ function OnThisDayView({ ctx }: { ctx: Ctx }) {
             {loading && data && <Spinner size={14} />}
           </div>
           <div className="hero-sub">
-            {data && (ys ? `${ys} ${ys === 1 ? 'year' : 'years'} of this day` : 'Nothing on this day')}
+            {data && (ys ? `${counted(ys, 'year')} of this day` : 'Nothing on this day')}
             {!isToday && <button className="glass-pill" onClick={() => setDay(new Date())}>Today</button>}
           </div>
         </div>
       </section>
       {!data ? <Building k={k} what="on-this-day" error={error} /> : !data.years.length
-        ? <div className="empty"><h2>Nothing on {data.label}</h2>No photos, messages or anything else on this day in your data.</div>
+        ? (
+          <div className="empty" data-testid="otd-none"><h2>Nothing on {data.label}</h2>No photos, messages or anything else on this day in your data.
+            {near && (near.before || near.after) && (
+              <div className="empty-actions">
+                {near.before && <Button onClick={() => shift(-near.before!)} testAction="otd-nearest-before"><Glyph name="chevronLeft" size={12} /> {monthDay(away(-near.before))}</Button>}
+                {near.after && <Button onClick={() => shift(near.after!)} testAction="otd-nearest-after">{monthDay(away(near.after))} <Glyph name="chevronRight" size={12} /></Button>}
+              </div>
+            )}
+          </div>
+        )
         : <div className="memories stagger" key={data.date} style={{ opacity: loading ? 0.5 : 1 }}>{data.years.map((y) => <Memory key={y.year} y={y} ctx={ctx} />)}</div>}
     </div>
   );
 }
 
-const MADE_ONE: Record<MadeKind, string> = { code: 'Commit', ai: 'AI session', writing: 'Note or document', posts: 'Post', photos: 'Photo' };
+const MADE_ONE: Record<MadeKind, string> = { code: 'Commit', ai: 'AI conversation', writing: 'Note or document', posts: 'Post', photos: 'Photo' };
+const monthDay = (d: Date) => d.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+// A call's length the way Phone shows it: "17 min", "1 min" for less.
+const callLength = (min: number) => (min > 0 ? `${Math.max(1, Math.round(min))} min` : 'missed');
+
+// Chips, the first few and the rest a click away.
+function MoreChips<T>({ items, first, keep, render }: { items: T[]; first: number; keep: string; render: (x: T) => ReactNode }) {
+  const [all, setAll] = useKept(keep, false);
+  return (
+    <div className="chips">
+      {(all ? items : items.slice(0, first)).map(render)}
+      {!all && items.length > first && <button className="chip more" onClick={() => setAll(true)}>{count(items.length - first)} more</button>}
+    </div>
+  );
+}
 const MADE_GLYPH: Record<MadeKind, string> = { code: 'code', ai: 'sparkle', writing: 'note', posts: 'bubble', photos: 'photo' };
 const MADE_TONE: Record<MadeKind, string> = { code: 'purple', ai: 'orange', writing: 'yellow', posts: 'pink', photos: 'blue' };
 
 // One year of the day, like a memory: its photos, then the people as faces and everything else as chips.
 function Memory({ y, ctx }: { y: OnThisDayYear; ctx: Ctx }) {
-  const [all, setAll] = useState(false);
+  const [all, setAll] = useKept(`photos-${y.date}`, false);
+  const [allFaces, setAllFaces] = useKept(`faces-${y.date}`, false);
   const when = new Date(`${y.date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const head = y.ago === 0 ? 'Today' : y.ago === 1 ? 'A year ago' : `${y.ago} years ago`;
+  const now = new Date();
+  const head = y.ago === 0 ? (y.date === iso(now) ? 'Today' : y.date === iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)) ? 'Yesterday' : 'This year')
+    : y.ago === 1 ? 'A year ago' : `${y.ago} years ago`;
+  const ids = y.photos.ids ?? y.photos.sample;
+  const faces = allFaces ? y.messages.threads : y.messages.threads.slice(0, 12);
   return (
     <section className="memory" data-testid="otd-year" data-year={y.year}>
       <header className="memory-head">
@@ -776,41 +1058,47 @@ function Memory({ y, ctx }: { y: OnThisDayYear; ctx: Ctx }) {
         <span>{when}{y.photos.places.length ? ` · ${y.photos.places.slice(0, 2).join(', ')}` : ''}</span>
       </header>
       {y.photos.sample.length > 0 && (all
-        ? <Thumbs rowids={y.photos.sample} onRecord={ctx.onRecord} size={120} />
+        ? <Thumbs rowids={ids} onRecord={ctx.onRecord} size={120} keep={`photos-${y.date}`} />
         : <Strip ids={y.photos.sample} total={y.photos.count} onRecord={ctx.onRecord} onMore={() => setAll(true)} />)}
       <div className="pills">
         {y.photos.count > 0 && <span className="pill" style={tone('yellow')}><Glyph name="photo" size={13} />{count(y.photos.count)} {y.photos.count === 1 ? 'photo' : 'photos'}</span>}
-        {y.messages.count > 0 && <span className="pill" style={tone('green')}><Glyph name="bubble" size={13} />{count(y.messages.count)} messages</span>}
-        {y.calls.length > 0 && <span className="pill" style={tone('green')}><Glyph name="phone" size={13} />{y.calls.length} {y.calls.length === 1 ? 'call' : 'calls'}</span>}
+        {y.messages.count > 0 && <span className="pill" style={tone('green')}><Glyph name="bubble" size={13} />{counted(y.messages.count, 'message')}</span>}
+        {y.calls.length > 0 && <span className="pill" style={tone('green')}><Glyph name="phone" size={13} />{counted(y.calls.length, 'call')}</span>}
         {y.search_count > 0 && <span className="pill" style={tone('blue')}><Glyph name="search" size={13} />{count(y.search_count)} {y.search_count === 1 ? 'search' : 'searches'}</span>}
         {y.watch_count > 0 && <span className="pill" style={tone('red')}><Glyph name="video" size={13} />{count(y.watch_count)} {y.watch_count === 1 ? 'video' : 'videos'}</span>}
-        {y.steps ? <span className="pill" style={tone('orange')}><Glyph name="wave" size={13} />{count(y.steps)} steps</span> : null}
+        {y.steps ? <span className="pill" style={tone('orange')}><Glyph name="wave" size={13} />{counted(y.steps, 'step')}</span> : null}
       </div>
       <div className="memory-grid">
         {y.messages.threads.length > 0 && (
           <div className="memory-part wide">
             <h4>Talking to</h4>
             <div className="faces">
-              {y.messages.threads.map((t, i) => (
-                <button key={t.rowid} className="face" data-testid="otd-thread" onClick={() => ctx.onConversation(t.rowid)} title={`${t.name}, ${t.app}: ${count(t.messages)} messages`}
-                  style={{ animationDelay: `${i * 50}ms` }}>
-                  <span className="face-pic"><Avatar name={t.name} size={48} /><span className="face-count">{count(t.messages)}</span></span>
+              {faces.map((t, i) => (
+                <button key={t.rowid} className="face" data-testid="otd-thread" data-group={t.group ? 'yes' : undefined} onClick={() => ctx.onConversation(t.rowid)}
+                  title={`${t.name}${t.group ? ' (a group)' : ''}: ${counted(t.messages, 'message')}${t.apps?.length ? ` in ${andList(t.apps)}` : ''}`}
+                  style={{ animationDelay: `${Math.min(i, 12) * 50}ms` }}>
+                  <span className="face-pic">{t.group ? <GroupAvatar names={(t.members?.length ?? 0) >= 2 ? t.members! : []} size={48} /> : <Avatar name={t.name} size={48} />}<span className="face-count">{count(t.messages)}</span></span>
                   <span className="face-name">{short(t.name)}</span>
                 </button>
               ))}
+              {faces.length < y.messages.threads.length && (
+                <button className="face more" onClick={() => setAllFaces(true)}><span className="face-pic"><span className="face-more">+{count(y.messages.threads.length - faces.length)}</span></span><span className="face-name">More</span></button>
+              )}
             </div>
           </div>
         )}
         {y.calls.length > 0 && (
           <div className="memory-part">
             <h4>Calls</h4>
-            <div className="chips">{y.calls.map((c) => <button key={c.rowid} className="chip" onClick={() => ctx.onRecord(c.rowid)}><Glyph name="phone" size={12} /><span className="truncate">{short(c.name)}</span><em>{c.minutes ? `${c.minutes} min` : 'missed'}</em></button>)}</div>
+            <MoreChips items={y.calls} first={6} keep={`calls-${y.date}`} render={(c) => (
+              <button key={c.rowid} className="chip" onClick={() => ctx.onRecord(c.rowid)} title={c.name}><Glyph name="phone" size={12} /><span className="truncate">{short(c.name)}</span><em>{callLength(c.minutes)}</em></button>)} />
           </div>
         )}
         {y.searches.length > 0 && (
           <div className="memory-part">
             <h4>You searched</h4>
-            <div className="chips">{y.searches.map((s) => <button key={s.rowid} className="chip" onClick={() => ctx.onRecord(s.rowid)}><Glyph name="search" size={12} /><span className="truncate">{s.text}</span></button>)}</div>
+            <MoreChips items={y.searches} first={8} keep={`searches-${y.date}`} render={(s) => (
+              <button key={s.rowid} className="chip" onClick={() => ctx.onRecord(s.rowid)} title={s.text}><Glyph name="search" size={12} /><span className="truncate">{s.text}</span></button>)} />
           </div>
         )}
         {(y.made.length > 0 || y.events.length > 0) && (
@@ -818,13 +1106,13 @@ function Memory({ y, ctx }: { y: OnThisDayYear; ctx: Ctx }) {
             <h4>Made and planned</h4>
             <div className="made-list">
               {y.made.map((m) => (
-                <button key={m.rowid} className="made-item" onClick={() => ctx.onRecord(m.rowid)}>
+                <button key={m.rowid} className="made-item" onClick={() => ctx.onRecord(m.rowid)} title={m.title || MADE_ONE[m.kind]}>
                   <span className="glyph-badge small" style={tone(MADE_TONE[m.kind])}><Glyph name={MADE_GLYPH[m.kind]} size={12} /></span>
                   <span className="truncate">{m.title || MADE_ONE[m.kind]}</span><em>{MADE_ONE[m.kind]}</em>
                 </button>
               ))}
               {y.events.map((e) => (
-                <button key={e.rowid} className="made-item" onClick={() => ctx.onRecord(e.rowid)}>
+                <button key={e.rowid} className="made-item" onClick={() => ctx.onRecord(e.rowid)} title={e.title}>
                   <span className="glyph-badge small" style={tone('red')}><Glyph name="calendar" size={12} /></span>
                   <span className="truncate">{e.title}</span><em>Calendar</em>
                 </button>
@@ -835,10 +1123,9 @@ function Memory({ y, ctx }: { y: OnThisDayYear; ctx: Ctx }) {
         {y.watch_count > 0 && (
           <div className="memory-part">
             <h4>Watched on YouTube</h4>
-            <div className="chips">
-              {y.watched.map((w) => <button key={w.rowid} className="chip" onClick={() => ctx.onRecord(w.rowid)}><Glyph name="video" size={12} /><span className="truncate">{w.title}</span></button>)}
-              {!y.watched.length && <span className="chip muted">Titles weren't kept for these</span>}
-            </div>
+            {y.watched.length ? <MoreChips items={y.watched} first={5} keep={`watched-${y.date}`} render={(w) => (
+              <button key={w.rowid} className="chip" onClick={() => ctx.onRecord(w.rowid)} title={w.title}><Glyph name="video" size={12} /><span className="truncate">{w.title}</span></button>)} />
+              : <div className="chips"><span className="chip muted">Titles weren't kept for these</span></div>}
           </div>
         )}
       </div>
@@ -850,15 +1137,16 @@ function Memory({ y, ctx }: { y: OnThisDayYear; ctx: Ctx }) {
 
 function PeopleView({ ctx }: { ctx: Ctx }) {
   const { data, error, k } = useArtifact<People>('people');
-  const [q, setQ] = useState('');
-  const [sort, setSort] = useState<'messages' | 'recent' | 'longest'>('messages');
-  const [all, setAll] = useState(false);
+  const [q, setQ] = useKept('q', '');
+  const [sort, setSort] = useKept<'messages' | 'recent' | 'longest'>('sort', 'messages');
+  const [all, setAll] = useKept('all', false);
   const list = useMemo(() => {
     if (!data) return [];
     const f = q.trim().toLowerCase();
     const xs = data.people.filter((p) => !f || p.name.toLowerCase().includes(f));
     if (sort === 'recent') xs.sort((a, b) => (b.last?.ts ?? '').localeCompare(a.last?.ts ?? ''));
     else if (sort === 'longest') xs.sort((a, b) => (a.first?.ts ?? '9').localeCompare(b.first?.ts ?? '9'));
+    else xs.sort((a, b) => b.messages - a.messages || b.calls - a.calls);
     return xs;
   }, [data, q, sort]);
   if (!data) return <Building k={k} what="people" error={error} />;
@@ -866,14 +1154,15 @@ function PeopleView({ ctx }: { ctx: Ctx }) {
   const openP = (p: { key: string; name: string }) => ctx.open({ id: 'person', key: p.key, name: p.name });
   const shown = all || q ? list : list.slice(0, 60);
   const apps = new Set(data.people.flatMap((p) => Object.keys(p.apps)));
+  const most = Math.max(1, ...data.people.map((p) => p.messages));
   return (
     <div className="stagger" data-testid="explore-people">
       <section className="explore-hero tinted people-hero" style={tone('green')}>
         <Eyebrow glyph="people">Your People</Eyebrow>
         <div className="hero-split">
           <div>
-            <div className="hero-num"><b><Num value={data.people.length} id="people-count" /></b> <span>people</span></div>
-            <div className="hero-sub"><Num value={data.total_messages} id="people-messages" /> one-on-one messages, across {apps.size} {apps.size === 1 ? 'app' : 'apps'} and your calls</div>
+            <div className="hero-num"><b><Num value={data.people.length} id="people-count" /></b> <span>{word(data.people.length, 'person', 'people')}</span></div>
+            <div className="hero-sub"><Num value={data.total_messages} id="people-messages" /> one-on-one {word(data.total_messages, 'message')}, across {counted(apps.size, 'app')} and your calls</div>
           </div>
           <div className="avatar-stack" aria-hidden>
             {data.people.slice(0, 7).map((p, i) => <span key={p.key} style={{ zIndex: 10 - i, animationDelay: `${200 + i * 60}ms` }}><Avatar name={p.name} size={46} /></span>)}
@@ -888,14 +1177,14 @@ function PeopleView({ ctx }: { ctx: Ctx }) {
             <div key={y} className="circle-year" style={{ animationDelay: `${yi * 40}ms` }}>
               <div className="circle-y">{y}</div>
               {top && (
-                <button className="circle-top" onClick={() => openP(top)} title={`${top.name}: ${count(top.messages)} messages in ${y}`}>
+                <button className="circle-top" onClick={() => openP(top)} title={`${top.name}: ${counted(top.messages, 'message')} in ${y}`}>
                   <Avatar name={top.name} size={52} />
                   <span className="truncate">{top.name}</span>
-                  <em>{count(top.messages)} messages</em>
+                  <em>{counted(top.messages, 'message')}</em>
                 </button>
               )}
               {rest.map((p, i) => (
-                <button key={p.key} className="circle-p" onClick={() => openP(p)} title={`${p.name}: ${count(p.messages)} messages in ${y}`}>
+                <button key={p.key} className="circle-p" onClick={() => openP(p)} title={`${p.name}: ${counted(p.messages, 'message')} in ${y}`}>
                   <span className="circle-n">{i + 2}</span><Avatar name={p.name} size={20} /><span className="truncate">{p.name}</span>
                 </button>
               ))}
@@ -909,7 +1198,7 @@ function PeopleView({ ctx }: { ctx: Ctx }) {
         <Segmented value={sort} onChange={setSort} items={[{ id: 'messages', label: 'Most Messages' }, { id: 'recent', label: 'Most Recent' }, { id: 'longest', label: 'Known Longest' }]} />
       </div>
       <div className="panel list-panel">
-        {shown.map((p) => <PersonRow key={p.key} p={p} max={data.people[0]?.messages || 1} onOpen={() => openP(p)} />)}
+        {shown.map((p) => <PersonRow key={p.key} p={p} max={most} onOpen={() => openP(p)} />)}
         {!shown.length && <div className="list-empty">No one matches “{q}”</div>}
       </div>
       {!all && !q && list.length > shown.length && <div className="more-row"><Button onClick={() => setAll(true)}>Show All {count(list.length)}</Button></div>}
@@ -920,13 +1209,13 @@ function PeopleView({ ctx }: { ctx: Ctx }) {
 function PersonRow({ p, max, onOpen }: { p: Person; max: number; onOpen: () => void }) {
   const since = p.first ? new Date(p.first.ts).getFullYear() : null;
   return (
-    <button className="person-row" data-testid="person-row" onClick={onOpen}>
+    <button className="person-row" data-testid="person-row" onClick={onOpen} title={p.name}>
       <Avatar name={p.name} size={34} />
       <span className="person-main">
         <span className="truncate person-name">{p.name}</span>
-        <span className="person-sub">{count(p.messages)} messages{since ? ` · since ${since}` : ''}</span>
+        <span className="person-sub">{counted(p.messages, 'message')}{p.calls ? ` · ${counted(p.calls, 'call')}` : ''}{since ? ` · since ${since}` : ''}</span>
       </span>
-      <span className="share-bar" aria-hidden><span style={{ width: `${Math.max(2, (p.messages / max) * 100)}%` }} /></span>
+      <span className="share-bar" aria-hidden><span style={{ width: `${Math.min(100, Math.max(2, (p.messages / max) * 100))}%` }} /></span>
       <Glyph name="chevronRight" size={12} className="row-chevron" />
     </button>
   );
@@ -961,9 +1250,9 @@ function PersonView({ ctx, k }: { ctx: Ctx; k: string }) {
       <BigStats items={[
         { label: 'Messages', value: p.messages, sub: p.first ? `since ${monthYear(p.first.ts)}` : undefined },
         { label: 'From you', value: Math.round((p.sent / Math.max(1, p.messages)) * 100), format: pct, sub: `${count(p.sent)} sent` },
-        p.calls > 0 && { label: 'Calls', value: p.calls, sub: `${count(p.call_minutes)} minutes` },
+        p.calls > 0 && { label: 'Calls', value: p.calls, sub: counted(p.call_minutes, 'minute') },
         p.photos > 0 && { label: 'Photos together', value: p.photos },
-        both > 0 && { label: 'They start', value: Math.round((p.starts_them / both) * 100), format: pct, sub: `you did ${count(p.starts_me)} times` },
+        both > 0 && { label: 'They start', value: Math.round((p.starts_them / both) * 100), format: pct, sub: p.starts_me === 1 ? 'you did once' : `you did ${count(p.starts_me)} times` },
       ]} />
       <Panel title="Messages by month" note={`Every one-on-one message, in ${Object.keys(p.apps).map((a) => APP_LABEL[a] ?? a).join(', ')}`}>
         <Columns data={series} height={170} unit="messages" xTicks={yearTicks(months)} />
@@ -981,8 +1270,8 @@ function PersonView({ ctx, k }: { ctx: Ctx; k: string }) {
         <HBars rows={data.busiest_days.map((d) => ({ key: d.date, label: dayLabel(d.date), value: d.messages, onClick: () => ctx.onConversation(d.rowid) }))} unit="messages" />
       </Panel>
       {data.photos.length > 0 && (
-        <Panel title="Photos together" note={data.photo_count > data.photos.length ? `The latest ${data.photos.length} of ${count(data.photo_count)}` : undefined}>
-          <Thumbs rowids={[...data.photos].reverse()} onRecord={ctx.onRecord} size={92} />
+        <Panel title="Photos together" note={`${counted(data.photo_count, 'photo')}, the latest first`}>
+          <PhotoGrid rowids={[...data.photos].reverse()} onRecord={ctx.onRecord} size={92} keep="photos" />
         </Panel>
       )}
     </div>
@@ -994,7 +1283,7 @@ function PersonView({ ctx, k }: { ctx: Ctx; k: string }) {
 function PlacesView({ ctx }: { ctx: Ctx }) {
   const { data, error, k } = useArtifact<Places>('places');
   const world = useArtifact<World>('world').data;
-  const [allTrips, setAllTrips] = useState(false);
+  const [allTrips, setAllTrips] = useKept('all-trips', false);
   if (!data) return <Building k={k} what="places" error={error} />;
   if (!data.points.length) return <div className="empty"><h2>No photos with a place</h2>Places come from where your photos were taken.</div>;
   const trips = allTrips ? data.trips : data.trips.slice(0, 24);
@@ -1008,9 +1297,9 @@ function PlacesView({ ctx }: { ctx: Ctx }) {
           <div className="map-stats">
             <div><b><Num value={n} id="places-countries" /></b><span>{n === 1 ? 'country' : 'countries'}</span></div>
             <div><b><Num value={data.trips.length} id="places-trips" /></b><span>{data.trips.length === 1 ? 'trip' : 'trips'}</span></div>
-            <div><b><Num value={data.places} id="places-places" /></b><span>places</span></div>
+            <div><b><Num value={data.places} id="places-places" /></b><span>{word(data.places, 'place')}</span></div>
           </div>
-          <div className="map-note">{count(data.photos_with_place)} photos with a place, {data.first?.slice(0, 4)} to {data.last?.slice(0, 4)}</div>
+          <div className="map-note">{counted(data.photos_with_place, 'photo')} with a place, {data.first?.slice(0, 4) === data.last?.slice(0, 4) ? `in ${data.first?.slice(0, 4)}` : `${data.first?.slice(0, 4)} to ${data.last?.slice(0, 4)}`}</div>
         </div>
       </section>
       <h3 className="section-title">Trips</h3>
@@ -1018,11 +1307,11 @@ function PlacesView({ ctx }: { ctx: Ctx }) {
       <div className="trips">
         {trips.map((t, i) => <TripCard key={t.id} t={t} i={i} onOpen={() => ctx.open({ id: 'trip', trip: t })} />)}
       </div>
-      {!allTrips && data.trips.length > trips.length && <div className="more-row"><Button onClick={() => setAllTrips(true)}>Show All {data.trips.length} Trips</Button></div>}
+      {!allTrips && data.trips.length > trips.length && <div className="more-row"><Button onClick={() => setAllTrips(true)}>Show All {count(data.trips.length)} Trips</Button></div>}
       <h3 className="section-title">Countries</h3>
       <div className="countries">
         {Object.entries(data.countries).map(([c, m], i) => (
-          <div key={c} className="country" style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}>
+          <div key={c} className="country" style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }} title={`${c}: ${counted(m, 'photo')}`}>
             <span className="flag">{flagOf(c) ?? <Glyph name="globe" size={18} />}</span>
             <span className="truncate">{c}</span>
             <em>{count(m)}</em>
@@ -1033,8 +1322,13 @@ function PlacesView({ ctx }: { ctx: Ctx }) {
   );
 }
 
-function tripTitle(t: Trip) {
-  return t.places[0] ? `${t.places.slice(0, 2).join(' and ')}${t.countries[0] && t.countries[0] !== 'United States' ? `, ${t.countries[0]}` : ''}` : 'Trip';
+// A trip by its places: "Kyoto and Tokyo, Japan"; one across countries by its cities alone ("Paris and London"), or by
+// its countries when no city is known. (Home's country, the United States, goes unsaid.)
+function tripTitle(t: { places: string[]; countries: string[] }) {
+  const cs = t.countries.filter(Boolean);
+  if (!t.places[0]) return cs.length ? andList(cs.slice(0, 3)) : 'A trip';
+  const where = andList(t.places.slice(0, 2));
+  return cs.length === 1 && cs[0] !== 'United States' ? `${where}, ${cs[0]}` : where;
 }
 // "Mar 3 to 5, 2025", "Dec 30, 2024 to Jan 2, 2025"
 function shortRange(a: string, b: string) {
@@ -1049,14 +1343,14 @@ function shortRange(a: string, b: string) {
 function TripCard({ t, i, onOpen }: { t: Trip; i: number; onOpen: () => void }) {
   const th = useThumbs(t.sample.slice(0, 1), 480);
   const cover = th.get(t.sample[0]);
-  const flag = t.countries.map(flagOf).find(Boolean);
+  const flags = t.countries.map(flagOf).filter(Boolean).slice(0, 3);
   return (
     <button className="trip-card" onClick={onOpen} data-testid="trip" style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}>
       <div className="trip-cover">{cover && <img src={cover} alt="" draggable={false} />}</div>
       {t.people.length > 0 && <div className="trip-people">{t.people.slice(0, 3).map((p) => <Avatar key={p.key} name={p.name} size={22} />)}</div>}
       <div className="trip-text">
-        <div className="trip-title">{flag && <span className="trip-flag">{flag}</span>}<span className="truncate">{tripTitle(t)}</span></div>
-        <div className="trip-sub">{shortRange(t.start, t.end)} · {t.days} {t.days === 1 ? 'day' : 'days'}</div>
+        <div className="trip-title" title={tripTitle(t)}>{flags.length > 0 && <span className="trip-flag">{flags.join('')}</span>}<span className="truncate">{tripTitle(t)}</span></div>
+        <div className="trip-sub">{shortRange(t.start, t.end)} · {counted(t.days, 'day')}</div>
       </div>
     </button>
   );
@@ -1070,16 +1364,16 @@ function TripView({ ctx, trip: t }: { ctx: Ctx; trip: Trip }) {
         <Eyebrow glyph="pin">Trip</Eyebrow>
         <div className="hero-front">
           <h2 className="hero-title">{tripTitle(t)}</h2>
-          <div className="hero-sub">{shortRange(t.start, t.end)} · {t.days} {t.days === 1 ? 'day' : 'days'}</div>
+          <div className="hero-sub">{shortRange(t.start, t.end)} · {counted(t.days, 'day')}</div>
         </div>
       </section>
       <BigStats items={[
         { label: 'Days', value: t.days },
         { label: 'Photos', value: t.photos },
         { label: 'Farthest from home', value: t.farthest_km, format: (n) => `${count(Math.round(n))} km` },
-        t.money > 0 && { label: 'Splitwise and Venmo', value: t.money, sub: 'records those days' },
+        t.money > 0 && { label: 'Splitwise and Venmo', value: t.money, sub: `${word(t.money, 'record')} those days` },
       ]} />
-      <Thumbs rowids={t.sample} onRecord={ctx.onRecord} size={140} />
+      <PhotoGrid rowids={t.photo_ids ?? t.sample} onRecord={ctx.onRecord} size={140} first={48} keep="photos" />
       <div className="two-col">
         <Panel title="Places">
           <div className="chips">
@@ -1091,7 +1385,7 @@ function TripView({ ctx, trip: t }: { ctx: Ctx; trip: Trip }) {
           <Panel title="Who you talked to">
             <div className="faces">
               {t.people.map((p, i) => (
-                <button key={p.key} className="face" onClick={() => ctx.open({ id: 'person', key: p.key, name: p.name })} title={`${p.name}: ${count(p.messages)} messages`} style={{ animationDelay: `${i * 50}ms` }}>
+                <button key={p.key} className="face" onClick={() => ctx.open({ id: 'person', key: p.key, name: p.name })} title={`${p.name}: ${counted(p.messages, 'message')}`} style={{ animationDelay: `${Math.min(i, 12) * 50}ms` }}>
                   <span className="face-pic"><Avatar name={p.name} size={48} /><span className="face-count">{count(p.messages)}</span></span>
                   <span className="face-name">{short(p.name)}</span>
                 </button>
@@ -1109,7 +1403,7 @@ function TripView({ ctx, trip: t }: { ctx: Ctx; trip: Trip }) {
 // filling its box.
 function MapView({ points, world, onRecord, mini }: { points: Places['points']; world: World | null; onRecord?: (n: number) => void; mini?: boolean }) {
   const [ref, size] = useSize<HTMLDivElement>();
-  const [zoom, setZoom] = useState<'yours' | 'world'>('yours');
+  const [zoom, setZoom] = useKept<'yours' | 'world'>(mini ? null : 'map-zoom', 'yours');
   const [tip, setTip] = useState<Tip>(null);
   const width = size.w;
   const height = mini ? size.h : Math.round(Math.min(500, Math.max(320, width * 0.5)));
@@ -1194,8 +1488,8 @@ function atDateLine(r: [number, number][]): [number, number][][] {
 
 function RhythmsView() {
   const { data, error, k } = useArtifact<Rhythms>('rhythms');
-  const [kind, setKind] = useState('messages');
-  const [table, setTable] = useState(false);
+  const [kind, setKind] = useKept('kind', 'messages');
+  const [table, setTable] = useKept('table', false);
   if (!data) return <Building k={k} what="rhythms" error={error} />;
   const kinds = Object.entries(data.kinds);
   if (!kinds.length) return <div className="empty"><h2>Not enough yet</h2>Rhythms come from timed records: messages, browsing, photos.</div>;
@@ -1205,6 +1499,7 @@ function RhythmsView() {
     <div className="stagger" data-testid="explore-rhythms">
       <section className="explore-hero tinted" style={tone('indigo')}>
         <Eyebrow glyph="clock">Your Rhythms</Eyebrow>
+        <div className="hero-kind" data-testid="rhythm-kind">{r.label}</div>
         <BigStats items={[
           { label: 'Busiest hour', value: hourLabel(r.peak_hour) },
           { label: 'Busiest day', value: WEEKDAYS[r.peak_day] },
@@ -1215,7 +1510,7 @@ function RhythmsView() {
       <div className="explore-bar">
         <Segmented value={kind in data.kinds ? kind : kinds[0][0]} onChange={setKind} items={kinds.map(([id, x]) => ({ id, label: x.label, testId: `rhythm-${id}` }))} />
       </div>
-      <Panel title={`${r.label}, by day and hour`} note={`${count(r.count)} in all, ${data.timezone.replace(/_/g, ' ')} time`}
+      <Panel title={`${r.label}, by day and hour`} note={`${count(r.count)} in all, in ${zoneName(data.timezone)}`}
         right={<button className="link-btn" onClick={() => setTable((t) => !t)}>{table ? 'Show as Chart' : 'Show as Table'}</button>}>
         {table ? <GridTable grid={r.grid} /> : <HeatGrid grid={r.grid} unit={r.label.toLowerCase()} />}
         <div className="viz-foot"><HeatLegend /></div>
@@ -1227,7 +1522,7 @@ function RhythmsView() {
           </Panel>
         )}
         {data.steps && (
-          <Panel title="Steps by weekday" note={`Average, over ${count(data.steps.days)} days with Health data`}>
+          <Panel title="Steps by weekday" note={`Average, over ${counted(data.steps.days, 'day')} with Health data`}>
             <Columns data={data.steps.weekday.map((n, i) => ({ key: String(i), label: WEEKDAYS[i], value: n }))} height={150} unit="steps on average"
               xTicks={WEEKDAYS.map((d, i) => ({ key: String(i), label: d.slice(0, 3) }))} />
           </Panel>
@@ -1252,6 +1547,33 @@ const FIRST_LEAD: Record<FirstKind, (i: FirstItem) => string> = {
 const FIRST_GLYPH: Record<FirstKind, string> = { person: 'person', place: 'pin', country: 'globe', project: 'code', app: 'layers', milestone: 'sparkle' };
 const FIRST_TONE: Record<FirstKind, string> = { person: 'green', place: 'red', country: 'teal', project: 'purple', app: 'blue', milestone: 'orange' };
 
+// A day's firsts as cards: new places that day are one card (with that day's new country, when there is one).
+type FirstCard = { i: FirstItem; places: string[] };
+function firstCards(items: FirstItem[]): FirstCard[] {
+  const out: FirstCard[] = [];
+  const day = new Map<string, FirstCard>(); // date -> the card that day's places join
+  for (const i of items) {
+    const d = i.ts.slice(0, 10);
+    if (i.kind === 'country') {
+      const c: FirstCard = { i, places: [] };
+      const at = day.get(d);
+      if (at && at.i.kind === 'place') { // places came first that day: they join the country instead
+        c.places.push(at.i.what, ...at.places);
+        out.splice(out.indexOf(at), 1);
+      }
+      day.set(d, c);
+      out.push(c);
+    } else if (i.kind === 'place' && day.has(d)) {
+      day.get(d)!.places.push(i.what);
+    } else {
+      const c: FirstCard = { i, places: [] };
+      if (i.kind === 'place') day.set(d, c);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
 function FirstBadge({ i }: { i: FirstItem }) {
   if (i.kind === 'person') return <Avatar name={i.what} size={38} />;
   const flag = i.kind === 'country' ? flagOf(i.what) : null;
@@ -1261,17 +1583,17 @@ function FirstBadge({ i }: { i: FirstItem }) {
 
 function FirstsView({ ctx }: { ctx: Ctx }) {
   const { data, error, k } = useArtifact<Firsts>('firsts');
-  const [tab, setTab] = useState<FirstKind | 'all'>('all');
+  const [tab, setTab] = useKept<FirstKind | 'all'>('tab', 'all');
   if (!data) return <Building k={k} what="firsts" error={error} />;
   const items = data.items.filter((i) => tab === 'all' || i.kind === tab || (tab === 'app' && i.kind === 'milestone'));
-  const byYear = new Map<string, FirstItem[]>();
-  for (const i of items) byYear.set(i.ts.slice(0, 4), [...(byYear.get(i.ts.slice(0, 4)) ?? []), i]);
+  const byYear = new Map<string, FirstCard[]>();
+  for (const c of firstCards(items)) byYear.set(c.i.ts.slice(0, 4), [...(byYear.get(c.i.ts.slice(0, 4)) ?? []), c]);
   const since = data.items[0]?.ts;
   return (
     <div className="stagger" data-testid="explore-firsts">
       <section className="explore-hero tinted" style={tone('orange')}>
         <Eyebrow glyph="sparkle">Firsts</Eyebrow>
-        <div className="hero-num"><b><Num value={data.items.length} id="firsts-count" /></b> <span>firsts</span></div>
+        <div className="hero-num"><b><Num value={data.items.length} id="firsts-count" /></b> <span>{word(data.items.length, 'first')}</span></div>
         <div className="hero-sub">{since ? `Since ${monthYear(since)}, as far back as your data goes` : ''}</div>
       </section>
       <div className="explore-bar">
@@ -1280,23 +1602,32 @@ function FirstsView({ ctx }: { ctx: Ctx }) {
           return n ? [{ id, label: <>{label} <span>{count(n)}</span></>, testId: `firsts-${id}` }] : [];
         })} />
       </div>
-      <p className="section-note">People you went on to exchange 20 or more messages with; places with photos on three or more days. A Mac's Messages start when that Mac does.</p>
+      <p className="section-note">People you went on to exchange 20 or more messages with; places with photos on three or more days, several new on one day together. A Mac's Messages start when that Mac does.</p>
       <div className="first-years" key={tab}>
         {[...byYear.entries()].reverse().map(([y, xs]) => (
           <section key={y} className="first-year">
             <div className="first-y">{y}</div>
             <div className="first-grid">
-              {[...xs].reverse().map((i, n) => (
-                <button key={`${i.kind}${i.what}${i.rowid}`} className="first-card" data-testid="first" style={{ animationDelay: `${Math.min(n, 12) * 30}ms` }}
-                  onClick={() => (i.kind === 'person' ? ctx.onConversation(i.rowid) : ctx.onRecord(i.rowid))}>
-                  <FirstBadge i={i} />
-                  <span className="first-text">
-                    <span className="first-lead">{FIRST_LEAD[i.kind](i)}</span>
-                    <span className="first-what truncate">{/^(home|work)$/i.test(i.what) && i.kind === 'place' ? i.what.toLowerCase() : i.what}</span>
-                    <span className="first-when truncate">{[dayLabel(i.ts.slice(0, 10)), i.detail].filter(Boolean).join(' · ')}</span>
-                  </span>
-                </button>
-              ))}
+              {[...xs].reverse().map(({ i, places }, n) => {
+                const many = i.kind === 'place' && places.length > 0;
+                const what = /^(home|work)$/i.test(i.what) && i.kind === 'place' ? i.what.toLowerCase() : i.what;
+                const names = many ? [what, ...places] : [what];
+                const shownWhat = names.length > 3 ? `${names.slice(0, 2).join(', ')} and ${count(names.length - 2)} more` : andList(names);
+                const when = [dayLabel(i.ts.slice(0, 10)), i.kind === 'country' && places.length ? `also ${andList(places.slice(0, 2))}${places.length > 2 ? ` and ${count(places.length - 2)} more` : ''}` : many ? null : i.detail]
+                  .filter(Boolean).join(' · ');
+                return (
+                  <button key={`${i.kind}${i.what}${i.rowid}`} className="first-card" data-testid="first" style={{ animationDelay: `${Math.min(n, 12) * 30}ms` }}
+                    title={[...names, ...(i.kind === 'country' ? places : [])].join(', ')}
+                    onClick={() => (i.kind === 'person' ? ctx.onConversation(i.rowid) : ctx.onRecord(i.rowid))}>
+                    <FirstBadge i={i} />
+                    <span className="first-text">
+                      <span className="first-lead">{many ? 'First photos in' : FIRST_LEAD[i.kind](i)}</span>
+                      <span className="first-what truncate">{shownWhat}</span>
+                      <span className="first-when truncate">{when}</span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </section>
         ))}
@@ -1308,18 +1639,21 @@ function FirstsView({ ctx }: { ctx: Ctx }) {
 // ---------------------------------------------------------------- what you made
 
 const MADE_TABS: (MadeKind | 'all')[] = ['all', 'code', 'writing', 'posts', 'ai', 'photos'];
+const MADE_UNIT: Record<MadeKind | 'all', [string, string]> = { all: ['thing you made', 'things you made'], code: ['commit', 'commits'], ai: ['AI conversation', 'AI conversations'],
+  writing: ['note or document', 'notes and documents'], posts: ['post', 'posts'], photos: ['photo', 'photos'] };
 
 function MadeView({ ctx }: { ctx: Ctx }) {
   const { data, error, k } = useArtifact<Made>('made');
-  const [kind, setKind] = useState<MadeKind | 'all'>('all');
+  const [kind, setKind] = useKept<MadeKind | 'all'>('kind', 'all');
   const years = useMemo(() => (data ? Object.keys(data.totals).sort().reverse() : []), [data]);
-  const [year, setYear] = useState<string | null>(null);
+  const [year, setYear] = useKept<string | null>('year', null);
   if (!data) return <Building k={k} what="made" error={error} />;
   if (!years.length) return <div className="empty"><h2>Nothing yet</h2>Commits, notes, documents, posts and photos show up here.</div>;
-  const y = year ?? years[0];
+  const y = year && years.includes(year) ? year : years[0];
   const value = (c: Partial<Record<MadeKind, number>> | undefined) =>
     !c ? 0 : kind === 'all' ? Object.entries(c).reduce((a, [k, n]) => a + (k === 'photos' ? 0 : n ?? 0), 0) : c[kind] ?? 0;
-  const label = kind === 'all' ? 'things you made' : data.labels[kind].toLowerCase();
+  const [one, many] = MADE_UNIT[kind];
+  const label = many;
   const days = Object.entries(data.days).filter(([d]) => d.startsWith(y));
   const active = days.filter(([, c]) => value(c) > 0).length;
   const kinds = MADE_TABS.filter((k) => k === 'all' || Object.values(data.totals).some((t) => t[k]));
@@ -1331,27 +1665,25 @@ function MadeView({ ctx }: { ctx: Ctx }) {
         <Eyebrow glyph="code">What You Made</Eyebrow>
         <div className="hero-split">
           <div>
-            {data.streak.days > 0
-              ? <div className="hero-num"><b><Num value={data.streak.days} id="made-streak" /></b> <span>days in a row</span></div>
-              : <div className="hero-num"><b><Num value={everActive} id="made-ever" /></b> <span>days you made something</span></div>}
-            <div className="hero-sub">{data.streak.days > 0 && data.streak.start ? `Your longest streak, ${rangeLabel(data.streak.start, data.streak.end!)}` : 'Code, writing, posts and AI sessions'}</div>
+            {data.streak.days > 1
+              ? <div className="hero-num"><b><Num value={data.streak.days} id="made-streak" /></b> <span>days in a row, your longest</span></div>
+              : <div className="hero-num"><b><Num value={everActive} id="made-ever" /></b> <span>{word(everActive, 'day')} you made something</span></div>}
+            <div className="hero-sub">{data.streak.days > 1 && data.streak.start ? `Your longest streak: ${rangeLabel(data.streak.start, data.streak.end!)}` : 'Code, writing, posts and AI conversations'}</div>
           </div>
-          <div className="hero-aside"><b><Num value={everActive} id="made-ever-2" /></b><span>days you made something</span></div>
+          <div className="hero-aside"><b><Num value={everActive} id="made-ever-2" /></b><span>{word(everActive, 'day')} you made something</span></div>
         </div>
       </section>
       <div className="explore-bar">
         <Segmented value={kind} onChange={setKind} items={kinds.map((k) => ({ id: k, label: k === 'all' ? 'Everything' : data.labels[k], testId: `made-${k}` }))} />
-        <select className="select" value={y} onChange={(e) => setYear(e.target.value)} aria-label="Year" data-testid="made-year">
-          {years.map((yy) => <option key={yy} value={yy}>{yy}</option>)}
-        </select>
+        <YearPicker years={years} value={y} onChange={setYear} testId="made-year" />
       </div>
       <BigStats items={[
-        { label: `Days in ${y}`, value: active, id: `made-days-${kind}`, sub: `with ${label}` },
-        { label: `In ${y}`, value: value(data.totals[y]), id: `made-total-${kind}`, sub: label },
+        { label: `Days in ${y}`, value: active, id: `made-days-${kind}`, sub: `with ${many}` },
+        { label: `In ${y}`, value: value(data.totals[y]), id: `made-total-${kind}`, sub: word(value(data.totals[y]), one, many) },
         busiest && { label: 'Busiest day ever', value: busiest.count, sub: dayLabel(busiest.date), onClick: () => ctx.onRecord(busiest.rowid) },
       ]} />
-      <Panel title={`${y}, day by day`} note={kind === 'all' ? 'Code, AI sessions, writing and posts. Photos have their own tab.' : undefined}>
-        <Calendar year={Number(y)} value={(d) => value(data.days[d])} unit={label} />
+      <Panel title={`${y}, day by day`} note={`${kind === 'all' ? 'Code, AI conversations, writing and posts; photos have their own tab. ' : ''}Click a day to see it in Your Stream.`}>
+        <Calendar year={Number(y)} value={(d) => value(data.days[d])} unit={label} onDay={(d) => ctx.open({ id: 'stream', month: d.slice(0, 7), day: d })} />
         <div className="viz-foot"><HeatLegend /></div>
       </Panel>
       <Panel title="Every year">
@@ -1368,9 +1700,20 @@ function MadeView({ ctx }: { ctx: Ctx }) {
 
 // ---------------------------------------------------------------- the stream
 
+// Whether an event is still to come this month: one starting after now (an all-day one, after today), such as a plan
+// in your calendar. The stream shows those apart, as coming up, after what happened.
+function upcoming(e: StreamEvent, now: Date): boolean {
+  if (e.all_day) return e.start.slice(0, 10) > iso(now);
+  const t = Date.parse(e.start);
+  return Number.isFinite(t) && t > now.getTime();
+}
+
 function StreamTile({ d }: { d: Stream }) {
+  const now = new Date();
+  const past = d.events.filter((e) => !upcoming(e, now));
+  const coming = d.events.length - past.length;
   // Every day of the month, quiet ones too, as on the page.
-  const by = new Map(streamDays(d.events).map((x) => [x.date, x.events.length]));
+  const by = new Map(streamDays(past).map((x) => [x.date, x.events.length]));
   const [y, m] = d.month.split('-').map(Number);
   const days = Array.from({ length: new Date(y, m, 0).getDate() }, (_, i) => {
     const date = `${d.month}-${String(i + 1).padStart(2, '0')}`;
@@ -1381,7 +1724,10 @@ function StreamTile({ d }: { d: Stream }) {
     <>
       <div className="tile-front">
         <div className="tile-title">{d.label}, as it happened</div>
-        <div className="tile-sub"><Num value={d.events.length} id="home-stream" /> events from <Num value={d.records} id="home-stream-records" /> records, in order</div>
+        <div className="tile-sub">
+          <Num value={past.length} id="home-stream" /> {word(past.length, 'event')} from <Num value={d.records} id="home-stream-records" /> {word(d.records, 'record')}, in order
+          {coming > 0 && <> · {count(coming)} coming up</>}
+        </div>
       </div>
       <div className="stream-mini" aria-hidden="true">
         {days.map((x) => <i key={x.date} className={x.n ? '' : 'none'} style={{ height: `${x.n ? Math.max(8, (x.n / max) * 100) : 3}%` }} />)}
@@ -1392,27 +1738,51 @@ function StreamTile({ d }: { d: Stream }) {
 
 const dayHead = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 const keyOfEvent = (e: StreamEvent) => `${e.start}|${e.kind}|${e.rowids[0]}`;
+// A preview line that only says the title again ("Searched “ramen”" under "Searched for “ramen”").
+const SMALL_WORDS = new Set(['a', 'an', 'the', 'for', 'to', 'by', 'in', 'of', 'on', 'at', 'and', 'with']);
+const wordsOf = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+function repeats(line: string, title: string): boolean {
+  const t = new Set(wordsOf(title));
+  const ws = wordsOf(line).filter((w) => !SMALL_WORDS.has(w));
+  return ws.length > 0 && ws.every((w) => t.has(w));
+}
 
-// A month as it happened: every event in order, day by day. Filter by kind, search, jump to a day; open an event to
-// see all of it and every record in it.
-function StreamView({ ctx }: { ctx: Ctx }) {
+// A month as it happened: every event in order, day by day, and after them what's still to come. Filter by kind,
+// search, jump to a day (the month, the kinds and the days stay at the top as you scroll); open an event to see all
+// of it and every record in it. `month` and `day`: the day to open at (a day in What You Made).
+function StreamView({ ctx, month: start, day }: { ctx: Ctx; month?: string; day?: string }) {
   const example = !!useContext(Examples); // the welcome tour: made-up events, so nothing here may touch real records or files
-  const [month, setMonth] = useState<string | null>(null);
+  const [month, setMonth] = useKept<string | null>('month', start ?? null);
   const { data, error, k, loading } = useArtifact<Stream>('stream', month ? [month] : []);
-  const [group, setGroup] = useState('all');
-  const [q, setQ] = useState('');
-  const [openKeys, setOpenKeys] = useState<Set<string>>(() => new Set());
+  const [group, setGroup] = useKept('group', 'all');
+  const [q, setQ] = useKept('q', '');
+  const [openKeys, setOpenKeys] = useKept<Set<string>>('open', () => new Set());
+  const [jumped, setJumped] = useKept('jumped', !day);
   const [records, setRecords] = useState<StreamEvent | null>(null);
   const [saved, setSaved] = useState<{ month: string; file: string | null } | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const controls = useRef<HTMLDivElement>(null);
+  const [stuck, setStuck] = useState(0); // the controls' height: day headings stick below them
+  useLayoutEffect(() => {
+    const el = controls.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setStuck(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [!!data]);
+  const now = useMemo(() => new Date(), [data]);
+  // The kinds count what the search finds; the kind chosen narrows that.
+  const found = useMemo(() => (data?.events ?? []).filter((e) => streamMatches(e, q)), [data, q]);
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
-    for (const e of data?.events ?? []) c[GROUP_OF[e.kind]?.id ?? 'other'] = (c[GROUP_OF[e.kind]?.id ?? 'other'] ?? 0) + 1;
+    for (const e of found) c[GROUP_OF[e.kind]?.id ?? 'other'] = (c[GROUP_OF[e.kind]?.id ?? 'other'] ?? 0) + 1;
     return c;
-  }, [data]);
-  const shown = useMemo(() => (data?.events ?? []).filter((e) => (group === 'all' || GROUP_OF[e.kind]?.id === group) && streamMatches(e, q)), [data, group, q]);
-  const days = useMemo(() => streamDays(shown), [shown]);
+  }, [found]);
+  const shown = useMemo(() => found.filter((e) => group === 'all' || GROUP_OF[e.kind]?.id === group), [found, group]);
+  const days = useMemo(() => streamDays(shown.filter((e) => !upcoming(e, now))), [shown, now]);
+  const later = useMemo(() => streamDays(shown.filter((e) => upcoming(e, now))), [shown, now]);
   const allDays = useMemo(() => streamDays(data?.events ?? []), [data]);
+  const past = useMemo(() => (data?.events ?? []).filter((e) => !upcoming(e, now)).length, [data, now]);
   // Every day of the month, quiet ones too.
   const monthDays = useMemo(() => {
     if (!data) return [];
@@ -1424,6 +1794,12 @@ function StreamView({ ctx }: { ctx: Ctx }) {
       return { date, total: by.get(date) ?? 0 };
     });
   }, [data, allDays]);
+  // Opened at a day: there, once its month is here.
+  useEffect(() => {
+    if (jumped || !data || !day || data.month !== day.slice(0, 7)) return;
+    setJumped(true);
+    requestAnimationFrame(() => document.getElementById(`stream-day-${day}`)?.scrollIntoView({ block: 'start' }));
+  }, [data, jumped]);
   if (!data) return <Building k={k} what="stream" error={error} />;
   const at = data.months.findIndex((m) => m.month === data.month);
   const older = data.months[at + 1], newer = at > 0 ? data.months[at - 1] : undefined;
@@ -1451,62 +1827,79 @@ function StreamView({ ctx }: { ctx: Ctx }) {
     setSaving(null);
   };
   const max = Math.max(1, ...monthDays.map((d) => d.total));
+  const coming = data.events.length - past;
+  const shownOn = new Map([...days, ...later].map((d) => [d.date, d.events.length]));
+  const dayList = (ds: { date: string; events: StreamEvent[] }[]) => ds.map((d) => (
+    <section key={d.date} id={`stream-day-${d.date}`} className="stream-day" data-testid="stream-day">
+      <h3 className="stream-day-head"><span>{dayHead(d.date)}</span><span className="stream-day-n">{counted(d.events.length, 'event')}</span></h3>
+      {d.events.map((e) => <EventRow key={keyOfEvent(e)} e={e} open={openKeys.has(keyOfEvent(e))} onToggle={() => toggle(e)} ctx={ctx}
+        onRecords={example ? undefined : () => setRecords(e)} />)}
+    </section>
+  ));
   return (
-    <div className="stagger" data-testid="explore-stream">
+    <div className="stagger stream-page" data-testid="explore-stream" style={{ '--stream-top': `${stuck}px` } as CSSProperties}>
       <section className="explore-hero tinted" style={tone('teal')}>
         <Eyebrow glyph="stream">Your Stream</Eyebrow>
-        <div className="hero-num"><b><Num value={data.events.length} id={`stream-n-${data.month}`} /></b> <span>events in {data.label}</span></div>
-        <div className="hero-sub">From {count(data.records)} records, in the order they happened. Copies of one thing from several apps count once, and a run of the same thing (a conversation, a stretch of browsing, a batch of photos) is one event. {count(data.left_out)} records aren't events and are left out: device bookkeeping, raw Health samples, spam.</div>
-      </section>
-      <div className="explore-bar stream-bar">
-        <div className="stream-month">
-          <button className="icon-btn" disabled={!older} onClick={() => older && go(older.month)} title="Earlier month" aria-label="Earlier month" data-testid="stream-prev"><Glyph name="chevronLeft" size={14} /></button>
-          <select className="select" value={data.month} onChange={(e) => go(e.target.value)} aria-label="Month" data-testid="stream-month">
-            {(data.months.some((m) => m.month === data.month) ? data.months : [{ month: data.month, records: 0 }, ...data.months])
-              .map((m) => <option key={m.month} value={m.month}>{monthLabel(m.month)}</option>)}
-          </select>
-          <button className="icon-btn" disabled={!newer} onClick={() => newer && go(newer.month)} title="Later month" aria-label="Later month" data-testid="stream-next"><Glyph name="chevronRight" size={14} /></button>
-          {loading && <Spinner size={13} />}
+        <div className="hero-num"><b><Num value={past} id={`stream-n-${data.month}`} /></b> <span>{word(past, 'event')} in {data.label}{coming ? ' so far' : ''}</span></div>
+        <div className="hero-sub">
+          {coming > 0 && <>And {count(coming)} still to come, from your calendar and the like. </>}
+          From {counted(data.records, 'record')}, in the order they happened. Copies of one thing from several apps count once, and a run of the same thing (a conversation, a stretch of browsing, a batch of photos) is one event.
+          {data.left_out > 0 && <> {data.left_out === 1 ? '1 record isn\'t an event and is' : `${count(data.left_out)} records aren't events and are`} left out: device bookkeeping, raw Health samples, spam.</>}
         </div>
-        <label className="search-wrap"><Glyph name="search" size={13} />
-          <input type="search" className="search-field" placeholder="Search this month" value={q} onChange={(e) => setQ(e.target.value)} data-testid="stream-search" />
-        </label>
-      </div>
-      <div className="stream-chips" role="tablist" aria-label="Kinds of events">
-        <button role="tab" aria-selected={group === 'all'} className={group === 'all' ? 'on' : ''} onClick={() => setGroup('all')} data-testid="stream-kind-all">Everything <span>{count(data.events.length)}</span></button>
-        {STREAM_GROUPS.filter((g) => counts[g.id]).map((g) => (
-          <button key={g.id} role="tab" aria-selected={group === g.id} className={group === g.id ? 'on' : ''} style={tone(g.tone)} onClick={() => setGroup(group === g.id ? 'all' : g.id)} data-testid={`stream-kind-${g.id}`}>
-            <Glyph name={g.glyph} size={12} /> {g.label} <span>{count(counts[g.id])}</span>
-          </button>
-        ))}
-      </div>
-      <div className="stream-days" aria-label="Days">
-        {monthDays.map((d) => {
-          const n = days.find((x) => x.date === d.date)?.events.length ?? 0;
-          return (
-            <button key={d.date} className={n ? '' : 'none'} disabled={!n} title={`${dayHead(d.date)}: ${count(n)} ${n === 1 ? 'event' : 'events'}`} data-testid="stream-day-jump"
-              // At once, not smoothly: days not drawn yet (content-visibility) would change size on the way and move the target.
-              onClick={() => document.getElementById(`stream-day-${d.date}`)?.scrollIntoView({ block: 'start' })}>
-              <i style={{ height: `${d.total ? Math.max(10, (d.total / max) * 100) : 4}%` }} />
-              <span>{Number(d.date.slice(8))}</span>
+      </section>
+      <div className="stream-controls" ref={controls} data-testid="stream-controls">
+        <div className="explore-bar stream-bar">
+          <div className="stream-month">
+            <button className="icon-btn" disabled={!older} onClick={() => older && go(older.month)} title="Earlier month" aria-label="Earlier month" data-testid="stream-prev"><Glyph name="chevronLeft" size={14} /></button>
+            <select className="select" value={data.month} onChange={(e) => go(e.target.value)} aria-label="Month" data-testid="stream-month">
+              {(data.months.some((m) => m.month === data.month) ? data.months : [{ month: data.month, records: 0 }, ...data.months])
+                .map((m) => <option key={m.month} value={m.month}>{monthLabel(m.month)}</option>)}
+            </select>
+            <button className="icon-btn" disabled={!newer} onClick={() => newer && go(newer.month)} title="Later month" aria-label="Later month" data-testid="stream-next"><Glyph name="chevronRight" size={14} /></button>
+            {loading && <Spinner size={13} />}
+          </div>
+          <label className="search-wrap"><Glyph name="search" size={13} />
+            <input type="search" className="search-field" placeholder="Search this month" value={q} onChange={(e) => setQ(e.target.value)} data-testid="stream-search" />
+          </label>
+        </div>
+        <div className="stream-chips" role="tablist" aria-label="Kinds of events">
+          <button role="tab" aria-selected={group === 'all'} className={group === 'all' ? 'on' : ''} onClick={() => setGroup('all')} data-testid="stream-kind-all">Everything <span>{count(found.length)}</span></button>
+          {STREAM_GROUPS.filter((g) => counts[g.id] || group === g.id).map((g) => (
+            <button key={g.id} role="tab" aria-selected={group === g.id} className={group === g.id ? 'on' : ''} style={tone(g.tone)} onClick={() => setGroup(group === g.id ? 'all' : g.id)} data-testid={`stream-kind-${g.id}`}>
+              <Glyph name={g.glyph} size={12} /> {g.label} <span>{count(counts[g.id] ?? 0)}</span>
             </button>
-          );
-        })}
+          ))}
+        </div>
+        <div className="stream-days" aria-label="Days">
+          {monthDays.map((d) => {
+            const n = shownOn.get(d.date) ?? 0;
+            const ahead = d.date > iso(now);
+            return (
+              <button key={d.date} className={`${n ? '' : 'none'} ${ahead ? 'ahead' : ''}`} disabled={!n} title={`${dayHead(d.date)}: ${counted(n, 'event')}${ahead ? ', still to come' : ''}`} data-testid="stream-day-jump"
+                // At once, not smoothly: days not drawn yet (content-visibility) would change size on the way and move the target.
+                onClick={() => document.getElementById(`stream-day-${d.date}`)?.scrollIntoView({ block: 'start' })}>
+                <i style={{ height: `${d.total ? Math.max(10, (d.total / max) * 100) : 4}%` }} />
+                <span>{Number(d.date.slice(8))}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
       {!shown.length && <div className="empty" data-testid="stream-none"><h2>No events</h2>{q ? 'Nothing this month matches your search.' : 'Nothing of this kind this month.'}</div>}
       <div className="stream-list" key={`${data.month}|${group}`}>
-        {days.map((d) => (
-          <section key={d.date} id={`stream-day-${d.date}`} className="stream-day" data-testid="stream-day">
-            <h3 className="stream-day-head"><span>{dayHead(d.date)}</span><span className="stream-day-n">{count(d.events.length)} {d.events.length === 1 ? 'event' : 'events'}</span></h3>
-            {d.events.map((e) => <EventRow key={keyOfEvent(e)} e={e} open={openKeys.has(keyOfEvent(e))} onToggle={() => toggle(e)} ctx={ctx}
-              onRecords={example ? undefined : () => setRecords(e)} />)}
-          </section>
-        ))}
+        {dayList(days)}
+        {later.length > 0 && (
+          <div className="stream-later" data-testid="stream-later">
+            <h3 className="section-title">Coming up</h3>
+            <p className="section-note">Still to come this month: plans in your calendar and the like.</p>
+            {dayList(later)}
+          </div>
+        )}
       </div>
       {!example && <p className="section-note stream-file" data-testid="stream-file">
         {file
-          ? <>Saved as <code>corpus/stream/{data.month}.jsonl</code>, one event per line, for models and Ask to read. <Button kind="plain" size="small" onClick={() => void api.explore('reveal-stream', [data.month])}>Show in Finder</Button></>
-          : <>This month isn't saved as a file yet: <code>corpus/stream/</code> is written whenever the database is rebuilt. <Button kind="plain" size="small" disabled={saving === 'saving'} onClick={() => void save()} testAction="stream-save">{saving === 'saving' ? 'Saving…' : 'Save now'}</Button>{saving && saving !== 'saving' && <span className="stream-warn"> {saving}</span>}</>}
+          ? <>Saved on this Mac as a file Ask can read, one event per line. <Button kind="plain" size="small" onClick={() => void api.explore('reveal-stream', [data.month])}>Show in Finder</Button></>
+          : <>This month isn't saved as a file yet; it will be the next time your library is rebuilt. <Button kind="plain" size="small" disabled={saving === 'saving'} onClick={() => void save()} testAction="stream-save">{saving === 'saving' ? 'Saving…' : 'Save Now'}</Button>{saving && saving !== 'saving' && <span className="stream-warn"> {saving}</span>}</>}
       </p>}
       {records && <RecordsSheet e={records} ctx={ctx} onClose={() => setRecords(null)} />}
     </div>
@@ -1519,7 +1912,8 @@ function EventRow({ e, open, onToggle, ctx, onRecords }: { e: StreamEvent; open:
     : e.kind === 'watch' ? 'video' : e.kind === 'ai' ? 'sparkle' : e.kind === 'sleep' ? 'clock' : e.kind === 'mail' ? 'inbox' : g.glyph;
   const until = e.end && !e.all_day && clockOf(e.end) !== clockOf(e.start) ? `until ${clockOf(e.end)}` : null;
   const sub = [e.app, e.device, until,
-    e.count > 1 ? `${count(e.count)} records` : null].filter(Boolean).join(' · ');
+    e.count > 1 ? counted(e.count, 'record') : null].filter(Boolean).join(' · ');
+  const preview = e.lines.filter((l) => !repeats(l, e.title)).slice(0, 2);
   return (
     <div className={`stream-event ${open ? 'open' : ''}`} data-testid="stream-event" data-kind={e.kind}>
       <button className="stream-row" onClick={onToggle} aria-expanded={open}>
@@ -1528,7 +1922,7 @@ function EventRow({ e, open, onToggle, ctx, onRecords }: { e: StreamEvent; open:
         <span className="stream-main">
           <span className="stream-title">{e.title}</span>
           {sub && <span className="stream-sub">{sub}</span>}
-          {!open && e.lines.length > 0 && <span className="stream-preview">{e.lines.slice(0, 2).join('  ·  ')}</span>}
+          {!open && preview.length > 0 && <span className="stream-preview">{preview.join('  ·  ')}</span>}
         </span>
         <Glyph name="chevronRight" size={11} className="stream-chev" strokeWidth={2.4} />
       </button>
@@ -1536,13 +1930,13 @@ function EventRow({ e, open, onToggle, ctx, onRecords }: { e: StreamEvent; open:
         <div className="stream-more" data-testid="stream-more">
           {e.photos && e.photos.length > 0 && <Thumbs rowids={e.photos} onRecord={ctx.onRecord} size={72} />}
           {e.lines.length > 0 && <ul className="stream-lines">{e.lines.map((l, i) => <li key={i}>{l}</li>)}</ul>}
-          {e.people.length > 0 && <div className="stream-people">With {e.people.join(', ')}</div>}
+          {e.people.length > 0 && <div className="stream-people">With {andList(e.people)}</div>}
           {onRecords && (
             <div className="stream-actions">
-              {e.kind === 'conversation' && <Button size="small" onClick={() => ctx.onConversation(e.rowids[0])} testAction="stream-conversation">Open the conversation</Button>}
+              {e.kind === 'conversation' && <Button size="small" onClick={() => ctx.onConversation(e.rowids[0])} testAction="stream-conversation">Open the Conversation</Button>}
               {e.count === 1
-                ? <Button size="small" onClick={() => ctx.onRecord(e.rowids[0])} testAction="stream-record">Open the record</Button>
-                : <Button size="small" onClick={onRecords} testAction="stream-records">Show all {count(e.count)} records</Button>}
+                ? <Button size="small" onClick={() => ctx.onRecord(e.rowids[0])} testAction="stream-record">Open the Record</Button>
+                : <Button size="small" onClick={onRecords} testAction="stream-records">Show All {count(e.count)} Records</Button>}
             </div>
           )}
         </div>
@@ -1564,14 +1958,14 @@ function RecordsSheet({ e, ctx, onClose }: { e: StreamEvent; ctx: Ctx; onClose: 
   return (
     <Sheet onClose={onClose} testId="stream-records" width={640}>
       <h2>{e.title}</h2>
-      <p>{count(e.count)} records, {dayHead(e.start.slice(0, 10))}{e.all_day ? '' : `, ${clockOf(e.start)}${e.end && clockOf(e.end) !== clockOf(e.start) ? ` to ${clockOf(e.end)}` : ''}`}.</p>
+      <p>{counted(e.count, 'record')}, {dayHead(e.start.slice(0, 10))}{e.all_day ? '' : `, ${clockOf(e.start)}${e.end && clockOf(e.end) !== clockOf(e.start) ? ` to ${clockOf(e.end)}` : ''}`}.</p>
       {!rows ? <div className="empty"><Spinner /></div> : (
         <div className="stream-recs">
           {rows.map((r) => (
             <button key={r.rowid} className="stream-rec" data-testid="stream-rec" onClick={() => (r.message ? ctx.onConversation(r.rowid) : ctx.onRecord(r.rowid))}>
               <span className="stream-time">{r.ts ? clockOf(r.ts) : ''}</span>
               <span className="stream-main">
-                <span className="stream-title">{r.title || r.text || `${r.app} ${r.kind}`}</span>
+                <span className="stream-title">{r.title || r.text || kindName(r.kind)}</span>
                 <span className="stream-sub">{[r.app, r.who, r.title && r.text ? r.text : null].filter(Boolean).join(' · ')}</span>
               </span>
             </button>
@@ -1587,8 +1981,8 @@ function RecordsSheet({ e, ctx, onClose }: { e: StreamEvent; ctx: Ctx; onClose: 
 
 function YearTile({ d }: { d: YearStory }) {
   const chips: [number, string, string][] = [
-    [d.people.count, d.people.count === 1 ? 'person' : 'people', 'people'], [d.trip_count, d.trip_count === 1 ? 'trip' : 'trips', 'trips'],
-    [d.photos.count, 'photos', 'photos'], [d.travel.km, 'km', 'km'],
+    [d.people.count, word(d.people.count, 'person', 'people'), 'people'], [d.trip_count, word(d.trip_count, 'trip'), 'trips'],
+    [d.photos.count, word(d.photos.count, 'photo'), 'photos'], [d.travel.km, 'km', 'km'],
   ];
   return (
     <>
@@ -1610,8 +2004,19 @@ const SLIDE_SECONDS = 6.5;
 // Your year as a story, the way Replay or Memories plays one: a slide at a time, each a big number and a picture of
 // it, moving on by itself (not with Reduce Motion). Click the right side or press → for the next, the left or ← for
 // the one before; hold to pause. Below it, every number at once.
+// Your Year's numbers, one or many.
+const YEAR_WORD: Record<string, [string, string]> = {
+  'people you talked to': ['person you talked to', 'people you talked to'], 'new people': ['new person', 'new people'], trips: ['trip', 'trips'],
+  'km traveled': ['km traveled', 'km traveled'], flights: ['flight', 'flights'], countries: ['country', 'countries'],
+  'days you made something': ['day you made something', 'days you made something'], steps: ['step', 'steps'], firsts: ['first', 'firsts'],
+  messages: ['message', 'messages'], photos: ['photo', 'photos'], videos: ['video', 'videos'], emails: ['email', 'emails'], searches: ['search', 'searches'],
+  'pages visited': ['page visited', 'pages visited'], commits: ['commit', 'commits'], 'notes and documents': ['note or document', 'notes and documents'],
+  posts: ['post', 'posts'], calls: ['call', 'calls'], 'voice memos': ['voice memo', 'voice memos'], 'AI conversations': ['AI conversation', 'AI conversations'],
+  events: ['calendar event', 'calendar events'], payments: ['payment', 'payments'], 'videos watched': ['video watched', 'videos watched'], 'songs played': ['song played', 'songs played'],
+};
+
 function YearView({ ctx }: { ctx: Ctx }) {
-  const [y, setY] = useState<string | null>(null);
+  const [y, setY] = useKept<string | null>('year', null);
   const { data, error, loading, k } = useArtifact<YearStory>('year', y ? [y] : []);
   const places = useArtifact<Places>('places').data;
   const world = useArtifact<World>('world').data;
@@ -1628,16 +2033,16 @@ function YearView({ ctx }: { ctx: Ctx }) {
   ];
   return (
     <div className="stagger" data-testid="explore-year">
-      <Story key={`story-${data.year}`} slides={slides} />
+      <Story key={`story-${data.year}`} slides={slides} keep={`slide-${data.year}`} />
       <div className="explore-bar">
-        <Segmented value={data.year} onChange={setY} items={data.years.map((yy) => ({ id: yy, label: yy, testId: `year-${yy}` }))} />
+        <YearPicker years={data.years} value={data.year} onChange={setY} testId="year-picker" />
         {loading && <Spinner size={13} />}
       </div>
       <h3 className="section-title">{data.year}{data.so_far ? ' so far' : ''}, in numbers</h3>
       <div className="year-numbers" data-testid="year-numbers" key={`numbers-${data.year}`}>
         {numbers.filter(([, n]) => n > 0).map(([label, n], i) => (
           <div key={label} className="num-card" style={{ animationDelay: `${Math.min(i, 16) * 25}ms` }}>
-            <b><Num value={n} /></b><span>{label}</span>
+            <b><Num value={n} /></b><span>{YEAR_WORD[label] ? word(n, ...YEAR_WORD[label]) : label}</span>
           </div>
         ))}
       </div>
@@ -1645,8 +2050,17 @@ function YearView({ ctx }: { ctx: Ctx }) {
   );
 }
 
-function Story({ slides }: { slides: Slide[] }) {
-  const [i, setI] = useState(0);
+// `keep`: whose story this is (the year). Back returns to its slide; another year's starts at its beginning.
+function Story({ slides, keep }: { slides: Slide[]; keep: string }) {
+  const [at, setAt] = useKept('slide', { of: keep, i: 0 });
+  const i = at.of === keep ? at.i : 0;
+  const setI = (f: number | ((n: number) => number)) => setAt((a) => {
+    const cur = a.of === keep ? a.i : 0;
+    return { of: keep, i: typeof f === 'function' ? f(cur) : f };
+  });
+  useEffect(() => {
+    if (at.of !== keep) setAt({ of: keep, i: 0 });
+  }, [keep]);
   const [held, setHeld] = useState(false);
   const auto = !reducedMotion();
   const go = (n: number) => setI(Math.max(0, Math.min(slides.length - 1, n)));
@@ -1657,7 +2071,7 @@ function Story({ slides }: { slides: Slide[] }) {
   }, [i, held, auto, slides.length]);
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.closest?.('input, textarea, select') || document.querySelector('.sheet-backdrop')) return;
+      if ((e.target as HTMLElement)?.closest?.('input, textarea, select') || sheetOpen()) return;
       if (e.key === 'ArrowRight') setI((n) => Math.min(slides.length - 1, n + 1));
       if (e.key === 'ArrowLeft') setI((n) => Math.max(0, n - 1));
     };
@@ -1695,11 +2109,11 @@ function yearSlides(d: YearStory, world: World | null, ctx: Ctx, openTrip: (id: 
     const [top, ...rest] = d.people.top;
     out.push({ id: 'people', tone: 'green', body: (
       <div className="slide-split">
-        <div><div className="slide-eyebrow">Your people</div><div className="slide-num"><Num value={d.people.count} /></div><div className="slide-sub">people you talked to one on one</div></div>
+        <div><div className="slide-eyebrow">Your people</div><div className="slide-num"><Num value={d.people.count} /></div><div className="slide-sub">{word(d.people.count, 'person', 'people')} you talked to one on one</div></div>
         {top && (
           <div className="slide-people">
             <button className="slide-top" onClick={() => ctx.open({ id: 'person', key: top.key, name: top.name })}>
-              <Avatar name={top.name} size={96} /><b className="truncate">{short(top.name)}</b><span>Your #1 · {count(top.messages)} messages</span>
+              <Avatar name={top.name} size={96} /><b className="truncate" title={top.name}>{short(top.name)}</b><span>Your #1 · {counted(top.messages, 'message')}</span>
             </button>
             <div className="slide-rest">{rest.map((p, j) => (
               <button key={p.key} className="slide-face" style={{ animationDelay: `${300 + j * 80}ms` }} onClick={() => ctx.open({ id: 'person', key: p.key, name: p.name })}>
@@ -1736,7 +2150,7 @@ function yearSlides(d: YearStory, world: World | null, ctx: Ctx, openTrip: (id: 
     out.push({ id: 'travel', tone: 'yellow', bg: <div className="story-map"><ArcMap legs={d.travel.legs} world={world} mini /></div>, body: (
       <div className="slide-left">
         <div className="slide-eyebrow">On the move</div><div className="slide-num"><Num value={d.travel.km} /> <small>km</small></div>
-        <div className="slide-sub">{[d.travel.flights && `${d.travel.flights} ${d.travel.flights === 1 ? 'flight' : 'flights'}`, `${d.travel.countries.length} ${d.travel.countries.length === 1 ? 'country' : 'countries'}`,
+        <div className="slide-sub">{[d.travel.flights && counted(d.travel.flights, 'flight'), counted(d.travel.countries.length, 'country', 'countries'),
           d.travel.km >= 40075 * 0.25 && `${(d.travel.km / 40075).toFixed(1)}× around the Earth`].filter(Boolean).join(' · ')}</div>
         {d.travel.new_countries.length > 0 && <div className="slide-flags">First time in {d.travel.new_countries.map((c) => <span key={c}>{flagOf(c) ?? ''} {c}</span>)}</div>}
       </div>) });
@@ -1744,24 +2158,24 @@ function yearSlides(d: YearStory, world: World | null, ctx: Ctx, openTrip: (id: 
   if (d.trips.length) {
     out.push({ id: 'trips', tone: 'orange', body: (
       <div className="slide-split">
-        <div><div className="slide-eyebrow">Trips</div><div className="slide-num"><Num value={d.trip_count} /></div><div className="slide-sub">{d.trip_count === 1 ? 'trip' : 'trips'} away from home, the longest {d.trips[0].days} days</div></div>
+        <div><div className="slide-eyebrow">Trips</div><div className="slide-num"><Num value={d.trip_count} /></div><div className="slide-sub">{word(d.trip_count, 'trip')} away from home{d.trip_count > 1 ? `, the longest ${counted(d.trips[0].days, 'day')}` : `, ${counted(d.trips[0].days, 'day')}`}</div></div>
         <div className="slide-trips">{d.trips.slice(0, 4).map((t, j) => <SlideTrip key={t.id} t={t} j={j} onOpen={() => openTrip(t.id)} />)}</div>
       </div>) });
   }
   if (d.photos.count) {
     out.push({ id: 'photos', tone: 'purple', body: (
       <div className="slide-split">
-        <div><div className="slide-eyebrow">Photos</div><div className="slide-num"><Num value={d.photos.count} /></div><div className="slide-sub">photos and videos, one from each month here</div></div>
+        <div><div className="slide-eyebrow">Photos</div><div className="slide-num"><Num value={d.photos.count} /></div><div className="slide-sub">{word(d.photos.count, 'photo or video', 'photos and videos')}{d.photos.months.length > 1 ? ', one from each month here' : ''}</div></div>
         <MonthWall months={d.photos.months} onRecord={ctx.onRecord} />
       </div>) });
   }
   if (d.made.days) {
-    const MADE_LABEL: Record<string, string> = { code: 'commits', writing: 'notes and documents', posts: 'posts', ai: 'AI sessions' };
+    const MADE_LABEL: Record<string, [string, string]> = { code: ['commit', 'commits'], writing: ['note or document', 'notes and documents'], posts: ['post', 'posts'], ai: ['AI conversation', 'AI conversations'] };
     out.push({ id: 'made', tone: 'indigo', body: (
       <div className="slide-left">
-        <div className="slide-eyebrow">What you made</div><div className="slide-num"><Num value={d.made.days} /> <small>days</small></div>
+        <div className="slide-eyebrow">What you made</div><div className="slide-num"><Num value={d.made.days} /> <small>{word(d.made.days, 'day')}</small></div>
         <div className="slide-sub">you made something{d.made.streak.days > 1 ? `, ${d.made.streak.days} of them in a row` : ''}</div>
-        <div className="slide-chips">{Object.entries(d.made.totals).filter(([, n]) => n).map(([kk, n]) => <span key={kk}><b>{count(n)}</b> {MADE_LABEL[kk] ?? kk}</span>)}</div>
+        <div className="slide-chips">{Object.entries(d.made.totals).filter(([, n]) => n).map(([kk, n]) => <span key={kk}><b>{count(n)}</b> {MADE_LABEL[kk] ? word(n, ...MADE_LABEL[kk]) : kk}</span>)}</div>
       </div>) });
   }
   if (d.rhythm.peak_hour !== null) {
@@ -1781,7 +2195,7 @@ function yearSlides(d: YearStory, world: World | null, ctx: Ctx, openTrip: (id: 
   if (d.firsts.count) {
     out.push({ id: 'firsts', tone: 'orange', body: (
       <div className="slide-split">
-        <div><div className="slide-eyebrow">Firsts</div><div className="slide-num"><Num value={d.firsts.count} /></div><div className="slide-sub">things you did for the first time</div></div>
+        <div><div className="slide-eyebrow">Firsts</div><div className="slide-num"><Num value={d.firsts.count} /></div><div className="slide-sub">{word(d.firsts.count, 'thing', 'things')} you did for the first time</div></div>
         <div className="slide-firsts">{d.firsts.highlights.slice(0, 6).map((f, j) => (
           <button key={`${f.kind}${f.what}${f.rowid}`} className="slide-first" style={{ animationDelay: `${200 + j * 70}ms` }} onClick={() => (f.kind === 'person' ? ctx.onConversation(f.rowid) : ctx.onRecord(f.rowid))}>
             <FirstBadge i={f} /><span><em>{FIRST_LEAD[f.kind](f)}</em><b className="truncate">{f.what}</b></span>
@@ -1794,7 +2208,7 @@ function yearSlides(d: YearStory, world: World | null, ctx: Ctx, openTrip: (id: 
     out.push({ id: 'busiest', tone: 'pink', bg: b.photo ? <div className="story-photos settle"><Mosaic ids={[b.photo]} /></div> : undefined, body: (
       <div className="slide-left">
         <div className="slide-eyebrow">Your biggest day</div><div className="slide-num">{new Date(`${b.date}T12:00:00`).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}</div>
-        <div className="slide-sub">{new Date(`${b.date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long' })}: {Object.entries(b.kinds).slice(0, 3).map(([kk, n]) => `${count(n)} ${kk}`).join(', ')}</div>
+        <div className="slide-sub">{new Date(`${b.date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long' })}: {Object.entries(b.kinds).slice(0, 3).map(([kk, n]) => (YEAR_WORD[kk] ? counted(n, ...YEAR_WORD[kk]) : `${count(n)} ${kk}`)).join(', ')}</div>
       </div>) });
   }
   return out;
@@ -1808,7 +2222,7 @@ function SlideTrip({ t, j, onOpen }: { t: YearStory['trips'][number]; j: number;
   return (
     <button className="slide-trip" onClick={onOpen} style={{ animationDelay: `${200 + j * 90}ms` }}>
       {th.get(t.sample[0]) && <img src={th.get(t.sample[0])} alt="" draggable={false} />}
-      <span><b className="truncate">{flag} {t.places.join(' and ') || t.countries[0] || 'A trip'}</b><em>{shortRange(t.start, t.end)}</em></span>
+      <span><b className="truncate" title={tripTitle(t)}>{flag} {tripTitle(t)}</b><em>{shortRange(t.start, t.end)}</em></span>
     </button>
   );
 }
@@ -1818,7 +2232,7 @@ function MonthWall({ months, onRecord }: { months: YearStory['photos']['months']
   return (
     <div className="month-wall">
       {months.map((m, j) => (
-        <button key={m.month} onClick={() => onRecord(m.rowid)} style={{ animationDelay: `${150 + j * 50}ms` }} title={`${count(m.count)} photos`}>
+        <button key={m.month} onClick={() => onRecord(m.rowid)} style={{ animationDelay: `${150 + j * 50}ms` }} title={counted(m.count, 'photo')}>
           {th.get(m.rowid) && <img src={th.get(m.rowid)} alt="" draggable={false} />}
           <span>{new Date(`${m.month}-15T12:00:00`).toLocaleDateString(undefined, { month: 'short' })}</span>
         </button>
@@ -1847,12 +2261,16 @@ const placeName = (p: JourneyPlace) => p.place ?? p.country ?? 'Somewhere';
 function JourneysView({ ctx }: { ctx: Ctx }) {
   const { data, error, k } = useArtifact<Journeys>('journeys');
   const world = useArtifact<World>('world').data;
-  const [y, setY] = useState('all');
-  const [all, setAll] = useState(false);
+  const [picked, setY] = useKept('year', 'all');
+  const [all, setAll] = useKept('all', false);
   if (!data) return <Building k={k} what="journeys" error={error} />;
   if (!data.legs.length) return <div className="empty"><h2>No journeys yet</h2>Journeys come from where your photos (or anything else with a location) were made.</div>;
   const years = Object.keys(data.by_year).filter((yy) => data.by_year[yy].legs).sort().reverse();
+  const y = picked === 'all' || years.includes(picked) ? picked : 'all';
+  const yd = y === 'all' ? null : data.by_year[y];
   const legs = y === 'all' ? data.legs : data.legs.filter((l) => l.arrived.startsWith(y));
+  const countries = yd ? yd.order ?? [] : data.countries;
+  const cities = yd ? yd.cities ?? [] : data.cities;
   const km = legs.reduce((a, l) => a + l.km, 0), flights = legs.filter((l) => l.flew).length;
   const longest = legs.reduce<Leg | null>((a, l) => (!a || l.km > a.km ? l : a), null);
   const shown = all ? legs : legs.slice(0, 40);
@@ -1860,7 +2278,6 @@ function JourneysView({ ctx }: { ctx: Ctx }) {
     <div className="stagger" data-testid="explore-journeys">
       <section className="explore-hero night-hero" style={tone('yellow')}>
         <ArcMap legs={legs} world={world} onLeg={(l) => ctx.onRecord(l.to_rowid)} />
-        <div className="map-bar"><Segmented glass value={y} onChange={setY} items={[{ id: 'all', label: 'All Years' }, ...years.map((yy) => ({ id: yy, label: yy, testId: `journeys-${yy}` }))]} /></div>
         <div className="map-overlay glass-panel night">
           <Eyebrow glyph="airplane">Journeys</Eyebrow>
           <div className="map-stats">
@@ -1868,39 +2285,40 @@ function JourneysView({ ctx }: { ctx: Ctx }) {
             <div><b><Num value={flights} id={`j-fl-${y}`} /></b><span>{flights === 1 ? 'flight' : 'flights'}</span></div>
             <div><b><Num value={Math.round((km / 40075) * 10)} id={`j-earth-${y}`} format={(n) => (n / 10).toFixed(1)} />×</b><span>around the Earth</span></div>
           </div>
-          <div className="map-note">Worked out from where {count(data.points)} photos were taken{data.first ? `, since ${data.first.slice(0, 4)}` : ''}</div>
+          <div className="map-note">{y === 'all' ? 'All years' : y}: worked out from where {counted(data.points, 'photo was', 'photos were')} taken{data.first ? `, since ${data.first.slice(0, 4)}` : ''}</div>
         </div>
       </section>
+      <div className="explore-bar"><YearPicker years={years} value={y} onChange={(v) => { setY(v); setAll(false); }} all testId="journeys-year" /></div>
       {longest && (
         <BigStats items={[
-          { label: 'Journeys', value: legs.length, id: `j-legs-${y}`, sub: 'moves of more than 150 km' },
+          { label: y === 'all' ? 'Journeys' : `Journeys in ${y}`, value: legs.length, id: `j-legs-${y}`, sub: legs.length === 1 ? 'a move of more than 150 km' : 'moves of more than 150 km' },
           { label: 'Longest', value: longest.km, format: (n) => `${count(Math.round(n))} km`, sub: `${placeName(longest.from)} to ${placeName(longest.to)}`, onClick: () => ctx.onRecord(longest.to_rowid) },
-          { label: 'Countries', value: y === 'all' ? data.countries.length : data.by_year[y]?.countries.length ?? 0, id: `j-c-${y}` },
+          { label: 'Countries', value: countries.length, id: `j-c-${y}`, sub: y === 'all' ? 'you were in' : `you were in, in ${y}` },
         ]} />
       )}
-      <h3 className="section-title">Every journey</h3>
+      <h3 className="section-title">{y === 'all' ? 'Every journey' : `Every journey in ${y}`}</h3>
       <p className="section-note">A flight is a move nothing on the ground could have made as fast. Click one for the first photo when you got there.</p>
       <div className="panel list-panel" key={y}>
         {shown.map((l, i) => <LegRow key={`${l.left}${l.to_rowid}`} l={l} i={i} onOpen={() => ctx.onRecord(l.to_rowid)} />)}
       </div>
       {!all && legs.length > shown.length && <div className="more-row"><Button onClick={() => setAll(true)}>Show All {count(legs.length)}</Button></div>}
       <div className="two-col">
-        <Panel title="Countries, in the order you went">
+        <Panel title="Countries, in the order you went" note={y === 'all' ? 'The first time you were in each' : `The first time you were in each in ${y}`} testId="journeys-countries">
           <div className="country-steps">
-            {data.countries.map((c, i) => (
-              <button key={c.country} className="country-step" onClick={() => ctx.onRecord(c.rowid)} style={{ animationDelay: `${Math.min(i, 20) * 30}ms` }}>
+            {countries.map((c, i) => (
+              <button key={c.country} className="country-step" onClick={() => ctx.onRecord(c.rowid)} style={{ animationDelay: `${Math.min(i, 20) * 30}ms` }} title={c.country}>
                 <span className="flag">{flagOf(c.country) ?? <Glyph name="globe" size={18} />}</span>
                 <span className="truncate">{c.country}</span><em>{monthYear(`${c.date}T12:00:00`)}</em>
               </button>
             ))}
           </div>
         </Panel>
-        <Panel title="Where your days were" note="Days with photos in each place">
-          <HBars rows={data.cities.slice(0, 10).map((c) => ({ key: `${c.place}${c.country}`, label: c.place, value: c.days, onClick: () => ctx.onRecord(c.rowid) }))} unit="days" />
+        <Panel title="Where your days were" note={`Days with photos in each place${y === 'all' ? '' : `, in ${y}`}`}>
+          <HBars rows={cities.slice(0, 10).map((c) => ({ key: `${c.place}${c.country}`, label: c.place, value: c.days, onClick: () => ctx.onRecord(c.rowid) }))} unit="days" />
         </Panel>
       </div>
-      <Panel title="Kilometers by year">
-        <HBars rows={years.map((yy) => ({ key: yy, label: yy, value: data.by_year[yy].km }))} unit="km" />
+      <Panel title="Kilometers by year" note="Click a year to see it">
+        <HBars rows={years.map((yy) => ({ key: yy, label: yy, value: data.by_year[yy].km, on: yy === y, onClick: () => setY(yy) }))} unit="km" />
       </Panel>
     </div>
   );
@@ -2030,7 +2448,8 @@ function greatCircle(a: { lat: number; lon: number }, b: { lat: number; lon: num
 // A group's picture, the way Messages draws one: two or three of its members' monograms together.
 function GroupAvatar({ names, size = 40 }: { names: string[]; size?: number }) {
   const ns = names.slice(0, 3);
-  if (ns.length <= 1) return <Avatar name={ns[0] ?? 'Group'} size={size} />;
+  if (!ns.length) return <span className="avatar" style={{ width: size, height: size, ...tone('blue') }} aria-hidden><Glyph name="bubbles" size={Math.round(size * 0.5)} /></span>;
+  if (ns.length === 1) return <Avatar name={ns[0]} size={size} />;
   const s = Math.round(size * (ns.length === 2 ? 0.66 : 0.56));
   const pos = ns.length === 2 ? [[0, 0], [size - s, size - s]] : [[(size - s) / 2, 0], [0, size - s], [size - s, size - s]];
   return (
@@ -2047,8 +2466,8 @@ function GroupsTile({ d }: { d: GroupChats }) {
     <>
       <TileNum value={d.groups.length} unit={d.groups.length === 1 ? 'group chat' : 'group chats'} id="home-groups" />
       <div className="tile-people">
-        {d.groups.slice(0, 3).map((g, i) => (
-          <div key={g.key} className="tp" style={{ animationDelay: `${120 + i * 60}ms` }}>
+        {d.groups.slice(0, 2).map((g, i) => (
+          <div key={g.key} className="tp" style={{ animationDelay: `${120 + i * 60}ms` }} title={`${g.name}: ${counted(g.messages, 'message')}`}>
             <GroupAvatar names={othersIn(g)} size={28} /><span className="truncate">{g.name}</span><span className="num">{count(g.messages)}</span>
           </div>
         ))}
@@ -2059,9 +2478,9 @@ function GroupsTile({ d }: { d: GroupChats }) {
 
 function GroupsView({ ctx }: { ctx: Ctx }) {
   const { data, error, k } = useArtifact<GroupChats>('groups');
-  const [q, setQ] = useState('');
-  const [sort, setSort] = useState<'messages' | 'recent' | 'oldest'>('messages');
-  const [all, setAll] = useState(false);
+  const [q, setQ] = useKept('q', '');
+  const [sort, setSort] = useKept<'messages' | 'recent' | 'oldest'>('sort', 'messages');
+  const [all, setAll] = useKept('all', false);
   const list = useMemo(() => {
     if (!data) return [];
     const f = q.trim().toLowerCase();
@@ -2079,8 +2498,8 @@ function GroupsView({ ctx }: { ctx: Ctx }) {
         <Eyebrow glyph="bubbles">Group Chats</Eyebrow>
         <div className="hero-split">
           <div>
-            <div className="hero-num"><b><Num value={data.groups.length} id="groups-count" /></b> <span>group chats</span></div>
-            <div className="hero-sub"><Num value={data.messages} id="groups-messages" /> messages with two or more others, in {data.apps.join(', ')}</div>
+            <div className="hero-num"><b><Num value={data.groups.length} id="groups-count" /></b> <span>{word(data.groups.length, 'group chat')}</span></div>
+            <div className="hero-sub"><Num value={data.messages} id="groups-messages" /> {word(data.messages, 'message')} with two or more others, in {andList(data.apps)}</div>
           </div>
           <div className="group-stack" aria-hidden>{data.groups.slice(0, 3).map((g, i) => <span key={g.key} style={{ animationDelay: `${200 + i * 80}ms` }}><GroupAvatar names={othersIn(g)} size={58} /></span>)}</div>
         </div>
@@ -2091,11 +2510,12 @@ function GroupsView({ ctx }: { ctx: Ctx }) {
       </div>
       <div className="group-cards" key={`${sort}${q ? 'q' : ''}`}>
         {shown.map((g, i) => (
-          <button key={g.key} className="group-card" data-testid="group-card" onClick={() => ctx.open({ id: 'group', key: g.key, name: g.name })} style={{ animationDelay: `${Math.min(i, 12) * 30}ms` }}>
+          <button key={g.key} className="group-card" data-testid="group-card" onClick={() => ctx.open({ id: 'group', key: g.key, name: g.name })} style={{ animationDelay: `${Math.min(i, 12) * 30}ms` }}
+            title={`${g.name}: ${counted(g.messages, 'message')} in ${g.app}, ${yearsOf(g)}`}>
             <GroupAvatar names={othersIn(g)} size={46} />
             <span className="group-main">
               <span className="truncate group-name">{g.name}</span>
-              <span className="group-sub">{g.app} · {count(g.messages)} messages · {yearsOf(g)}</span>
+              <span className="group-sub">{g.app} · {counted(g.messages, 'message')} · {yearsOf(g)}</span>
             </span>
             <Spark months={g.months} />
           </button>
@@ -2115,11 +2535,28 @@ function Spark({ months }: { months: Record<string, number> }) {
   return <span className="spark" aria-hidden>{shown.map((m) => <i key={m} style={{ height: `${Math.max(6, ((months[m] ?? 0) / max) * 100)}%`, opacity: months[m] ? 1 : 0.25 }} />)}</span>;
 }
 
+// Someone in a group chat as one of your people, when they are: the way Your People's names compare.
+const nameKey = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+function usePersonOf(): (name: string) => Person | undefined {
+  const people = useArtifact<People>('people').data;
+  const by = useMemo(() => {
+    const m = new Map<string, Person>();
+    for (const p of people?.people ?? []) for (const kk of [p.key, nameKey(p.name), ...(p.aliases ?? [])]) if (!m.has(kk)) m.set(kk, p);
+    return m;
+  }, [people]);
+  return (name) => (name === 'You' ? undefined : by.get(nameKey(name)));
+}
+
 function GroupView({ ctx, k }: { ctx: Ctx; k: string }) {
   const { data, error, k: building } = useArtifact<GroupChats>('groups');
+  const personOf = usePersonOf();
   if (!data) return <Building k={building} what="groups" error={error} />;
   const g = data.groups.find((x) => x.key === k);
-  if (!g) return <div className="empty"><h2>This chat isn't here any more</h2>Your corpus changed since it was opened.</div>;
+  if (!g) return <div className="empty"><h2>This chat isn't here any more</h2>Your library changed since it was opened.</div>;
+  const openMember = (name: string) => {
+    const p = personOf(name);
+    return p ? () => ctx.open({ id: 'person', key: p.key, name: p.name }) : undefined;
+  };
   const months = fillMonths(Object.keys(g.months));
   const maxWord = Math.max(1, ...g.words.map((w) => w.count));
   return (
@@ -2141,25 +2578,26 @@ function GroupView({ ctx, k }: { ctx: Ctx; k: string }) {
       ]} />
       {g.superlatives.length > 0 && (
         <div className="superlatives">
-          {g.superlatives.map((x, i) => (
-            <div key={x.title} className="superlative" style={{ animationDelay: `${i * 60}ms` }}>
-              <Avatar name={x.name} size={40} />
-              <span><em>{x.title}</em><b className="truncate">{x.name}</b><span>{x.value}</span></span>
-            </div>
-          ))}
+          {g.superlatives.map((x, i) => {
+            const open = openMember(x.name);
+            const body = <><Avatar name={x.name} size={40} /><span><em>{x.title}</em><b className="truncate">{x.name}</b><span>{x.value}</span></span></>;
+            return open
+              ? <button key={x.title} className="superlative clickable" style={{ animationDelay: `${i * 60}ms` }} onClick={open} title={`${x.name}: open their page`}>{body}</button>
+              : <div key={x.title} className="superlative" style={{ animationDelay: `${i * 60}ms` }} title={x.name}>{body}</div>;
+          })}
         </div>
       )}
       <div className="two-col">
-        <Panel title="Who talks">
-          <HBars rows={g.members.slice(0, 10).map((m) => ({ key: m.name, label: short(m.name), value: m.messages }))} unit="messages" />
+        <Panel title="Who talks" note="Click someone for their page">
+          <HBars rows={g.members.map((m) => ({ key: m.name, label: short(m.name), value: m.messages, onClick: openMember(m.name) }))} unit="messages" />
         </Panel>
         <Panel title="Its own words" note="Ones two or more of you use often, and far more here than in your other chats">
           {g.words.length ? (
             <div className="word-cloud">
-              {g.words.map((w, i) => <span key={w.word} title={`${count(w.count)} times`} style={{ fontSize: `${13 + Math.round((w.count / maxWord) * 13)}px`, animationDelay: `${i * 40}ms` }}>{w.word}</span>)}
+              {g.words.map((w, i) => <span key={w.word} title={counted(w.count, 'time')} style={{ fontSize: `${13 + Math.round((w.count / maxWord) * 13)}px`, animationDelay: `${i * 40}ms` }}>{w.word}</span>)}
             </div>
           ) : <p className="section-note">Not enough words to tell.</p>}
-          {g.emoji.length > 0 && <div className="emoji-row">{g.emoji.map((e) => <span key={e.emoji} title={`${count(e.count)} times`}>{e.emoji}<em>{count(e.count)}</em></span>)}</div>}
+          {g.emoji.length > 0 && <div className="emoji-row">{g.emoji.map((e) => <span key={e.emoji} title={counted(e.count, 'time')}>{e.emoji}<em>{count(e.count)}</em></span>)}</div>}
         </Panel>
       </div>
       <div className="two-col">
@@ -2218,7 +2656,7 @@ export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number;
       {!t ? (err ? <p>{err}</p> : <div className="empty"><Spinner /></div>) : (
         <>
           <div className="convo-head">
-            <Avatar name={t.name} size={52} />
+            {t.group ? <GroupAvatar names={[...new Set(t.messages.filter((m) => !m.me && m.author).map((m) => m.author!))].slice(0, 3)} size={52} /> : <Avatar name={t.name} size={52} />}
             <h2 className="truncate">{t.name}</h2>
             <div className="convo-sub">{t.app} · {t.group ? 'group conversation' : 'one on one'}{t.one_sided ? ` · ${t.app} keeps only your side` : ''}</div>
           </div>
@@ -2334,7 +2772,7 @@ function Columns({ data, height, unit, xTicks }: { data: { key: string; label: s
             const x = left + i * band + (band - bw) / 2;
             const r = Math.min(4, bw / 2, h);
             return (
-              <g key={d.key} onPointerMove={(e) => { setHover(d.key); setTip(tipAt(e, ref, d.label, [[count(d.value), unit], ...(d.detail ?? []).map(([a, n]) => [n, a] as [string, string])])); }}>
+              <g key={d.key} onPointerMove={(e) => { setHover(d.key); setTip(tipAt(e, ref, d.label, [[count(d.value), unitOf(d.value, unit)], ...(d.detail ?? []).map(([a, n]) => [n, a] as [string, string])])); }}>
                 <rect x={left + i * band} y={top} width={band} height={plotH} fill="transparent" />
                 {h > 0 && <path className={`bar grow ${hover === d.key ? 'hover' : ''}`} style={{ animationDelay: `${Math.round((i / data.length) * 450)}ms` }}
                   d={`M${x},${top + plotH}V${top + plotH - h + r}Q${x},${top + plotH - h} ${x + r},${top + plotH - h}H${x + bw - r}Q${x + bw},${top + plotH - h} ${x + bw},${top + plotH - h + r}V${top + plotH}Z`} />}
@@ -2379,7 +2817,7 @@ function HeatGrid({ grid, unit }: { grid: number[][]; unit: string }) {
               {row.map((v, h) => (
                 <rect key={h} x={left + h * cell + 1.5} y={top + w * cell + 1.5} width={cell - 3} height={cell - 3} rx={Math.min(6, cell / 4)} className={`heat heat-${bin(v)} pop`}
                   style={{ animationDelay: `${(w + h) * 14}ms` }}
-                  onPointerMove={(e) => setTip(tipAt(e, ref, `${WEEKDAYS[w]}s, ${hourLabel(h)} to ${hourLabel(h + 1)}`, [[count(v), unit]]))} />
+                  onPointerMove={(e) => setTip(tipAt(e, ref, `${WEEKDAYS[w]}s, ${hourLabel(h)} to ${hourLabel(h + 1)}`, [[count(v), unitOf(v, unit)]]))} />
               ))}
             </g>
           ))}
@@ -2406,7 +2844,7 @@ function HeatLegend() {
 }
 
 // A year as weeks (columns, Monday first) by weekday (rows), like a contribution calendar, filling in week by week.
-function Calendar({ year, value, unit }: { year: number; value: (d: string) => number; unit: string }) {
+function Calendar({ year, value, unit, onDay }: { year: number; value: (d: string) => number; unit: string; onDay?: (d: string) => void }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [tip, setTip] = useState<Tip>(null);
   const start = new Date(year, 0, 1);
@@ -2430,9 +2868,10 @@ function Calendar({ year, value, unit }: { year: number; value: (d: string) => n
           {days.filter((x) => x.date.getDate() === 1).map((x) => <text key={x.d} x={left + x.col * cell} y={10} className="tick">{x.date.toLocaleDateString(undefined, { month: 'short' })}</text>)}
           {[0, 2, 4].map((r) => <text key={r} x={left - 6} y={top + r * cell + cell / 2 + 3.5} className="tick" textAnchor="end">{WEEKDAYS[r].slice(0, 3)}</text>)}
           {days.map((x, i) => (
-            <rect key={x.d} x={left + x.col * cell + 1.5} y={top + x.row * cell + 1.5} width={cell - 3} height={cell - 3} rx={Math.min(4, cell / 4)} className={`heat heat-${bin(vals[i])} pop`}
-              style={{ animationDelay: `${x.col * 9}ms` }}
-              onPointerMove={(e) => setTip(tipAt(e, ref, dayLabel(x.d), [[count(vals[i]), unit]]))} />
+            <rect key={x.d} x={left + x.col * cell + 1.5} y={top + x.row * cell + 1.5} width={cell - 3} height={cell - 3} rx={Math.min(4, cell / 4)}
+              className={`heat heat-${bin(vals[i])} pop ${onDay && vals[i] ? 'day-link' : ''}`} data-day={x.d}
+              style={{ animationDelay: `${x.col * 9}ms` }} onClick={onDay && vals[i] ? () => onDay(x.d) : undefined}
+              onPointerMove={(e) => setTip(tipAt(e, ref, dayLabel(x.d), [[count(vals[i]), unitOf(vals[i], unit)]]))} />
           ))}
         </svg>
       )}
@@ -2471,6 +2910,442 @@ function BedtimeLine({ points }: { points: { key: string; value: number }[] }) {
   );
 }
 
+// ---------------------------------------------------------------- what a tile needs
+
+// What each tile needs before it has anything to say, how much of it there is so far (so a tile with a little isn't
+// taken for one with none), and the sources that bring it (`from` names exactly those). A tile without enough is
+// greyed and locked; opening it says what it would show and where that comes from.
+type Need = { enough: (d: never) => boolean; need: string; so?: (d: never) => string | null; from: string; add: string[]; shows: string };
+const sofar = (n: number, of: number, one: string, many?: string) => (n > 0 ? `${count(n)} of ${counted(of, one, many)} so far` : null);
+const NEEDS: Partial<Record<HomeId, Need>> = {
+  people: { enough: (d: People) => d.people.length >= 1, need: 'your conversations', from: 'From Messages, your iPhone backup, Instagram, Facebook or Discord',
+    add: ['imessage', 'iphone_backup', 'instagram', 'facebook', 'discord'], shows: 'Who you talk to most, year by year and across every app, and how each friendship has gone.' },
+  groups: { enough: (d: GroupChats) => d.groups.length > 0, need: 'a group chat', from: 'From Messages, your iPhone backup or Facebook',
+    add: ['imessage', 'iphone_backup', 'facebook'], shows: 'Every group chat you\'re in: who talks most, when it\'s busiest, its own words and emoji.' },
+  places: { enough: (d: Places) => d.points.length > 0, need: 'photos with places', from: 'From Photos or Google Photos', add: ['photos', 'google_photos_drive'],
+    shows: 'A map of everywhere your photos were taken, and your trips: the days you were far from home.' },
+  journeys: { enough: (d: Journeys) => d.legs.length > 0, need: 'photos with places', from: 'From Photos or Google Photos', add: ['photos', 'google_photos_drive'],
+    shows: 'Every time you went somewhere far, how far you\'ve traveled, and which of the trips were flights.' },
+  rhythms: { enough: (d: Rhythms) => Object.keys(d.kinds).length > 0, need: 'messages, browsing or photos', from: 'From Messages, Safari and Chrome, or Photos',
+    add: ['imessage', 'browser_history', 'photos'], shows: 'When in the day and week you message, browse, search, watch and code.' },
+  made: { enough: (d: Made) => Object.values(d.days).some((c) => Object.entries(c).some(([k, n]) => k !== 'photos' && n)), need: 'things you made',
+    from: 'From your code, notes, documents or coding assistants', add: ['git_commits', 'apple_notes', 'documents', 'ai_coding'], shows: 'What you made, day by day: code, writing, posts and AI conversations.' },
+  firsts: { enough: (d: Firsts) => d.items.length >= 3, need: 'a little more history', so: (d: Firsts) => sofar(d.items.length, 3, 'first'), from: 'From Messages or Photos',
+    add: ['imessage', 'photos'], shows: 'Your firsts: the first message with each person, the first time in each country and city, each project and app.' },
+  listening: { enough: (d: Listening) => d.plays >= 50, need: 'your listening history', so: (d: Listening) => sofar(d.plays, 50, 'song'),
+    from: 'From Spotify, YouTube in your Google export, or Screen Time', add: ['spotify', 'google_takeout', 'app_usage'],
+    shows: 'Your top artists and songs each year, your eras, the songs you had on repeat, and when you listen.' },
+  movement: { enough: (d: Movement) => d.days >= 14, need: 'your Health data', so: (d: Movement) => sofar(d.days, 14, 'day of steps', 'days of steps'),
+    from: 'From your iPhone backup', add: ['iphone_backup'], shows: 'Your steps and sleep over the years: your biggest days, your streaks, your bedtimes, and how trips change them.' },
+  curiosity: { enough: (d: Curiosity) => d.searches >= 50, need: 'your searches', so: (d: Curiosity) => sofar(d.searches, 50, 'search', 'searches'),
+    from: 'From Google, or Safari and Chrome', add: ['google_takeout', 'browser_history'], shows: 'What you searched for each year, the questions you asked, and what you looked up before each trip.' },
+  watching: { enough: (d: Watching) => d.videos >= 30, need: 'what you watched', so: (d: Watching) => sofar(d.videos, 30, 'video'),
+    from: 'From YouTube in your Google export, or Netflix in your iPhone backup', add: ['google_takeout', 'iphone_backup'],
+    shows: 'Your most-watched channels and shows, what you watched again, and your late nights.' },
+  'they-know': { enough: (d: TheyKnow) => d.advertisers + d.decided_count + d.told_count > 0, need: 'an export with your ad data',
+    from: 'From Instagram, Facebook, X or LinkedIn', add: ['instagram', 'facebook', 'x', 'linkedin'],
+    shows: 'Every advertiser that has you on a list, what each service decided about you, and who told them what you did elsewhere.' },
+};
+const lockedBy = (id: HomeId, data: unknown) => !!data && !!NEEDS[id] && !(NEEDS[id]!.enough as (d: unknown) => boolean)(data);
+const soFar = (id: HomeId, data: unknown) => (NEEDS[id]?.so as ((d: unknown) => string | null) | undefined)?.(data) ?? null;
+
+function LockedTile({ id, data }: { id: HomeId; data: unknown }) {
+  const n = NEEDS[id]!;
+  const so = soFar(id, data);
+  return (
+    <div className="tile-locked" data-testid={`locked-${id}`}>
+      <span className="lock-mark"><Glyph name="lock" size={15} strokeWidth={2.2} /></span>
+      <div className="tile-note"><b>Needs {so ? 'more of ' : ''}{n.need}</b>{so && <><br />{so}</>}<br />{n.from}</div>
+    </div>
+  );
+}
+
+function LockedView({ ctx, id }: { ctx: Ctx; id: HomeId }) {
+  const art = ART[id], n = NEEDS[id]!;
+  const a = useArtifact<unknown>(id);
+  const so = a.data ? soFar(id, a.data) : null;
+  const read = n.add.map((s) => ctx.snap?.sources.find((v) => v.id === s)).filter((v) => v?.section === 'done').map((v) => v!.name);
+  return (
+    <div className="stagger" data-testid="explore-locked">
+      <section className="locked-hero">
+        <div className="lock-ring" style={tone(art.tone)}><Glyph name={art.glyph} size={34} strokeWidth={1.6} /><span className="lock-badge"><Glyph name="lock" size={12} strokeWidth={2.4} /></span></div>
+        <h2>{art.title} needs {so ? 'more of ' : ''}{n.need}</h2>
+        {so && <p className="locked-so">{so}</p>}
+        <p>{n.shows}</p>
+      </section>
+      <SourceRows ids={n.add} ctx={ctx} title="Where it comes from"
+        note={read.length ? `${andList(read)} ${read.length === 1 ? 'is' : 'are'} read already, without enough for this yet. A newer copy, or another of these, adds to it.`
+          : 'Bring in any of these: this opens once it\'s read.'} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- listening
+
+const hrs = (min: number) => `${(min / 60).toFixed(1)} h`;
+function quarterRange(a: string, b: string) {
+  const name = (q: string, end: boolean) => {
+    const [y, n] = q.split('-Q').map(Number);
+    return new Date(y, (n - 1) * 3 + (end ? 2 : 0), 15).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+  };
+  return a === b ? `${name(a, false).split(' ')[0]} to ${name(a, true)}` : `${name(a, false)} to ${name(b, true)}`;
+}
+const yearsDesc = (r: Record<string, unknown>) => Object.keys(r).sort().reverse();
+function RankRow({ i, title, sub, value, onClick }: { i: number; title: string; sub?: string; value: string; onClick?: () => void }) {
+  return (
+    <button className="person-row rank-row" onClick={onClick} style={{ animationDelay: `${Math.min(i, 14) * 25}ms` }} title={[title, sub].filter(Boolean).join(' · ')}>
+      <span className="rank">{i + 1}</span>
+      <span className="person-main"><span className="truncate person-name">{title}</span>{sub && <span className="person-sub truncate">{sub}</span>}</span>
+      <span className="row-num">{value}</span>
+    </button>
+  );
+}
+function HourColumns({ values, unit }: { values: number[]; unit: string }) {
+  return <Columns data={values.map((n, h) => ({ key: String(h), label: `${hourLabel(h)} to ${hourLabel(h + 1)}`, value: n }))} height={150} unit={unit}
+    xTicks={[0, 6, 12, 18].map((h) => ({ key: String(h), label: hourLabel(h) }))} />;
+}
+// Months as columns: every month from the first to the last; with a year, that year's, January to December (or to
+// this month).
+function MonthColumns({ months, unit, average, year }: { months: Record<string, number>; unit: string; average?: boolean; year?: string }) {
+  const now = iso(new Date()).slice(0, 7);
+  const ms = year ? Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`).filter((m) => m <= now) : fillMonths(Object.keys(months));
+  const ticks = year ? ms.filter((_, i) => i % 3 === 0).map((m) => ({ key: m, label: new Date(`${m}-15T12:00:00`).toLocaleDateString(undefined, { month: 'short' }) })) : yearTicks(ms);
+  return <Columns data={ms.map((m) => ({ key: m, label: monthLabel(m), value: months[m] ?? 0 }))} height={150} unit={average ? `${unit} a day, on average` : unit} xTicks={ticks} />;
+}
+function MiniCols({ values, from, to }: { values: number[]; from?: string; to?: string }) {
+  const max = Math.max(1, ...values);
+  return (
+    <div className="mini-cols-wrap">
+      <div className="mini-cols">{values.map((v, i) => <i key={i} style={{ height: `${Math.max(4, (v / max) * 100)}%`, animationDelay: `${150 + i * 20}ms` }} />)}</div>
+      {(from || to) && <div className="mini-axis"><span>{from}</span><span>{to}</span></div>}
+    </div>
+  );
+}
+
+function ListeningTile({ d }: { d: Listening }) {
+  const ys = yearsDesc(d.years);
+  const recent = ys.find((y) => d.years[y].top_artists.length >= 3);
+  const top = recent ? d.years[recent].top_artists : d.top_artists;
+  return (
+    <>
+      <TileNum value={d.artists} unit={d.artists === 1 ? 'artist' : 'artists'} id="home-artists" />
+      <div className="tile-sub"><Num value={d.plays} id="home-plays" /> songs played{recent ? ` · most in ${recent}:` : ''}</div>
+      <div className="tile-people">
+        {top.slice(0, 5).map((a, i) => (
+          <div key={a.name} className="tp" style={{ animationDelay: `${120 + i * 60}ms` }}>
+            <span className="tp-rank">{i + 1}</span><span className="truncate">{short(a.name)}</span><span className="num">{count(a.plays)}</span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ListeningView({ ctx }: { ctx: Ctx }) {
+  const { data, error, k } = useArtifact<Listening>('listening');
+  const [picked, setYear] = useKept('year', 'all');
+  if (!data) return <Building k={k} what="listening" error={error} />;
+  const years = yearsDesc(data.years);
+  const year = picked === 'all' || data.years[picked] ? picked : 'all';
+  const y = year === 'all' ? null : data.years[year];
+  const artists = y ? y.top_artists : data.top_artists;
+  const tracks = y ? y.top_tracks : data.top_tracks;
+  // A year's eras: the ones that ran through it.
+  const eras = y ? data.eras.filter((e) => e.start <= `${year}-Q4` && e.end >= `${year}-Q1`) : data.eras;
+  const repeat = y ? y.on_repeat ?? [] : data.on_repeat;
+  const inY = y ? ` in ${year}` : '';
+  return (
+    <div className="stagger" data-testid="explore-listening">
+      <section className="explore-hero tinted" style={tone('pink')}>
+        <Eyebrow glyph="music">Listening</Eyebrow>
+        <div className="hero-split">
+          <div>
+            <div className="hero-num"><b><Num value={data.plays} id="ls-plays" /></b> <span>{word(data.plays, 'song')} played</span></div>
+            <div className="hero-sub">{counted(data.artists, 'artist')}, {counted(data.songs, 'song')}{data.first ? `, since ${monthYear(data.first.ts)}` : ''}. From {andList(Object.keys(data.from))}.</div>
+          </div>
+          {data.minutes > 0 && <div className="hero-aside"><b><Num value={Math.round(data.minutes / 60)} id="ls-hours" /></b><span>{word(Math.round(data.minutes / 60), 'hour')} of music</span></div>}
+        </div>
+      </section>
+      <div className="explore-bar"><YearPicker years={years} value={year} onChange={setYear} all testId="listening-year" /></div>
+      {y && (
+        <BigStats items={[
+          { label: `Played in ${year}`, value: y.plays, id: `ls-y-${year}`, sub: word(y.plays, 'song') },
+          y.minutes > 0 && { label: 'Hours', value: Math.round(y.minutes / 60), id: `ls-h-${year}` },
+          { label: 'Artists', value: y.artists, id: `ls-a-${year}` },
+          { label: 'New to you', value: y.new_artists, id: `ls-n-${year}`, sub: y.new_artists === 1 ? 'an artist you first played' : 'artists you first played' },
+        ]} />
+      )}
+      <div className="two-col">
+        <Panel title={`Top artists${inY}`} note="Click one for their latest play" testId="listening-artists">
+          <HBars rows={artists.slice(0, 10).map((a) => ({ key: a.name, label: a.name, value: a.plays, onClick: () => ctx.onRecord(a.rowid) }))} unit="plays" />
+        </Panel>
+        <Panel title={`Top songs${inY}`}>
+          {tracks.slice(0, 10).map((t, i) => <RankRow key={`${t.title}-${t.artist}`} i={i} title={t.title} sub={t.artist} value={count(t.plays)} onClick={() => ctx.onRecord(t.rowid)} />)}
+        </Panel>
+      </div>
+      {eras.length > (y ? 0 : 1) && (
+        <Panel title={`Your eras${inY}`} note="The artist you played most, season by season" testId="listening-eras">
+          {eras.slice().reverse().slice(0, y ? undefined : 12).map((e, i) => (
+            <button key={e.start} className="person-row" onClick={() => ctx.onRecord(e.rowid)} style={{ animationDelay: `${i * 25}ms` }} title={e.artist}>
+              <Avatar name={e.artist} size={32} />
+              <span className="person-main"><span className="truncate person-name">{e.artist}</span><span className="person-sub">{quarterRange(e.start, e.end)}</span></span>
+              <span className="row-num">{counted(e.plays, 'play')}</span>
+            </button>
+          ))}
+        </Panel>
+      )}
+      {repeat.length > 0 && (
+        <Panel title={`On repeat${inY}`} note="One song, again and again, in a day" testId="listening-repeat">
+          {repeat.slice(0, 6).map((r, i) => <RankRow key={`${r.title}-${r.date}`} i={i} title={r.title} sub={`${r.artist} · ${dayLabel(r.date)}`} value={`${r.plays}×`} onClick={() => ctx.onRecord(r.rowid)} />)}
+        </Panel>
+      )}
+      <div className="two-col">
+        <Panel title="When you listen" note={`Songs by hour of the day${inY}`} testId="listening-hours"><HourColumns values={y?.by_hour ?? data.by_hour} unit="songs" /></Panel>
+        <Panel title={y ? `Every month of ${year}` : 'Every month'}><MonthColumns months={data.months} unit="songs" year={y ? year : undefined} /></Panel>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- moving and sleep
+
+function MovementTile({ d }: { d: Movement }) {
+  const ms = Object.entries(d.months).slice(-24);
+  return (
+    <div className="tile-split">
+      <div>
+        <TileNum value={d.avg} unit="steps a day" id="home-steps" />
+        {d.best && <div className="tile-sub">Best day: <Num value={d.best.steps} id="home-best-steps" />, {dayLabel(d.best.date)}</div>}
+        <div className="tile-sub"><Num value={d.goal_days} id="home-goal-days" /> {word(d.goal_days, 'day')} over {count(d.goal)}{d.sleep && d.sleep.nights >= 14 ? ` · ${hrs(d.sleep.avg_min)} of sleep` : ''}</div>
+      </div>
+      {ms.length > 1 && <MiniCols values={ms.map(([, v]) => v)} from={monthYear(`${ms[0][0]}-15`)} to={monthYear(`${ms[ms.length - 1][0]}-15`)} />}
+    </div>
+  );
+}
+
+function MovementView({ ctx }: { ctx: Ctx }) {
+  const { data, error, k } = useArtifact<Movement>('movement');
+  const [picked, setYear] = useKept('year', 'all');
+  if (!data) return <Building k={k} what="movement" error={error} />;
+  const years = yearsDesc(data.years);
+  const year = picked === 'all' || data.years[picked] ? picked : 'all';
+  const v = year === 'all' ? null : data.years[year];
+  const s = data.sleep && data.sleep.nights >= 14 ? data.sleep : null;
+  const sy = s ? yearsDesc(s.years) : [];
+  const sv = s && v ? s.years[year] : null;
+  const more = !v && data.trips && data.trips.home_avg ? Math.round((data.trips.avg / data.trips.home_avg - 1) * 100) : null;
+  const best = v ? v.best : data.best;
+  const streak = v ? v.streak : data.streak;
+  const inY = v ? ` in ${year}` : '';
+  return (
+    <div className="stagger" data-testid="explore-movement">
+      <section className="explore-hero tinted" style={tone('red')}>
+        <Eyebrow glyph="heart">Moving and Sleep</Eyebrow>
+        <div className="hero-split">
+          <div>
+            <div className="hero-num"><b><Num value={data.avg} id="mv-avg" /></b> <span>steps a day</span></div>
+            <div className="hero-sub">{count(data.km)} km over {counted(data.days, 'day')}{data.first ? `, since ${monthYear(`${data.first}T12:00:00`)}` : ''}</div>
+          </div>
+          <div className="hero-aside"><b><Num value={data.steps} id="mv-steps" /></b><span>steps in all</span></div>
+        </div>
+      </section>
+      <div className="explore-bar"><YearPicker years={years} value={year} onChange={setYear} all testId="movement-year" /></div>
+      <BigStats items={[
+        v && { label: `Steps a day in ${year}`, value: v.avg, id: `mv-avg-${year}`, sub: `over ${counted(v.days, 'day')}` },
+        best && { label: v ? `Biggest day in ${year}` : 'Your biggest day', value: best.steps, id: `mv-best-${year}`, sub: dayLabel(best.date), onClick: () => ctx.onRecord(best.rowid) },
+        { label: `Days over ${count(data.goal)}`, value: v ? v.goal_days ?? 0 : data.goal_days, id: `mv-goal-${year}`, sub: v ? `in ${year}` : undefined },
+        streak && streak.days > 1 && { label: `Longest streak${inY}`, value: streak.days, id: `mv-streak-${year}`, sub: `days over ${count(data.goal)}, ${rangeLabel(streak.start!, streak.end!)}` },
+        more !== null && { label: 'On trips', value: more > 0 ? `+${more}%` : `${more}%`, sub: `${count(data.trips!.avg)} steps a day, away from home` },
+      ]} />
+      <Panel title={v ? `Steps by month, ${year}` : 'Steps by month'} note="A day's steps, on average"><MonthColumns months={data.months} unit="steps" average year={v ? year : undefined} /></Panel>
+      <div className="two-col">
+        <Panel title={`Your biggest days${inY}`} testId="movement-days">
+          {(v ? v.top_days ?? [] : data.top_days).map((d, i) => <RankRow key={d.date} i={i} title={`${count(d.steps)} steps`} sub={[dayLabel(d.date), d.place, d.trip ? 'on a trip' : null].filter(Boolean).join(' · ')} value={`${d.km} km`} onClick={() => ctx.onRecord(d.rowid)} />)}
+        </Panel>
+        <Panel title="By weekday" note={`A day's steps, on average${inY}`}>
+          <Columns data={(v ? v.weekday ?? [] : data.weekday).map((n, i) => ({ key: String(i), label: WEEKDAYS[i], value: n }))} height={150} unit="steps on average" xTicks={WEEKDAYS.map((d, i) => ({ key: String(i), label: d.slice(0, 3) }))} />
+        </Panel>
+      </div>
+      <Panel title="Every year" note="Click a year to see it">
+        <div className="table-wrap">
+          <table className="viz-table" data-testid="movement-years">
+            <thead><tr><th>Year</th><th>Steps a day</th><th>Km</th><th>Flights climbed</th><th>Biggest day</th>{s && <th>Sleep</th>}</tr></thead>
+            <tbody>{years.map((y) => {
+              const yv = data.years[y];
+              return <tr key={y} className={y === year ? 'on' : ''} onClick={() => setYear(y === year ? 'all' : y)}><td>{y}</td><td>{count(yv.avg)}</td><td>{count(yv.km)}</td><td>{count(yv.flights)}</td><td>{count(yv.best.steps)}, {dayLabel(yv.best.date)}</td>{s && <td>{s.years[y] ? hrs(s.years[y].avg_min) : ''}</td>}</tr>;
+            })}</tbody>
+          </table>
+        </div>
+      </Panel>
+      {s && (!v || sv) ? (
+        <>
+          <BigStats items={[
+            { label: `A night's sleep${inY}`, value: hrs((sv ?? s).avg_min), sub: `over ${counted((sv ?? s).nights, 'night')}` },
+            (sv ?? (sy.length > 0 && s.years[sy[0]])) && { label: `Bedtime in ${sv ? year : sy[0]}`, value: hourLabel((sv ?? s.years[sy[0]]).bedtime), sub: `up at ${hourLabel((sv ?? s.years[sy[0]]).wake)}` },
+            (sv?.longest ?? s.longest) && { label: `Longest night${inY}`, value: hrs((sv?.longest ?? s.longest).minutes), sub: dayLabel((sv?.longest ?? s.longest).date), onClick: () => ctx.onRecord((sv?.longest ?? s.longest).rowid) },
+          ]} />
+          <div className="two-col">
+            {sy.length > 1 && <Panel title="When you go to sleep" note="The usual bedtime, by year"><BedtimeLine points={sy.slice().reverse().map((y) => ({ key: y, value: s.years[y].bedtime }))} /></Panel>}
+            <Panel title="Sleep by night" note={`Hours, on average, by the night it began${inY}`}>
+              <Columns data={(sv?.weekday ?? s.weekday).map((n, i) => ({ key: String(i), label: `${WEEKDAYS[i]} nights`, value: Math.round(n / 6) / 10 }))} height={150} unit="hours"
+                xTicks={WEEKDAYS.map((d, i) => ({ key: String(i), label: d.slice(0, 3) }))} />
+            </Panel>
+          </div>
+        </>
+      ) : s ? (
+        <div className="note-row"><Glyph name="clock" size={12} /> No nights of sleep in {year}.</div>
+      ) : (
+        <div className="note-row"><Glyph name="lock" size={12} /> Sleep shows here with a sleep tracker: an Apple Watch, or Sleep in the iPhone's Health app.</div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- curiosity
+
+function CuriosityTile({ d }: { d: Curiosity }) {
+  const y = yearsDesc(d.years).find((yy) => d.years[yy].topics.length >= 3);
+  return (
+    <>
+      <TileNum value={d.searches} unit={word(d.searches, 'search', 'searches')} id="home-searches" />
+      {y && <div className="tile-sub">What {y} was about:</div>}
+      {y && <div className="tile-chips">{d.years[y].topics.slice(0, 4).map((t) => <span key={t.word} className="tile-chip">{t.word}</span>)}</div>}
+    </>
+  );
+}
+
+function CuriosityView({ ctx }: { ctx: Ctx }) {
+  const { data, error, k } = useArtifact<Curiosity>('curiosity');
+  const years = useMemo(() => (data ? yearsDesc(data.years) : []), [data]);
+  const [year, setYear] = useKept<string | null>('year', null);
+  const [allQs, setAllQs] = useKept('all-questions', false);
+  if (!data) return <Building k={k} what="curiosity" error={error} />;
+  const y = year && data.years[year] ? year : years[0];
+  const v = data.years[y];
+  const trips = data.before_trips.filter((t) => t.start.startsWith(y));
+  const questions = v ? (allQs ? v.questions : v.questions.slice(0, 10)) : [];
+  return (
+    <div className="stagger" data-testid="explore-curiosity">
+      <section className="explore-hero tinted" style={tone('yellow')}>
+        <Eyebrow glyph="search">Curiosity</Eyebrow>
+        <div className="hero-split">
+          <div>
+            <div className="hero-num"><b><Num value={data.searches} id="cu-searches" /></b> <span>{word(data.searches, 'search', 'searches')}</span></div>
+            <div className="hero-sub">{counted(data.queries, 'different thing', 'different things')}{data.first ? `, since ${monthYear(data.first.ts)}` : ''}</div>
+          </div>
+          <div className="hero-aside"><b><Num value={data.questions} id="cu-questions" /></b><span>{word(data.questions, 'question')} you asked</span></div>
+        </div>
+      </section>
+      {y && <div className="explore-bar"><YearPicker years={years} value={y} onChange={setYear} testId="curiosity-year" /></div>}
+      {v && (
+        <div className="two-col">
+          <Panel title={`What ${y} was about`} note="Words you searched far more that year than in others" testId="curiosity-topics">
+            <div className="topic-cloud">
+              {v.topics.map((t, i) => <button key={t.word} className="chip topic" style={{ animationDelay: `${i * 30}ms`, fontSize: `${12 + Math.min(6, t.count / Math.max(1, v.topics[0].count) * 6)}px` }} onClick={() => ctx.onRecord(t.rowid)} title={`${t.word}: ${counted(t.count, 'search', 'searches')}`}>{t.word}<span className="sub">{count(t.count)}</span></button>)}
+              {!v.topics.length && <div className="tile-note">Nothing stood out that year.</div>}
+            </div>
+            <div className="viz-foot">{counted(v.count, 'search', 'searches')} in {y}</div>
+          </Panel>
+          <Panel title={`Questions you asked in ${y}`} note={`Each once, the year you first asked it: ${count(v.questions.length)} in ${y}`} testId="curiosity-questions">
+            {questions.length ? questions.map((q, i) => <RankRow key={q.rowid} i={i} title={q.q} sub={dayLabel(q.ts.slice(0, 10))} value="" onClick={() => ctx.onRecord(q.rowid)} />)
+              : <div className="tile-note">No new questions that year.</div>}
+            {!allQs && v.questions.length > questions.length && <div className="more-row"><Button onClick={() => setAllQs(true)} testAction="curiosity-all-questions">Show All {count(v.questions.length)}</Button></div>}
+          </Panel>
+        </div>
+      )}
+      {trips.length > 0 && (
+        <Panel title={`Before you went, in ${y}`} note="What you looked up in the weeks before a trip" testId="curiosity-trips">
+          <div className="trip-searches">
+            {trips.map((t) => (
+              <div key={t.trip} className="trip-search">
+                <div className="trip-search-head"><b>{andList(t.places.slice(0, 2))}</b><span>{dayLabel(t.start)} · {counted(t.count, 'search', 'searches')}</span></div>
+                {t.searches.slice(-4).reverse().map((q) => <button key={q.rowid} className="link-row" onClick={() => ctx.onRecord(q.rowid)} title={q.q}><Glyph name="search" size={11} /> {q.q}</button>)}
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+      {v && (
+        <div className="two-col">
+          <Panel title={`Searched again and again in ${y}`} testId="curiosity-again">
+            {(v.top ?? []).slice(0, 10).map((q, i) => <RankRow key={q.q} i={i} title={q.q} sub={`${monthYear(q.first)} to ${monthYear(q.last)}`} value={`${count(q.count)}×`} onClick={() => ctx.onRecord(q.rowid)} />)}
+            {!(v.top ?? []).length && <div className="tile-note">Nothing searched twice that year.</div>}
+          </Panel>
+          <Panel title="When you search" note={`By hour of the day, in ${y}`}><HourColumns values={v.by_hour ?? data.by_hour} unit="searches" /></Panel>
+        </div>
+      )}
+      <Panel title={v ? `Every month of ${y}` : 'Every month'}><MonthColumns months={data.months} unit="searches" year={v ? y : undefined} /></Panel>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- watching
+
+function WatchingTile({ d }: { d: Watching }) {
+  const top = d.top_channels[0];
+  return (
+    <>
+      <TileNum value={d.videos} unit={word(d.videos, 'video')} id="home-videos" />
+      {top && <div className="tile-sub">Most watched: {short(top.name)}</div>}
+      <MiniCols values={d.by_hour} from="12 am" to="11 pm" />
+    </>
+  );
+}
+
+function WatchingView({ ctx }: { ctx: Ctx }) {
+  const { data, error, k } = useArtifact<Watching>('watching');
+  const [picked, setYear] = useKept('year', 'all');
+  if (!data) return <Building k={k} what="watching" error={error} />;
+  const years = yearsDesc(data.years);
+  const year = picked === 'all' || data.years[picked] ? picked : 'all';
+  const y = year === 'all' ? null : data.years[year];
+  const channels = y ? y.top_channels : data.top_channels;
+  const binges = y ? y.binges ?? [] : data.binges;
+  const again = y ? y.rewatched ?? [] : data.rewatched;
+  const inY = y ? ` in ${year}` : '';
+  return (
+    <div className="stagger" data-testid="explore-watching">
+      <section className="explore-hero tinted" style={tone('purple')}>
+        <Eyebrow glyph="play">Watching</Eyebrow>
+        <div className="hero-split">
+          <div>
+            <div className="hero-num"><b><Num value={data.videos} id="wa-videos" /></b> <span>{word(data.videos, 'video')}</span></div>
+            <div className="hero-sub">{Object.entries(data.from).map(([s, n]) => `${count(n)} on ${s}`).join(', ')}{data.first ? `, since ${monthYear(data.first.ts)}` : ''}</div>
+          </div>
+          {data.channels > 0 && <div className="hero-aside"><b><Num value={data.channels} id="wa-channels" /></b><span>{data.channels === 1 ? 'channel or show' : 'channels and shows'}</span></div>}
+        </div>
+      </section>
+      <div className="explore-bar"><YearPicker years={years} value={year} onChange={setYear} all testId="watching-year" /></div>
+      <BigStats items={[
+        y && { label: `Watched in ${year}`, value: y.count, id: `wa-y-${year}`, sub: word(y.count, 'video') },
+        { label: `After midnight${inY}`, value: Math.round((y ? y.after_midnight ?? 0 : data.after_midnight) * 100), format: pct, id: `wa-night-${year}`, sub: '12 to 5 am' },
+        binges[0] && { label: `Your longest night${inY}`, value: binges[0].count, id: `wa-binge-${year}`, sub: `videos, ${dayLabel(binges[0].date)}`, onClick: () => ctx.onRecord(binges[0].rowid) },
+      ]} />
+      <div className="two-col">
+        {channels.length > 0 && (
+          <Panel title={`Most watched${inY}`} note="Channels and shows: click one for its latest" testId="watching-channels">
+            <HBars rows={channels.slice(0, 10).map((c) => ({ key: c.name, label: c.name, value: c.count, onClick: () => ctx.onRecord(c.rowid) }))} unit="videos" />
+          </Panel>
+        )}
+        {again.length > 0 && (
+          <Panel title={`Watched again${inY}`} testId="watching-again">
+            {again.slice(0, 8).map((r, i) => <RankRow key={r.title} i={i} title={r.title} sub={[r.channel, r.service].filter(Boolean).join(' · ')} value={`${r.count}×`} onClick={() => ctx.onRecord(r.rowid)} />)}
+          </Panel>
+        )}
+      </div>
+      <div className="two-col">
+        <Panel title="When you watch" note={`Videos by hour of the day${inY}`}><HourColumns values={y?.by_hour ?? data.by_hour} unit="videos" /></Panel>
+        {binges.length > 1 && (
+          <Panel title={`Long nights${inY}`} note="The evenings you watched the most" testId="watching-nights">
+            {binges.map((b, i) => <RankRow key={b.date} i={i} title={dayLabel(b.date)} sub={b.channel ?? undefined} value={counted(b.count, 'video')} onClick={() => ctx.onRecord(b.rowid)} />)}
+          </Panel>
+        )}
+      </div>
+      <Panel title={y ? `Every month of ${year}` : 'Every month'}><MonthColumns months={data.months} unit="videos" year={y ? year : undefined} /></Panel>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- words and dates
 
 // A name for a line of text: contact names can be a paragraph long.
@@ -2503,4 +3378,401 @@ function yearTicks(months: string[]) {
   const ys = months.filter((m) => m.endsWith('-01'));
   const step = Math.ceil(ys.length / 8);
   return ys.filter((_, i) => i % step === 0).map((m) => ({ key: m, label: m.slice(0, 4) }));
+}
+
+// ---------------------------------------------------------------- what they know
+
+// The services' own words for how an advertiser got you, said plainly.
+const HOW_SAID: Record<AdHow, string> = {
+  list: 'uploaded a list you were on', activity: 'matched what you did on its site or app', store: 'matched a visit to its store',
+  lookalike: 'aims at people like you', catalog: 'showed you its catalog', excluded: 'chose not to reach you',
+};
+// The source each service's records come from, for its icon.
+const SERVICE_SOURCE: Record<string, string> = { Facebook: 'facebook', Instagram: 'instagram', X: 'x', LinkedIn: 'linkedin', Google: 'google_takeout', TikTok: 'tiktok' };
+const andList = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+// "Facebook and Instagram: uploaded a list you were on · X: aims at people like you": services that got you the same way, together.
+function howSaid(services: Record<string, AdHow[]>) {
+  const by = new Map<string, string[]>();
+  for (const [s, hs] of Object.entries(services)) {
+    const k = hs.map((h) => HOW_SAID[h]).join(', ');
+    by.set(k, [...(by.get(k) ?? []), s]);
+  }
+  return [...by].map(([k, ss]) => `${andList(ss)}: ${k}`).join(' · ');
+}
+const ServiceIcons = ({ services, size = 16 }: { services: string[]; size?: number }) => (
+  <span className="tk-services">{services.map((s) => <SourceIcon key={s} id={SERVICE_SOURCE[s] ?? s.toLowerCase()} size={size} />)}</span>
+);
+
+// How an advertiser got you, folded to three, the dot field's colors (styles.css --tk-*): a list it uploaded that you
+// were on (your email or phone, from its customers); what you did on its site, app or store (and, on X, people like
+// you); or both.
+type Route = 'list' | 'both' | 'activity';
+const ROUTES: { id: Route; label: string }[] = [
+  { id: 'list', label: 'Had you on a list' }, { id: 'both', label: 'Both ways' }, { id: 'activity', label: 'Saw what you did' },
+];
+const ROUTE_LABEL = Object.fromEntries(ROUTES.map((r) => [r.id, r.label])) as Record<Route, string>;
+// A name found by how it starts or a word in it starts ("air" is Airbnb and Air France, not Prairie Bank).
+const words = (s: string) => s.toLowerCase().replace(/&/g, ' and ').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+function nameHit(name: string, needle: string): boolean {
+  const q = words(needle);
+  if (!q.length) return true;
+  const w = words(name);
+  if (w.join('').startsWith(q.join(''))) return true;
+  return w.some((_, i) => w.slice(i).join(' ').startsWith(q.join(' ')));
+}
+function routeOf(a: Advertiser): Route {
+  const hs = Object.values(a.services).flat();
+  const list = hs.includes('list'), other = hs.some((h) => h !== 'list' && h !== 'excluded');
+  return list && other ? 'both' : list ? 'list' : 'activity';
+}
+const cssVar = (el: Element, name: string) => getComputedStyle(el).getPropertyValue(name).trim();
+function useScheme() { // redraw a canvas when light and dark change
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const m = matchMedia('(prefers-color-scheme: dark)');
+    const on = () => setN((x) => x + 1);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, []);
+  return n;
+}
+
+// Every advertiser as a dot, grouped by how it got you: how many there are, at a glance. A search lights up the ones
+// it finds; hovering one names it; a click opens where it came from. sample: at most that many dots, in proportion
+// (the home tile's).
+function Crowd({ list, q = '', onRecord, height = 200, sample, testId }: { list: Advertiser[]; q?: string; onRecord?: (r: number) => void; height?: number; sample?: number; testId?: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const cv = useRef<HTMLCanvasElement>(null);
+  const [w, setW] = useState(0);
+  const [tip, setTip] = useState<{ x: number; y: number; a: Advertiser } | null>(null);
+  const scheme = useScheme();
+  const dots = useMemo(() => {
+    const order: Record<Route, number> = { list: 0, both: 1, activity: 2 };
+    const all = list.map((a) => ({ a, r: routeOf(a) })).sort((x, y) => order[x.r] - order[y.r]);
+    if (!sample || all.length <= sample) return all;
+    const step = all.length / sample;
+    return Array.from({ length: sample }, (_, i) => all[Math.floor(i * step)]);
+  }, [list, sample]);
+  useLayoutEffect(() => {
+    if (!box.current) return;
+    const ro = new ResizeObserver(([e]) => setW(Math.floor(e.contentRect.width)));
+    ro.observe(box.current);
+    return () => ro.disconnect();
+  }, []);
+  const n = dots.length;
+  const pitch = n && w ? Math.max(5, Math.min(18, Math.sqrt((w * height) / n))) : 10;
+  const cols = Math.max(1, Math.floor(w / pitch));
+  const h = Math.ceil(n / cols) * pitch;
+  const needle = q.trim();
+  const [grown, setGrown] = useState(() => (reducedMotion() ? 1 : 0)); // the dots fill in, the first time
+  useEffect(() => {
+    if (grown >= 1 || !w) return;
+    const t0 = performance.now();
+    let raf = 0;
+    const tick = () => {
+      const k = Math.min(1, (performance.now() - t0) / 900);
+      setGrown(1 - (1 - k) ** 3);
+      if (k < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [w]);
+  useEffect(() => {
+    const c = cv.current;
+    if (!c || !w) return;
+    const dpr = window.devicePixelRatio || 1;
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+    const g = c.getContext('2d')!;
+    g.scale(dpr, dpr);
+    g.clearRect(0, 0, w, h);
+    const color: Record<Route, string> = { list: cssVar(c, '--tk-list'), both: cssVar(c, '--tk-both'), activity: cssVar(c, '--tk-activity') };
+    const gap = Math.max(1.5, pitch * 0.24), r = (pitch - gap) / 2;
+    const upto = Math.round(n * grown);
+    for (let i = 0; i < upto; i++) {
+      const d = dots[i];
+      const hit = !needle || nameHit(d.a.name, needle);
+      g.globalAlpha = hit ? 1 : 0.13;
+      g.fillStyle = color[d.r];
+      g.beginPath();
+      g.arc((i % cols) * pitch + pitch / 2, Math.floor(i / cols) * pitch + pitch / 2, hit && needle ? r * 1.15 : r, 0, Math.PI * 2);
+      g.fill();
+    }
+  }, [w, h, dots, needle, grown, scheme]);
+  const at = (e: { clientX: number; clientY: number }) => {
+    const rc = cv.current!.getBoundingClientRect();
+    const c = Math.floor((e.clientX - rc.left) / pitch), row = Math.floor((e.clientY - rc.top) / pitch), i = row * cols + c;
+    return c >= 0 && c < cols && i >= 0 && i < n ? i : -1;
+  };
+  const interactive = !!onRecord;
+  return (
+    <div className="tk-crowd" ref={box} data-testid={testId}>
+      <canvas ref={cv} style={{ width: w, height: h, cursor: interactive ? 'pointer' : 'default' }} role="img" aria-label={`${count(list.length)} advertisers, one dot each`}
+        onMouseMove={interactive ? (e) => {
+          const i = at(e);
+          const rc = box.current!.getBoundingClientRect();
+          setTip(i < 0 ? null : { x: e.clientX - rc.left, y: e.clientY - rc.top, a: dots[i].a });
+        } : undefined}
+        onMouseLeave={() => setTip(null)} onClick={interactive ? (e) => { const i = at(e); if (i >= 0) onRecord!(dots[i].a.rowid); } : undefined} />
+      {tip && (
+        <div className="tk-tip" style={{ left: Math.min(tip.x + 12, w - 240), top: tip.y + 14 }}>
+          <b>{tip.a.name}</b><span>{howSaid(tip.a.services)}</span>{tip.a.emailed && <em>Has emailed you</em>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RouteLegend({ list }: { list: Advertiser[] }) {
+  const n = useMemo(() => {
+    const c: Record<Route, number> = { list: 0, both: 0, activity: 0 };
+    for (const a of list) c[routeOf(a)]++;
+    return c;
+  }, [list]);
+  return (
+    <div className="tk-legend" data-testid="tk-legend">
+      {ROUTES.filter((r) => n[r.id]).map((r) => <span key={r.id}><i style={{ background: `var(--tk-${r.id})` }} />{r.label} <b>{count(n[r.id])}</b></span>)}
+    </div>
+  );
+}
+
+function TheyKnowTile({ d }: { d: TheyKnow }) {
+  return (
+    <div className="tile-split tk-tile">
+      <div>
+        <TileNum value={d.advertisers} unit={d.advertisers === 1 ? 'company has you' : 'companies have you'} id="home-tk-adv" />
+        <div className="tile-sub"><Num value={d.decided_count} id="home-tk-decided" /> guesses about you{d.told_count ? <> · <Num value={d.told_count} id="home-tk-told" /> told on you</> : null}</div>
+      </div>
+      {d.advertiser_list.length > 0 && <Crowd list={d.advertiser_list} height={92} sample={260} />}
+    </div>
+  );
+}
+
+function Chips({ items, onRecord, limit = 40, testId }: { items: Decided['items']; onRecord: (r: number) => void; limit?: number; testId?: string }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, limit);
+  return (
+    <div className="chips tk-chips" data-testid={testId}>
+      {shown.map((it) => (
+        <button key={it.rowid} className={`chip ${it.off ? 'off' : ''}`} onClick={() => onRecord(it.rowid)} title={it.off ? 'You turned this one off' : 'Open where this came from'}>
+          <span className="truncate">{it.value}</span>{it.off && <em>off</em>}
+        </button>
+      ))}
+      {items.length > shown.length && <button className="chip more" onClick={() => setAll(true)}>{count(items.length - shown.length)} more</button>}
+    </div>
+  );
+}
+
+// Every list a service keeps, in full (the profile card's "See all").
+function DecidedGroups({ groups, of, onRecord }: { groups: Decided[]; of: string[]; onRecord: (r: number) => void }) {
+  const same = (g: Decided) => (g.services ?? [g.service]).join() === of.join();
+  return (
+    <div className="tk-groups">
+      {groups.map((g) => (
+        <div key={`${g.service}-${g.what}`} className="tk-group" data-testid="tk-group">
+          <div className="tk-group-head">{!same(g) && <ServiceIcons services={g.services ?? [g.service]} size={16} />}<b>{g.label}</b><span className="tk-n">{count(g.items.length)}</span></div>
+          <Chips items={g.items} onRecord={onRecord} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The you each service sees: Facebook and Instagram as one (Meta keeps one profile), X, LinkedIn. Its guesses at
+// who you are, large; a few of what it files you under and thinks you're into; the rest a click away.
+const familyOf = (g: Decided) => (/Facebook|Instagram/.test(g.services?.[0] ?? g.service) ? 'Meta' : g.services?.[0] ?? g.service);
+function Few({ title, items, onRecord, n = 6 }: { title: string; items: Decided['items']; onRecord: (r: number) => void; n?: number }) {
+  return (
+    <div className="tk-few">
+      <div className="tk-few-title">{title}</div>
+      <div className="tk-chip-row">
+        {items.slice(0, n).map((it) => <button key={it.rowid} className={`chip ${it.off ? 'off' : ''}`} onClick={() => onRecord(it.rowid)}><span className="truncate">{it.value}</span>{it.off && <em>off</em>}</button>)}
+        {items.length > n && <span className="tk-plus">+{count(items.length - n)}</span>}
+      </div>
+    </div>
+  );
+}
+function Facts({ facts, onRecord }: { facts: Decided[]; onRecord: (r: number) => void }) {
+  return (
+    <div className="tk-facts" data-testid="tk-facts">
+      {facts.map((g) => (
+        <button key={`${g.service}-${g.what}`} className="tk-fact" onClick={() => onRecord(g.items[0].rowid)} data-testid="tk-fact">
+          <b className="truncate">{g.items[0].value}</b><span className="truncate">{g.label.replace(/^Your /, '')}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+function ProfileCard({ groups, onRecord }: { groups: Decided[]; onRecord: (r: number) => void }) {
+  const [all, setAll] = useState(false);
+  const services = [...new Set(groups.flatMap((g) => g.services ?? [g.service]))];
+  const name = andList(services);
+  const facts = groups.filter((g) => g.group === 'guess' && g.items.length === 1);
+  const filed = groups.filter((g) => g.group === 'guess' && g.items.length > 1).flatMap((g) => g.items);
+  const into = groups.filter((g) => g.group === 'interest' && g.what !== 'see less').flatMap((g) => g.items);
+  const less = groups.filter((g) => g.what === 'see less').flatMap((g) => g.items);
+  const rest = groups.filter((g) => g.group === 'other');
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  return (
+    <section className="tk-card" data-testid="tk-card">
+      <header><ServiceIcons services={services} size={22} /><b className="truncate">{name}</b></header>
+      {facts.length > 0 && <Facts facts={facts} onRecord={onRecord} />}
+      {filed.length > 0 && <Few title="Files you under" items={filed} onRecord={onRecord} />}
+      {into.length > 0 && <Few title="Thinks you're into" items={into} onRecord={onRecord} />}
+      {less.length > 0 && <Few title="You asked for less of" items={less} onRecord={onRecord} n={4} />}
+      {rest.length > 0 && <div className="tk-rest">And {andList(rest.slice(0, 3).map((g) => `${count(g.items.length)} ${g.label.toLowerCase()}`))}{rest.length > 3 ? ', and more' : ''}</div>}
+      <button className="tk-all" onClick={() => setAll(true)} data-testid="tk-see-all">See all {count(total)}<Glyph name="chevronRight" size={11} strokeWidth={2.4} /></button>
+      {all && (
+        <Sheet onClose={() => setAll(false)} testId="tk-sheet" width={720}>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}><ServiceIcons services={services} size={20} />What {name} keeps about you</h2>
+          {facts.length > 0 && <Facts facts={facts} onRecord={onRecord} />}
+          <DecidedGroups groups={groups.filter((g) => !facts.includes(g))} of={services} onRecord={onRecord} />
+          <div className="sheet-actions"><Button kind="primary" onClick={() => setAll(false)}>Done</Button></div>
+        </Sheet>
+      )}
+    </section>
+  );
+}
+
+// Who told on you: a row for each company, a dot for each time it sent a service what you did there, colored by what
+// it was (styles.css --ev-*), on one shared timeline.
+type EvKind = 'looked' | 'cart' | 'bought' | 'other';
+const EV: { id: EvKind; label: string }[] = [{ id: 'looked', label: 'Looked' }, { id: 'cart', label: 'Added to a cart' }, { id: 'bought', label: 'Bought' }, { id: 'other', label: 'Something else' }];
+const EV_KIND: Record<string, EvKind> = { PAGE_VIEW: 'looked', VIEW_CONTENT: 'looked', SEARCH: 'looked', SITEVISIT: 'looked', EXPIRED_IMPRESSION: 'looked',
+  ADD_TO_CART: 'cart', ADD_TO_WISHLIST: 'cart', INITIATE_CHECKOUT: 'cart', PURCHASE: 'bought', SUBSCRIBE: 'bought', START_TRIAL: 'bought' };
+const evKind = (t: string | null) => EV_KIND[(t ?? '').toUpperCase()] ?? 'other';
+const EV_SAID: Record<string, string> = { PAGE_VIEW: 'Viewed a page', VIEW_CONTENT: 'Looked at something', SEARCH: 'Searched', SITEVISIT: 'Visited the site',
+  ADD_TO_CART: 'Added to a cart', ADD_TO_WISHLIST: 'Saved to a wishlist', INITIATE_CHECKOUT: 'Started checking out', PURCHASE: 'Bought something',
+  ACTIVATE_APP: 'Opened the app', SESSION: 'Used the app', LEAD: 'Signed up', COMPLETE_REGISTRATION: 'Signed up', SUBSCRIBE: 'Subscribed', START_TRIAL: 'Started a trial' };
+const evSaid = (t: string | null) => EV_SAID[(t ?? '').toUpperCase()] ?? (t ? t.toLowerCase().replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()) : 'Something');
+function ToldLanes({ told, onRecord }: { told: Told[]; onRecord: (r: number) => void }) {
+  const [all, setAll] = useState(false);
+  const rows = all ? told : told.slice(0, 10);
+  const times = told.flatMap((t) => t.timeline.map((e) => Date.parse(e.ts))).filter(Number.isFinite);
+  const kinds: Record<EvKind, number> = { looked: 0, cart: 0, bought: 0, other: 0 };
+  for (const t of told) for (const e of t.timeline) kinds[evKind(e.type)]++;
+  const lo = Math.min(...times), hi = Math.max(...times), span = Math.max(hi - lo, 864e5 * 30);
+  const pos = (ts: string) => ((Date.parse(ts) - lo) / span) * 100;
+  const years: number[] = [];
+  const told_to = [...new Set(told.map((t) => t.service))];
+  if (times.length) for (let yy = new Date(lo).getFullYear() + 1; yy <= new Date(hi).getFullYear(); yy++) years.push(yy);
+  return (
+    <Panel title="Who told on you" testId="tk-told"
+      note={`Apps and websites that sent ${told_to.length === 1 ? told_to[0] : 'a service'} what you did there. Each dot is one time.`}>
+      <div className="tk-legend">{EV.filter((k) => kinds[k.id]).map((k) => <span key={k.id}><i style={{ background: `var(--ev-${k.id})` }} />{k.label} <b>{count(kinds[k.id])}</b></span>)}</div>
+      <div className="tk-lanes">
+        {rows.map((t) => (
+          <div key={`${t.name}-${t.rowid}`} className="tk-lane" data-testid="tk-lane">
+            <button className="tk-lane-name" onClick={() => onRecord(t.rowid)}>{told_to.length > 1 && <ServiceIcons services={[t.service]} size={14} />}<span className="truncate">{t.name}</span></button>
+            <div className="tk-track">
+              {t.timeline.map((e, i) => (
+                <i key={i} style={{ left: `${pos(e.ts)}%`, background: `var(--ev-${evKind(e.type)})` }}
+                  title={`${evSaid(e.type)} · ${new Date(e.ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`} />
+              ))}
+            </div>
+            <span className="tk-lane-n">{count(t.events)}</span>
+          </div>
+        ))}
+        {years.length > 0 && (
+          <div className="tk-lane tk-axis"><span /><div className="tk-track">{years.map((yy) => <span key={yy} style={{ left: `${pos(`${yy}-01-01T00:00:00`)}%` }}>{yy}</span>)}</div><span /></div>
+        )}
+      </div>
+      {told.length > rows.length && <div className="tk-more"><Button onClick={() => setAll(true)} testAction="tk-told-all">Show All {count(told.length)}</Button></div>}
+    </Panel>
+  );
+}
+
+type AdFilter = 'all' | 'list' | 'activity' | 'emailed';
+function AdvertiserList({ list, onRecord }: { list: Advertiser[]; onRecord: (r: number) => void }) {
+  const [q, setQ] = useState('');
+  const [f, setF] = useState<AdFilter>('all');
+  const [n, setN] = useState(120);
+  const match = (a: Advertiser) => nameHit(a.name, q)
+    && (f === 'all' || (f === 'emailed' ? a.emailed : f === 'list' ? routeOf(a) !== 'activity' : routeOf(a) !== 'list'));
+  const hits = useMemo(() => list.filter(match), [list, q, f]);
+  return (
+    <Panel title="Every company that has you" testId="tk-advertisers" right={<span className="panel-count">{count(hits.length)} of {count(list.length)}</span>}>
+      <div className="explore-bar tk-bar">
+        <div className="search-wrap"><Glyph name="search" size={13} /><input className="search-field" placeholder="Search companies" value={q} onChange={(e) => { setQ(e.target.value); setN(120); }} data-testid="tk-search" /></div>
+        <Segmented value={f} onChange={(v) => { setF(v); setN(120); }} items={[{ id: 'all', label: 'All' }, { id: 'list', label: 'On a List', testId: 'tk-filter-list' },
+          { id: 'activity', label: 'From Your Activity', testId: 'tk-filter-activity' }, { id: 'emailed', label: 'Have Emailed You', testId: 'tk-filter-emailed' }]} />
+      </div>
+      <div className="tk-adv-list">
+        {hits.slice(0, n).map((a) => {
+          const r = routeOf(a);
+          return (
+            <button key={`${a.name}-${a.rowid}`} className="tk-adv" onClick={() => onRecord(a.rowid)} title={howSaid(a.services)} data-testid="tk-advertiser">
+              <Avatar name={a.name.replace(/^@/, '')} size={26} />
+              <span className="truncate tk-adv-name">{a.name}</span>
+              <span className="tk-route"><i style={{ background: `var(--tk-${r})` }} />{ROUTE_LABEL[r]}</span>
+              {a.emailed && <span className="tk-tag" title="You have email from them">emailed you</span>}
+              <ServiceIcons services={Object.keys(a.services)} />
+            </button>
+          );
+        })}
+        {!hits.length && <div className="tk-none">No company by that name.</div>}
+      </div>
+      {hits.length > n && <div className="tk-more"><Button onClick={() => setN((x) => x + 500)} testAction="tk-more">Show {count(Math.min(500, hits.length - n))} More</Button></div>}
+    </Panel>
+  );
+}
+
+function TheyKnowView({ ctx }: { ctx: Ctx }) {
+  const { data, error, k } = useArtifact<TheyKnow>('they-know');
+  const [q, setQ] = useState('');
+  if (!data) return <Building k={k} what="they-know" error={error} />;
+  const names = data.services.map((s) => s.service);
+  const families = new Map<string, Decided[]>();
+  for (const g of data.decided) families.set(familyOf(g), [...(families.get(familyOf(g)) ?? []), g]);
+  const needle = q.trim();
+  const found = needle ? data.advertiser_list.filter((a) => nameHit(a.name, needle)) : [];
+  return (
+    <div className="stagger" data-testid="explore-they-know">
+      <section className="explore-hero tinted tk-hero" style={tone('graphite')}>
+        <Eyebrow glyph="eye">What They Know</Eyebrow>
+        <div className="hero-split">
+          <div>
+            <div className="hero-num"><b><Num value={data.advertisers} id="tk-adv" /></b> <span>companies have you</span></div>
+            <div className="hero-sub">From your {andList(names)} exports</div>
+          </div>
+          <div className="tk-hero-aside">
+            <div><b><Num value={data.decided_count} id="tk-decided" /></b><span>guesses about you</span></div>
+            {data.told_count > 0 && <div><b><Num value={data.told_count} id="tk-told" /></b><span>told on you</span></div>}
+            {data.ads_count > 0 && <div><b><Num value={data.ads_count} id="tk-ads" /></b><span>ads shown</span></div>}
+          </div>
+        </div>
+        {data.advertiser_list.length > 0 && (
+          <>
+            <Crowd list={data.advertiser_list} q={q} onRecord={ctx.onRecord} testId="tk-crowd" />
+            <div className="tk-crowd-foot">
+              <RouteLegend list={data.advertiser_list} />
+              <div className="search-wrap tk-find"><Glyph name="search" size={13} /><input className="search-field" placeholder="Find a company" value={q} onChange={(e) => setQ(e.target.value)} data-testid="tk-find" /></div>
+            </div>
+            {needle ? (
+              <div className="tk-found" data-testid="tk-found">
+                {found.length ? <>{count(found.length)} {found.length === 1 ? 'has' : 'have'} you: {found.slice(0, 6).map((a) => <button key={`${a.name}-${a.rowid}`} className="chip" onClick={() => ctx.onRecord(a.rowid)}><span className="truncate">{a.name}</span></button>)}{found.length > 6 ? ` and ${count(found.length - 6)} more` : ''}</>
+                  : <>Not one called that. Good news.</>}
+              </div>
+            ) : data.emailed > 0 && (
+              <div className="tk-found">You've heard from <b>{count(data.emailed)}</b> of them by email. The other {count(data.advertisers - data.emailed)}, maybe never.</div>
+            )}
+          </>
+        )}
+      </section>
+      {families.size > 0 && (
+        <>
+          <h3 className="section-title">The you they see</h3>
+          <div className="tk-cards" data-testid="tk-guesses">{[...families].map(([f, gs]) => <ProfileCard key={f} groups={gs} onRecord={ctx.onRecord} />)}</div>
+        </>
+      )}
+      {data.told.length > 0 && <ToldLanes told={data.told} onRecord={ctx.onRecord} />}
+      {data.ads.top.length > 0 && (
+        <Panel title="The ads you saw most" note={Object.entries(data.ads.by_service).map(([s, n]) => `${count(n)} on ${s}`).join(', ')}>
+          <HBars rows={data.ads.top.slice(0, 8).map((a) => ({ key: a.name, label: a.name, value: a.count, onClick: () => ctx.onRecord(a.rowid) }))} unit="ads" />
+        </Panel>
+      )}
+      {data.advertiser_list.length > 0 && <AdvertiserList list={data.advertiser_list} onRecord={ctx.onRecord} />}
+      <p className="explore-foot"><Glyph name="info" size={11} /> From your exports, in the services' own words. They guess from what you do, so some are wrong. Most can be changed in each service's ad settings.</p>
+    </div>
+  );
 }

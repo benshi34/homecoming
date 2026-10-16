@@ -40,9 +40,9 @@ contextBridge.exposeInMainWorld('api', {
     });
     return () => hs.forEach(([ch, h]) => ipcRenderer.removeListener(ch, h));
   },
-  // Menu commands: Settings…, Setup Assistant…, Overview.
+  // Menu commands: Settings…, Setup Assistant…, Overview, AI Settings (from Settings).
   onMenu: (cb: (cmd: string) => void) => {
-    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub', 'open-source'].map((ch) => {
+    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub', 'show-ai', 'open-source'].map((ch) => {
       // open-source carries the source to open: a notification about it was clicked.
       const h = (_e: unknown, id?: string) => cb(ch === 'open-source' ? `open-source:${id}` : ch);
       ipcRenderer.on(ch, h);

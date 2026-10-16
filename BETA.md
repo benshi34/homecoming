@@ -32,7 +32,7 @@ Thanks for testing. This is the order that finds the most problems. When somethi
 
 - Any step where you didn't know what to do next.
 - Anything that took much longer than the app said it would.
-- Any service you use that isn't in All Services, or whose export didn't work.
+- Any service you use that isn't in All Sources, or whose export didn't work.
 - Anything that felt like it was doing more with your data than you expected.
 
 ## For whoever runs the beta: a clean-Mac install

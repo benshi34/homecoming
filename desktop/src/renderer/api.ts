@@ -1,11 +1,11 @@
 import type { AskConversation, AskEvent, AskProvider, AskSettings, AskSummary } from '../shared/ask.ts';
 import type { ExploreProgress } from '../shared/explore.ts';
-import type { DirectoryEntry, Onboarding, Settings, Snapshot } from '../shared/types.ts';
+import type { AskView, DirectoryEntry, Onboarding, Settings, Snapshot } from '../shared/types.ts';
 
 export interface Api {
   snapshot(): Promise<Snapshot>;
   onSnapshot(cb: (s: Snapshot) => void): () => void;
-  onToast(cb: (t: { text: string; kind: string }) => void): () => void;
+  onToast(cb: (t: { text: string; kind: string; undo?: { sourceId: string; action: string } }) => void): () => void; // undo: a button that runs it
   onMenu(cb: (cmd: string) => void): () => void;
   action(sourceId: string, action: string, payload?: unknown): Promise<{ ok: boolean; error?: string; id?: string; ids?: string[]; data?: unknown }>;
   dropFiles(files: File[], sourceId: string | null): Promise<{ ok: boolean; error?: string }>;
@@ -27,7 +27,9 @@ export type AskPush = { id: string; turn: number; event?: AskEvent; conversation
 export interface AskApi {
   (op: { op: 'list' }): Promise<AskSummary[]>;
   (op: { op: 'get'; id: string }): Promise<{ conversation: AskConversation | null; running: boolean } | null>;
-  (op: { op: 'ask'; id: string | null; question: string }): Promise<{ id: string; error?: undefined } | { error: string; provider?: AskProvider; id?: undefined }>;
+  (op: { op: 'ask'; id: string | null; question: string } | { op: 'retry'; id: string }): Promise<{ id: string; error?: undefined } | { error: string; provider?: AskProvider; id?: undefined }>;
+  (op: { op: 'check' }): Promise<AskView>; // look again for the agents, and the local model's server
+  (op: { op: 'open-terminal' }): Promise<null>;
   (op: { op: 'stop' | 'remove'; id: string }): Promise<unknown>;
   (op: { op: 'settings'; patch: Partial<AskSettings> }): Promise<AskSettings>;
   (op: { op: 'confirm-retention'; provider: AskProvider }): Promise<AskSettings>;

@@ -72,7 +72,7 @@ test('opens on the welcome page with the step timeline', async () => {
   assert.equal(await step(), 'welcome');
   assert.match(await run.page.locator('.hero h1').innerText(), /Welcome to Homecoming/);
   assert.match(await run.page.locator('[data-testid=sb-Welcome]').getAttribute('class') ?? '', /current/);
-  assert.equal(await run.page.locator('[data-testid=steps-bar] .sb-item').count(), 12);
+  assert.equal(await run.page.locator('[data-testid=steps-bar] .sb-item').count(), 11);
   // The tour: three steps on made-up data, labeled as such. Picking one stops it moving on by itself.
   const stage = run.page.locator('[data-testid=tour-stage]');
   assert.equal(await run.page.locator('.tour-timer').count(), 1, 'it moves on by itself until you pick a step');
@@ -88,9 +88,10 @@ test('opens on the welcome page with the step timeline', async () => {
   const browse = run.page.locator('[data-testid=demo-browse]');
   await browse.locator('[data-testid=explore-home]').waitFor({ timeout: 10_000 });
   const tiles = browse.locator('.explore-tile');
-  assert.equal(await tiles.count(), 10);
-  assert.equal(await browse.locator('.explore-tile[data-ready=yes]').count(), 10);
+  assert.equal(await tiles.count(), 15);
+  assert.equal(await browse.locator('.explore-tile[data-ready=yes]').count(), 15);
   assert.equal(await browse.locator('.tile-note').count(), 0, 'no tile is building or failed');
+  assert.equal(await browse.locator('.explore-tile.locked').count(), 0, 'an example has enough of everything');
   assert.match(await browse.locator('.t-on-this-day img').first().getAttribute('src') ?? '', /^data:image\/svg\+xml/);
   // The pointer browses into Your People on its own; a click of yours hands the window over.
   await browse.locator('[data-testid=explore-people]').waitFor({ timeout: 12_000 });
@@ -161,10 +162,12 @@ test('choosing accounts skips the rest and builds one page per account', async (
   // Yours: the ones most people use, most used first. Recommended: what's not added yet, with the top few found in
   // your data. Adding or removing one moves it to the other list.
   const ids = (list: string) => run.page.locator(`[data-testid=${list}] [data-testid^=account-]`).evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!.slice(8)));
-  assert.deepEqual((await ids('accounts')).slice(0, 4), ['google_takeout', 'facebook', 'instagram', 'chatgpt']);
+  assert.deepEqual((await ids('accounts')).slice(0, 4), ['google_takeout', 'facebook', 'instagram', 'other_mail'], 'Outlook and other email is an account like the rest');
+  assert.ok((await ids('accounts')).includes('maps_timeline'));
+  assert.ok((await ids('recommended')).includes('slack'), 'optional ones start off, as Google Photos does');
   const photos = await run.page.locator('[data-testid=recommended] [data-testid=account-google_photos_drive]').innerText();
   assert.doesNotMatch(photos, /Optional/, 'every account is a choice; none is singled out');
-  assert.match(photos, /Can be hundreds of GB, so it starts off/);
+  assert.match(photos, /Can be hundreds of GB, so it isn't on your list unless you add it/);
   await until(run.page, 'apps found', (x) => (x.discovery?.found.length ?? 0) >= 10, 30_000);
   const rec = run.page.locator('[data-testid=recommended]');
   await rec.locator('[data-testid^="account-found:"]').first().waitFor();
@@ -190,13 +193,13 @@ test('choosing accounts skips the rest and builds one page per account', async (
     await run.page.waitForTimeout(400);
   }
   assert.match(await run.page.locator('[data-testid=accounts]').innerText(), /None yet/);
-  for (const id of ['discord', 'reddit']) {
+  for (const id of ['discord', 'reddit', 'other_mail']) {
     await rec.locator(`[data-testid=account-${id}] button[data-action=add-account]`).click();
     await run.page.locator(`[data-testid=accounts] [data-testid=account-${id}]`).waitFor();
     await run.page.waitForTimeout(400);
   }
-  assert.deepEqual(await ids('accounts'), ['reddit', 'discord'], 'the common ones keep their most-used-first order');
-  assert.match(await run.page.locator('button[data-action=assistant-continue]').innerText(), /Continue with 2/);
+  assert.deepEqual(await ids('accounts'), ['other_mail', 'reddit', 'discord'], 'the common ones keep their most-used-first order');
+  assert.match(await run.page.locator('button[data-action=assistant-continue]').innerText(), /Continue with 3/);
   await cont();
   // AI, asked once: what it's for, and which agent. Not Now moves on with it off.
   assert.equal(await step(), 'ai');
@@ -216,12 +219,12 @@ test('choosing accounts skips the rest and builds one page per account', async (
   await go('button[data-action=ai-not-now]');
   assert.equal(await step(), 'exports');
   const rows = await run.page.locator('[data-testid=exports-list] [data-testid^=exports-]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
-  assert.deepEqual(rows, ['exports-discord', 'exports-reddit']);
+  assert.deepEqual(rows, ['exports-discord', 'exports-reddit', 'exports-other_mail'], 'longest wait first; Outlook, set up by hand, last');
   assert.match(await run.page.locator('button[data-action=assistant-continue]').innerText(), /Start with Discord/);
   await shot(run.page, 'assistant-08-exports-list');
   await go('[data-testid=exports-reddit]');
   assert.equal(await step(), 'export:reddit');
-  assert.match(await run.page.locator('[data-testid=sb-Exports]').innerText(), /Exports 2\/2/);
+  assert.match(await run.page.locator('[data-testid=sb-Exports]').innerText(), /Exports 2\/3/);
   await go('button[data-action=all-exports]');
   assert.equal(await step(), 'exports');
   await go('[data-testid=exports-discord]');
@@ -229,7 +232,7 @@ test('choosing accounts skips the rest and builds one page per account', async (
   const s = await snap(run.page);
   assert.equal(find(s, 'spotify').status, 'Skipped: I don\'t use it');
   assert.equal(find(s, 'discord').section, 'needs');
-  assert.match(await run.page.locator('[data-testid=sb-Exports]').innerText(), /Exports 1\/2/);
+  assert.match(await run.page.locator('[data-testid=sb-Exports]').innerText(), /Exports 1\/3/);
 });
 
 test('an export page opens the site in your browser, and the download is picked up when it lands', async () => {
@@ -247,16 +250,23 @@ test('an export page opens the site in your browser, and the download is picked 
   // On to the one not asked for yet, Reddit; skipping it, on past the exports.
   assert.equal(await step(), 'export:reddit');
   await go('button[data-action=skip-export]');
-  assert.equal(find(await snap(run.page), 'reddit').status, 'Skipped: Not now');
+  assert.equal(find(await snap(run.page), 'reddit').status, 'Set aside for now', 'for now: kept under Needs You, not put away');
 });
 
-test('mail and extras', async () => {
-  assert.equal(await step(), 'mail');
-  await run.page.locator('.footer-bar button', { hasText: 'I Don\'t Have Any' }).click();
-  await run.page.waitForFunction(() => document.querySelector('[data-testid=assistant]')?.getAttribute('data-step') === 'extras');
-  await run.page.waitForTimeout(450);
-  await shot(run.page, 'assistant-10-extras');
-  await cont();
+test('Outlook and other email: an account with its own page, set up through Mail; no Extras section after', async () => {
+  assert.equal(await step(), 'export:other_mail');
+  const status = run.page.locator('[data-testid=export-status]');
+  assert.match(await run.page.locator('.hero h1').innerText(), /Outlook and other email/);
+  assert.doesNotMatch(await run.page.locator('[data-testid=assistant] .page').innerText(), /privacy law/, 'no request form to fill in: nothing about which law');
+  assert.equal(await status.locator('button[data-action=open-internet-accounts]').count(), 1, 'its own way in: Mail');
+  assert.equal(await status.locator('button[data-action=add-file]').count(), 1);
+  assert.equal(await status.locator('button[data-action=open]').count(), 0, 'nothing to open in a browser');
+  await run.page.locator('[data-testid=account-form]').waitFor();
+  assert.match(await run.page.locator('.drop').innerText(), /\.mbox/);
+  await shot(run.page, 'assistant-10-other-mail');
+  assert.equal(await run.page.locator('[data-testid=sb-Extras]').count(), 0, 'no Extras section');
+  await go('.footer-bar button[data-action=skip-export]');
+  assert.equal(find(await snap(run.page), 'other_mail').status, 'Skipped: No other mail accounts');
   assert.equal(await step(), 'identity');
 });
 
@@ -282,13 +292,17 @@ test('the keep-history page explains what each setting protects, and fixes it', 
   const row = run.page.locator('[data-testid=check-retention_claude]');
   assert.match(await row.innerText(), /deletes conversation transcripts after 30 days/);
   assert.match(await run.page.locator('[data-testid=check-retention_messages]').innerText(), /Already keeps everything/);
-  // grouped by where the setting lives; the iPhone's own Messages setting and Maps Timeline are there
+  // grouped by where the setting lives; the iPhone's own Messages setting is there
   assert.match(await run.page.locator('[data-testid=check-retention_iphone_messages]').innerText(), /its own Keep Messages setting/);
-  assert.match(await run.page.locator('[data-testid=check-retention_maps]').innerText(), /older than 3 months/);
   assert.equal(await run.page.locator('[data-testid=check-retention_google]').count(), 0, 'Google was turned off on the accounts page');
+  assert.equal(await run.page.locator('[data-testid=check-retention_maps]').count(), 0, 'and so was Maps Timeline: an account like the rest');
   await run.page.locator('[data-testid=keep-backup]').waitFor();
   await shot(run.page, 'assistant-12-keep');
   await row.locator('button[data-action=fix-claude-retention]').click();
+  // It changes a file of Claude Code's: it says exactly what, and asks first.
+  const confirm = run.page.locator('[data-testid=confirm]');
+  assert.match(await confirm.innerText(), /cleanupPeriodDays in ~\/\.claude\/settings\.json/);
+  await confirm.locator('button', { hasText: 'Continue' }).click();
   await until(run.page, 'claude retention', (x) => find(x, 'retention_claude').section === 'done');
   await row.locator('.checkmark').waitFor();
   assert.equal(readJson(path.join(sb.home, '.claude/settings.json')).cleanupPeriodDays, 100000);

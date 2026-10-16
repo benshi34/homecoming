@@ -26,7 +26,7 @@ export function hours(h: number): string {
 
 // "1 to 2 days", "a few hours to 30 days"
 export function waitRange([lo, hi]: [number, number]): string {
-  const part = (h: number) => (h < 1.5 ? 'an hour' : h < 36 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`);
+  const part = (h: number) => (h < 1.5 ? 'an hour' : h === 24 ? 'a day' : h < 36 ? `${Math.round(h)} hours` : `${Math.round(h / 24)} days`);
   if (lo === hi) return part(lo);
   return `${part(lo)} to ${part(hi)}`;
 }
@@ -61,7 +61,10 @@ export function range(first: string | null | undefined, last: string | null | un
   if (!last) return a;
   const daysOld = (now.getTime() - Date.parse(last)) / 86400000;
   const b = daysOld < 14 ? 'now' : day(last);
-  return a ? `${a} to ${b}` : b;
+  if (!a) return b;
+  // Within one year, the year said once: "Mar 3 to Jan 1, 2024", or the day itself.
+  if (b !== 'now' && year(last) === a) return day(first) === day(last) ? day(last) : `${day(first).replace(/, \d{4}$/, '')} to ${day(last)}`;
+  return `${a} to ${b}`;
 }
 
 export function list(items: string[]): string {

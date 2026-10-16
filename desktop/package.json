@@ -10,6 +10,7 @@
     "build": "node build.mjs",
     "start": "node build.mjs && node scripts/dev_app.mjs .",
     "fresh": "node build.mjs && node scripts/fresh.mjs",
+    "demo": "node build.mjs && node scripts/demo.mjs",
     "package": "node scripts/package_mac.mjs",
     "icon": "electron scripts/app_icon.cjs",
     "typecheck": "tsc --noEmit",

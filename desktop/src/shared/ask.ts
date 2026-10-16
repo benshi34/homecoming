@@ -32,12 +32,45 @@ export const LOCAL_SERVERS = {
 } as const;
 export type LocalServer = keyof typeof LOCAL_SERVERS;
 
+// "A model on this Mac" is one on this Mac: its address is localhost, so nothing leaves it (and nothing else is checked).
+export function isLocalAddress(url: string): boolean {
+  try {
+    const u = new URL(url.trim());
+    return (u.protocol === 'http:' || u.protocol === 'https:') && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// "http://localhost:11434/v1" -> "localhost:11434", for sentences.
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+// Whether something answers at the local model's address (main/ask.ts checks it, on this Mac only). up is null until
+// it's been checked.
+export interface LocalStatus { url: string; up: boolean | null; at: string }
+
+// Where to get what an agent needs, opened in the person's browser.
+export const LINKS = {
+  'claude-code': { label: 'Get Claude Code', url: 'https://claude.com/claude-code' },
+  codex: { label: 'Get Codex', url: 'https://developers.openai.com/codex/cli' },
+  anthropic: { label: 'console.anthropic.com', url: 'https://console.anthropic.com/settings/keys' },
+  openai: { label: 'platform.openai.com', url: 'https://platform.openai.com/api-keys' },
+} as const;
+
 // What each cloud provider keeps of what's sent, and the setting that keeps it to the least. Checked 2026-10-12
 // against Anthropic's and OpenAI's docs; shown before first use and under the composer after.
-export interface Retention { short: string; detail: string[]; link: { label: string; url: string }; confirm: string }
+// done: the same once the person has checked it, for the line under the composer.
+export interface Retention { short: string; done: string; detail: string[]; link: { label: string; url: string }; confirm: string }
 export const RETENTION: Partial<Record<AskProvider, Retention>> = {
   'claude-code': {
     short: 'Make sure "Help improve Claude" is off in claude.ai → Settings → Privacy, so your data isn\'t used for training or kept for years.',
+    done: '"Help improve Claude" is off.',
     detail: [
       'Questions, and the records and photos the assistant looks at to answer them, go to Anthropic under your claude.ai plan.',
       'In claude.ai, open Settings → Privacy and turn off "Help improve Claude". Off, your chats aren\'t used to train models and are kept 30 days. On, they can be used for training and kept up to 5 years.',
@@ -48,6 +81,7 @@ export const RETENTION: Partial<Record<AskProvider, Retention>> = {
   },
   codex: {
     short: 'Make sure "Improve the model for everyone" is off in ChatGPT → Settings → Data controls, so your data isn\'t used for training.',
+    done: '"Improve the model for everyone" is off.',
     detail: [
       'Questions, and the records and photos the assistant looks at to answer them, go to OpenAI under your ChatGPT plan.',
       'In ChatGPT, open Settings → Data controls and turn off "Improve the model for everyone". It covers Codex too.',
@@ -58,6 +92,7 @@ export const RETENTION: Partial<Record<AskProvider, Retention>> = {
   },
   anthropic: {
     short: 'Anthropic keeps API requests up to 30 days unless your organization has zero data retention. Check it in the Claude Console.',
+    done: 'Anthropic keeps API requests 30 days at most.',
     detail: [
       'Questions, and the records and photos the assistant looks at to answer them, go to Anthropic\'s API. Anthropic doesn\'t train on API data.',
       'By default Anthropic deletes API requests and responses within 30 days. Zero data retention, where nothing is kept, is an arrangement Anthropic approves for an organization: check Settings → Privacy Controls → Data retention period in the Claude Console.',
@@ -68,6 +103,7 @@ export const RETENTION: Partial<Record<AskProvider, Retention>> = {
   },
   openai: {
     short: 'OpenAI keeps API requests up to 30 days unless your organization has zero data retention, which OpenAI must approve.',
+    done: 'OpenAI keeps API requests 30 days at most.',
     detail: [
       'Questions, and the records and photos the assistant looks at to answer them, go to OpenAI\'s API. OpenAI doesn\'t train on API data unless you opt in.',
       'OpenAI keeps API requests up to 30 days to watch for abuse. Zero data retention needs OpenAI\'s approval for your organization.',
@@ -97,6 +133,102 @@ export interface AskSettings {
 }
 export const DEFAULT_ASK: AskSettings = { provider: 'claude-code', models: {}, localServer: 'ollama', localUrl: LOCAL_SERVERS.ollama.url, retention: {} };
 
+// ---------------------------------------------------------------- can the chosen agent answer?
+
+// Whether Claude Code or Codex is signed in on this Mac, as they say themselves (claude auth status, codex login
+// status: both read only what's saved on this Mac). who: the account, when it says; how: "claude.ai", "ChatGPT".
+export interface SignIn { state: 'in' | 'out' | 'unknown'; who?: string; how?: string; plan?: string; at: string }
+
+// What the app knows of the agents on this Mac (the snapshot's ask).
+export interface AgentState {
+  settings: AskSettings;
+  installed: { 'claude-code': boolean; codex: boolean };
+  keys: { anthropic: boolean; openai: boolean };
+  local?: LocalStatus;
+  signIn?: Partial<Record<'claude-code' | 'codex', SignIn>>;
+}
+
+// What's missing before a provider can answer: the agent itself, its sign-in or key, or a local model server that answers.
+export type AgentNeed =
+  | { kind: 'install'; harness: 'claude-code' | 'codex' }
+  | { kind: 'sign-in'; harness: 'claude-code' | 'codex' }
+  | { kind: 'key'; key: 'anthropic' | 'openai' }
+  | { kind: 'local'; url: string; server: LocalServer } // nothing answers there
+  | { kind: 'local-address'; url: string }; // not an address on this Mac
+
+export function agentNeed(v: AgentState, p: AskProvider = v.settings.provider): AgentNeed | null {
+  const info = PROVIDER[p];
+  if (!info) return null;
+  if (!v.installed[info.harness]) return { kind: 'install', harness: info.harness };
+  if (info.needsKey && !v.keys[info.needsKey]) return { kind: 'key', key: info.needsKey };
+  // Signed in with your account (not a key, not the model on this Mac): only once it says it isn't.
+  if (!info.needsKey && p !== 'local' && v.signIn?.[info.harness]?.state === 'out') return { kind: 'sign-in', harness: info.harness };
+  if (p === 'local') {
+    const url = v.settings.localUrl;
+    if (!isLocalAddress(url)) return { kind: 'local-address', url };
+    if (v.local?.url === url && v.local.up === false) return { kind: 'local', url, server: v.settings.localServer };
+  }
+  return null;
+}
+
+// The same, in a sentence or two.
+export function needText(n: AgentNeed): string {
+  switch (n.kind) {
+    case 'install': return `${n.harness === 'codex' ? 'Codex' : 'Claude Code'} isn't on this Mac.`;
+    case 'sign-in': return n.harness === 'codex' ? 'Codex isn\'t signed in on this Mac. Open Terminal, type codex login, and sign in with your ChatGPT account.'
+      : 'Claude Code isn\'t signed in on this Mac. Open Terminal, type claude, and sign in with your claude.ai account.';
+    case 'key': return n.key === 'anthropic' ? 'Claude Code needs your Anthropic API key to answer.' : 'Codex needs your OpenAI API key to answer.';
+    case 'local': return `Nothing is answering at ${hostOf(n.url)}. Open ${LOCAL_SERVERS[n.server]?.name ?? 'the model server'}, then try again.`;
+    case 'local-address': return `${hostOf(n.url)} isn't on this Mac. Use the address your model server shows, like ${LOCAL_SERVERS.ollama.url}.`;
+  }
+}
+
+// ---------------------------------------------------------------- what went wrong, in plain words
+
+// What a person can do about an agent's error: sign in again in Terminal, check the key or the model, open the local
+// server, or install the agent.
+export type AskFix = 'sign-in' | 'key' | 'model' | 'local' | 'install';
+
+const companyOf = (p: AskProvider) => (PROVIDER[p]?.harness === 'codex' ? 'OpenAI' : 'Anthropic');
+
+// An agent's own error (its last words, or stderr) as a sentence with a way forward. The raw text stays under Details.
+export function explainError(provider: AskProvider, raw: string, opts: { localUrl?: string; localServer?: LocalServer; model?: string } = {}): { text: string; fix?: AskFix } {
+  const info = PROVIDER[provider];
+  const who = info?.name ?? 'The agent';
+  const company = companyOf(provider);
+  const r = raw || '';
+  const server = LOCAL_SERVERS[opts.localServer ?? 'ollama']?.name ?? 'the model server';
+  if (/isn't on this Mac/i.test(r)) return { text: r.split('\n')[0], fix: 'install' };
+  if (/^Add your .* API key first/i.test(r)) return { text: r.split('\n')[0], fix: 'key' };
+  if (provider === 'local' && /ECONNREFUSED|connection refused|error sending request|failed to connect|couldn't connect|connect error|tcp connect|os error 61|no running|not running|ollama serve|is it running|unreachable/i.test(r)) {
+    return { text: `Nothing is answering at ${hostOf(opts.localUrl ?? LOCAL_SERVERS.ollama.url)}. Open ${server}, then try again.`, fix: 'local' };
+  }
+  if (provider !== 'local' && /invalid api key|invalid x-api-key|invalid_api_key|incorrect api key|\/login|not logged in|log in|sign in|signing in|401|unauthori[sz]ed|authentication|expired|credentials/i.test(r)) {
+    switch (provider) {
+      case 'claude-code': return { text: 'Claude Code isn\'t signed in. Open Terminal, type claude, and sign in.', fix: 'sign-in' };
+      case 'codex': return { text: 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.', fix: 'sign-in' };
+      default: return { text: `${company} didn't accept the key. Check it under AI Settings.`, fix: 'key' };
+    }
+  }
+  if (/model[^\n]{0,60}(not found|not_found|does not exist|doesn't exist|isn't available|not available|unknown|invalid|not supported)|model_not_found|unknown model|invalid model|not_found_error/i.test(r)) {
+    const m = opts.model && opts.model !== 'default' ? ` called “${opts.model}”` : ' by that name';
+    return { text: `${provider === 'local' ? server : company} doesn't have a model${m}. Pick another under AI Settings.`, fix: 'model' };
+  }
+  if (/credit balance|insufficient_quota|exceeded your current quota|billing/i.test(r)) {
+    return { text: `Your ${company} account is out of credit. Add some in its console, then try again.` };
+  }
+  if (/usage limit|limit reached|reached your limit|out of extra usage/i.test(r)) {
+    return { text: `You've reached your ${provider === 'codex' ? 'ChatGPT' : 'claude.ai'} usage limit for now. Try again later, or choose another way to answer under AI Settings.` };
+  }
+  if (/rate.?limit|too many requests|\b429\b|overloaded|\b529\b|\b503\b/i.test(r)) {
+    return { text: `${provider === 'local' ? server : company} is busy right now. Try again in a minute.` };
+  }
+  if (provider !== 'local' && /ENOTFOUND|getaddrinfo|ETIMEDOUT|ECONNRESET|network|offline|unable to connect|connection error|timed out/i.test(r)) {
+    return { text: `Couldn't reach ${company}. Check that this Mac is online, then try again.` };
+  }
+  return { text: `${who} stopped before it answered.` };
+}
+
 // What happens in one answer, as it streams and as it's saved.
 export type AskEvent =
   | { t: 'text'; text: string } // a piece of the answer (or a whole block, from the command-line agents)
@@ -114,15 +246,18 @@ export interface AskTurn {
   events: AskEvent[];
   answer: string;
   stopped?: boolean;
-  error?: string;
+  error?: string; // what went wrong, in plain words
+  errorDetail?: string; // the agent's own words, shown under Details
+  fix?: AskFix;
 }
 
 export interface AskConversation { id: string; title: string; createdAt: string; updatedAt: string; turns: AskTurn[] }
-export interface AskSummary { id: string; title: string; updatedAt: string; turns: number }
+export interface AskSummary { id: string; title: string; updatedAt: string; turns: number; failed?: boolean } // failed: its last question went unanswered
 
-// The question for an agent that keeps no memory between turns: earlier questions and answers come along.
+// The question for an agent that keeps no memory between turns: earlier questions and answers come along. A turn that
+// failed or was stopped has no answer to bring.
 export function followupPrompt(question: string, turns: AskTurn[], maxChars = 30_000): string {
-  const done = turns.filter((t) => t.answer);
+  const done = turns.filter((t) => t.answer && !t.error && !t.stopped);
   if (!done.length) return question;
   const blocks: string[] = [];
   let used = 0;

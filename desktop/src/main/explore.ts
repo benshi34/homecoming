@@ -10,6 +10,7 @@ import path from 'node:path';
 import { childEnv, type Paths } from './paths.ts';
 
 const OPS = new Set(['summary', 'on-this-day', 'people', 'person', 'places', 'rhythms', 'firsts', 'made', 'groups', 'journeys', 'year',
+  'listening', 'movement', 'curiosity', 'watching', 'they-know',
   'stream', 'stream-build', 'thumbs', 'thread', 'records', 'embed']);
 // Quick lookups, never behind an artifact being built.
 const QUICK = new Set(['thumbs', 'thread', 'records', 'embed']);

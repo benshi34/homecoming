@@ -2,7 +2,9 @@
 """A stand-in for `claude -p --output-format stream-json`: starts the MCP server from --mcp-config, makes the tool
 calls in its plan through it, and prints Claude Code's stream-json events. The plan is JSON {"steps": [...], "answer"}
 from the file $FAKE_CLAUDE_PLAN (or $FAKE_CLAUDE_SCRIPT and $FAKE_CLAUDE_ANSWER). A step is {"tool", "input"}, {"probe":
-path} (read a file directly, which the sandbox should stop, and say what happened) or {"sleep": seconds}.
+path} (read a file directly, which the sandbox should stop, and say what happened) or {"sleep": seconds}. With no
+--mcp-config (text in, text out) there are no tools. {"error": text, "exit": n} fails as Claude Code does when it isn't
+signed in (the error as its last message and as an error result); {"crash": true} dies with a traceback.
 $FAKE_CLAUDE_LOG gets the arguments, the prompt, and which sign-in variables it was given (never their values)."""
 
 import json
@@ -12,18 +14,26 @@ import sys
 import time
 
 args = sys.argv[1:]
+# `claude auth status --json`: signed in with a made-up claude.ai account, or not ($FAKE_CLAUDE_AUTH=out).
+if args[:2] == ["auth", "status"]:
+    signed_in = os.environ.get("FAKE_CLAUDE_AUTH") != "out"
+    print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "email": "ada@example.com", "subscriptionType": "max"} if signed_in
+                     else {"loggedIn": False, "authMethod": "none"}))
+    sys.exit(0 if signed_in else 1)
 prompt = sys.stdin.read()
 if os.environ.get("FAKE_CLAUDE_PLAN"):
     plan = json.load(open(os.environ["FAKE_CLAUDE_PLAN"]))
 else:
     plan = {"steps": json.loads(os.environ.get("FAKE_CLAUDE_SCRIPT", "[]")), "answer": os.environ.get("FAKE_CLAUDE_ANSWER", "Done.")}
-cfg = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]["corpus"]
 log = os.environ.get("FAKE_CLAUDE_LOG")
 if log:
     with open(log, "w") as f:
         json.dump({"args": args, "prompt": prompt, "env": sorted(k for k in os.environ if k.startswith(("ANTHROPIC", "CLAUDE", "CODEX", "OPENAI")))}, f)
-mcp = subprocess.Popen([cfg["command"], *cfg["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-                       env={**os.environ, **cfg.get("env", {})})
+mcp = None
+if "--mcp-config" in args:
+    cfg = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]["corpus"]
+    mcp = subprocess.Popen([cfg["command"], *cfg["args"]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                           env={**os.environ, **cfg.get("env", {})})
 
 
 def rpc(i, method, params=None):
@@ -36,8 +46,15 @@ def out(o):
     print(json.dumps(o), flush=True)
 
 
-rpc(0, "initialize", {"protocolVersion": "2025-06-18"})
-out({"type": "system", "subtype": "init", "tools": [t["name"] for t in rpc(1, "tools/list")["tools"]]})
+if plan.get("crash"):
+    raise RuntimeError("the fake Claude Code crashed")
+if mcp:
+    rpc(0, "initialize", {"protocolVersion": "2025-06-18"})
+out({"type": "system", "subtype": "init", "tools": [t["name"] for t in rpc(1, "tools/list")["tools"]] if mcp else []})
+if plan.get("error"):
+    out({"type": "assistant", "message": {"content": [{"type": "text", "text": plan["error"]}]}})
+    out({"type": "result", "subtype": "success", "is_error": True, "result": plan["error"]})
+    sys.exit(plan.get("exit", 1))
 notes = []
 for n, step in enumerate(plan.get("steps", [])):
     if "sleep" in step:
@@ -59,5 +76,6 @@ answer = plan.get("answer", "Done.") + ("\n\n" + "\n".join(notes) if notes and p
     ("\n\n(had history)" if "Earlier question" in prompt else "")
 out({"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}})
 out({"type": "result", "subtype": "success", "is_error": False, "result": answer})
-mcp.stdin.close()
-mcp.wait(timeout=10)
+if mcp:
+    mcp.stdin.close()
+    mcp.wait(timeout=10)

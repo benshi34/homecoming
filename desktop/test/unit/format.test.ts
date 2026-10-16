@@ -23,7 +23,8 @@ test('waits', () => {
   assert.equal(hours(24 * 1.2), 'about 29 hours');
   assert.equal(waitRange([1, 48]), 'an hour to 2 days');
   assert.equal(waitRange([4, 720]), '4 hours to 30 days');
-  assert.equal(waitRange([24, 24]), '24 hours');
+  assert.equal(waitRange([24, 24]), 'a day');
+  assert.equal(waitRange([1, 24]), 'an hour to a day', 'not "an hour to 24 hours"');
 });
 
 test('ago', () => {
@@ -43,6 +44,8 @@ test('dates and ranges', () => {
   assert.equal(range('2015-03-01T00:00:00Z', '2026-01-05T12:00:00Z', NOW), '2015 to Jan 5, 2026');
   assert.equal(range(null, null, NOW), '');
   assert.equal(range('2015-03-01T00:00:00Z', null, NOW), '2015');
+  assert.equal(range('2024-01-01T12:00:00Z', '2024-01-01T12:00:00Z', NOW), 'Jan 1, 2024', 'one day: said once');
+  assert.equal(range('2024-03-03T12:00:00Z', '2024-06-01T12:00:00Z', NOW), 'Mar 3 to Jun 1, 2024', 'one year: the year said once');
 });
 
 test('list', () => {

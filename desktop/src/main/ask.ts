@@ -9,8 +9,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { addEvent, answerOf, followupPrompt, PROVIDER, titleOf, type AskConversation, type AskEvent, type AskProvider, type AskSettings,
-  type AskSummary, type AskTurn } from '../shared/ask.ts';
+import { addEvent, answerOf, explainError, followupPrompt, isLocalAddress, PROVIDER, titleOf, type AskConversation, type AskEvent, type AskProvider,
+  type AskSettings, type AskSummary, type AskTurn, type LocalStatus, type SignIn } from '../shared/ask.ts';
 import { lineSplitter } from './bridge.ts';
 import { childEnv, type Paths } from './paths.ts';
 
@@ -38,6 +38,7 @@ interface Run {
   model: string;
   question: string;
   history: AskTurn[];
+  tools: boolean; // false: text in, text out (making sense of a download), with no lookups and no instructions
 }
 
 const CLIP = 4000; // characters of a tool result kept in the saved conversation
@@ -247,7 +248,7 @@ export class Ask {
     for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.json'))) {
       try {
         const c = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as AskConversation;
-        out.push({ id: c.id, title: c.title, updatedAt: c.updatedAt, turns: c.turns.length });
+        out.push({ id: c.id, title: c.title, updatedAt: c.updatedAt, turns: c.turns.length, failed: !!c.turns.at(-1)?.error || undefined });
       } catch {
         /* a half-written file: skip it */
       }
@@ -315,13 +316,19 @@ export class Ask {
       addEvent(turn, e);
       this.host.send('ask-event', { id: conv.id, turn: index, event: e });
     };
-    const run: Run = { turn, emit, signal: ctl.signal, model, question, history };
+    const run: Run = { turn, emit, signal: ctl.signal, model, question, history, tools: true };
     void this.runWith(s, run).catch((e: Error) => {
-      if (!ctl.signal.aborted) turn.error = e.message;
+      if (ctl.signal.aborted) return;
+      // In plain words, with a way forward; the agent's own words under Details.
+      const x = explainError(s.provider, e.message, { localUrl: s.localUrl, localServer: s.localServer, model });
+      turn.error = x.text;
+      turn.errorDetail = e.message;
+      turn.fix = x.fix;
     }).finally(() => {
       turn.endedAt = new Date().toISOString();
       turn.stopped = ctl.signal.aborted || undefined;
-      turn.answer ||= answerOf(turn.events);
+      // A failed turn has no answer: what the agent said on its way out was the error (shown, plainly, above).
+      turn.answer = turn.error ? '' : turn.answer || answerOf(turn.events);
       this.running.delete(conv.id);
       conv.updatedAt = turn.endedAt;
       this.save(conv);
@@ -330,8 +337,43 @@ export class Ask {
     return { id: conv.id };
   }
 
+  // Asks a failed or stopped last question again, in its place.
+  retry(id: string): { id: string } {
+    const conv = this.get(id);
+    const last = conv?.turns.at(-1);
+    if (!conv || !last || !(last.error || last.stopped)) throw new Error('There\'s nothing to try again.');
+    if (this.running.has(id)) throw new Error('Still answering the last question.');
+    conv.turns.pop();
+    this.save(conv);
+    return this.ask(id, last.question);
+  }
+
   private runWith(s: AskSettings, run: Run): Promise<void> {
     return PROVIDER[s.provider].harness === 'claude-code' ? this.claudeCode(run, s) : this.codex(run, s);
+  }
+
+  // Text in, text out, with the agent, sign-in and model Ask uses, and none of its tools: for making sense of a
+  // download. Errors come back in plain words (Error.message), with the agent's own under detail.
+  async complete(prompt: string, timeoutMs = 300_000): Promise<string> {
+    const s = this.host.settings();
+    const model = s.models[s.provider] || PROVIDER[s.provider].models[0] || '';
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    const turn: AskTurn = { question: prompt, provider: s.provider, model, startedAt: new Date().toISOString(), events: [], answer: '' };
+    const run: Run = { turn, emit: (e) => addEvent(turn, e), signal: ctl.signal, model, question: prompt, history: [], tools: false };
+    try {
+      await this.runWith(s, run);
+    } catch (e) {
+      const raw = (e as Error).message;
+      const x = explainError(s.provider, raw, { localUrl: s.localUrl, localServer: s.localServer, model });
+      throw Object.assign(new Error(x.text), { detail: raw, fix: x.fix });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (ctl.signal.aborted) throw new Error(`${PROVIDER[s.provider].name} took longer than ${Math.round(timeoutMs / 60_000)} minutes, so it was stopped.`);
+    const text = turn.answer || answerOf(turn.events);
+    if (!text.trim()) throw new Error(`${PROVIDER[s.provider].name} didn't reply.`);
+    return text;
   }
 
   // ---------------------------------------------------------------- keys (encrypted with the macOS Keychain)
@@ -372,18 +414,91 @@ export class Ask {
     return this.host.crypt.decrypt(Buffer.from(k, 'base64'));
   }
 
-  // The models offered for a provider: a local server's own list, else the built-in one.
+  // The models offered for a provider: a local server's own list, else the built-in one. Only ever an address on this
+  // Mac is asked.
   async models(provider: AskProvider): Promise<string[]> {
     const fallback = PROVIDER[provider].models;
-    if (provider !== 'local') return fallback;
+    if (provider === 'codex') return codexModels(this.host.paths.home) ?? fallback;
+    const url = this.host.settings().localUrl;
+    if (provider !== 'local' || !isLocalAddress(url)) return fallback;
     try {
-      const r = await fetch(`${this.host.settings().localUrl.replace(/\/+$/, '')}/models`, { signal: AbortSignal.timeout(5000) });
+      const r = await fetch(`${url.replace(/\/+$/, '')}/models`, { signal: AbortSignal.timeout(5000) });
       const ids = ((await r.json()) as { data?: { id?: string }[] }).data?.map((m) => String(m.id ?? '')).filter(Boolean) ?? [];
       return ids.length ? ['default', ...ids.sort()] : fallback;
     } catch (e) {
       this.host.log(`Couldn't list the local server's models: ${(e as Error).message}`);
       return fallback;
     }
+  }
+
+  // Whether anything answers at the local model's address: Ollama or LM Studio running. Any reply counts (an address
+  // without /v1 still has a server behind it). Checked again after a while, or when asked.
+  private local: LocalStatus | null = null;
+  private localCheck: Promise<LocalStatus> | null = null;
+
+  localStatus(): LocalStatus | undefined {
+    const url = this.host.settings().localUrl;
+    return this.local?.url === url ? this.local : undefined;
+  }
+
+  // changed: what it found differs from before (the window should hear about it).
+  async checkLocal(force = false): Promise<{ status: LocalStatus; changed: boolean }> {
+    const url = this.host.settings().localUrl;
+    const before = this.localStatus();
+    if (!force && before && Date.now() - Date.parse(before.at) < 15_000) return { status: before, changed: false };
+    this.localCheck ??= (async () => {
+      let up: boolean | null = null;
+      if (isLocalAddress(url)) {
+        try {
+          await fetch(`${url.replace(/\/+$/, '')}/models`, { signal: AbortSignal.timeout(2000) });
+          up = true;
+        } catch {
+          up = false;
+        }
+      }
+      return { url, up, at: new Date().toISOString() };
+    })().finally(() => (this.localCheck = null));
+    const status = await this.localCheck;
+    this.local = status;
+    return { status, changed: before?.up !== status.up || before?.url !== status.url };
+  }
+
+  // Whether Claude Code and Codex are signed in, as they say themselves: `claude auth status --json` and `codex login
+  // status`, which read only what's saved on this Mac (nothing is sent). Looked at again after a minute, or when asked.
+  private signIns: Partial<Record<'claude-code' | 'codex', SignIn>> = {};
+  private signInChecks: Partial<Record<'claude-code' | 'codex', Promise<SignIn>>> = {};
+
+  signInState(): Partial<Record<'claude-code' | 'codex', SignIn>> {
+    return this.signIns;
+  }
+
+  // changed: what it found differs from before (the window should hear about it).
+  async checkSignIn(harness: 'claude-code' | 'codex', bin: string | null, force = false): Promise<boolean> {
+    const before = this.signIns[harness];
+    if (!bin) {
+      delete this.signIns[harness];
+      return !!before;
+    }
+    if (!force && before && Date.now() - Date.parse(before.at) < 60_000) return false;
+    this.signInChecks[harness] ??= new Promise<SignIn>((resolve) => {
+      const args = harness === 'codex' ? ['login', 'status'] : ['auth', 'status', '--json'];
+      const p = spawn(bin, args, { env: this.agentEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }), cwd: os.tmpdir(), stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      let err = '';
+      const timer = setTimeout(() => p.kill(), 10_000);
+      p.stdout.on('data', (d) => (out += d));
+      p.stderr.on('data', (d) => (err += d));
+      // Codex says it on stderr; Claude Code prints JSON on stdout.
+      const done = () => {
+        clearTimeout(timer);
+        resolve({ ...(harness === 'codex' ? codexSignIn(`${out}\n${err}`) : claudeSignIn(out)), at: new Date().toISOString() });
+      };
+      p.on('error', done);
+      p.on('close', done);
+    }).finally(() => delete this.signInChecks[harness]);
+    const now = await this.signInChecks[harness]!;
+    this.signIns[harness] = now;
+    return before?.state !== now.state || before?.who !== now.who;
   }
 
   // ---------------------------------------------------------------- Claude Code and Codex
@@ -395,8 +510,9 @@ export class Ask {
     return { ...Object.fromEntries(Object.entries(childEnv(this.host.paths, process.env)).filter(([k]) => !drop.test(k))), ...extra };
   }
 
-  // Runs one command-line agent: lines of JSON on stdout become events; stopping kills its process group.
-  private agent(cmd: string, args: string[], input: string, run: Run, onLine: (o: Record<string, unknown>) => void, cwd: string,
+  // Runs one command-line agent (who: its name, for messages; cmd may be the sandbox around it): lines of JSON on stdout
+  // become events; stopping kills its process group.
+  private agent(who: string, cmd: string, args: string[], input: string, run: Run, onLine: (o: Record<string, unknown>) => void, cwd: string,
     env: Record<string, string> = {}): Promise<void> {
     return new Promise((resolve, reject) => {
       // Stopped while the answer was getting ready (the lookups starting): there's nothing to start. An abort before
@@ -423,12 +539,12 @@ export class Ask {
       });
       p.stdout.setEncoding('utf8').on('data', (d: string) => split.push(d));
       p.stderr.setEncoding('utf8').on('data', (d: string) => (err = (err + d).slice(-4000)));
-      p.on('error', (e) => reject(new Error(`Couldn't start ${path.basename(cmd)}: ${e.message}`)));
+      p.on('error', (e) => reject(new Error(`Couldn't start ${who}: ${e.message}`)));
       p.on('close', (code) => {
         split.end();
         run.signal.removeEventListener('abort', kill);
         if (code === 0 || run.signal.aborted) resolve();
-        else reject(new Error(err.trim().split('\n').slice(-6).join('\n') || `${path.basename(cmd)} stopped (exit ${code})`));
+        else reject(new Error(err.trim().split('\n').slice(-6).join('\n') || `${who} stopped (exit ${code})`));
       });
       p.stdin.write(input);
       p.stdin.end();
@@ -501,17 +617,19 @@ export class Ask {
     // Only the model calls leave this Mac: no telemetry or error reports.
     const env: Record<string, string> = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', ...(withKey ? { ANTHROPIC_API_KEY: this.key('anthropic') } : {}) };
     if (withKey && process.env.UMP_ANTHROPIC_URL) env.ANTHROPIC_BASE_URL = process.env.UMP_ANTHROPIC_URL; // tests
-    const instructions = await this.instructions();
+    const instructions = run.tools ? await this.instructions() : null;
+    // What it said went wrong, if it did (a result marked as an error): never taken for the answer.
+    let failed: string | null = null;
     await this.withRunDir(run, async (dir, box) => {
       const mcp = { command: this.host.paths.python, args: [this.toolsPath, 'mcp', '--box', box] };
       const args = [...(withKey ? ['--bare'] : []), '-p', '--model', run.model, '--output-format', 'stream-json', '--verbose',
-        '--include-partial-messages', '--no-session-persistence',
-        '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: { corpus: mcp } }),
+        '--include-partial-messages', '--no-session-persistence', '--strict-mcp-config',
+        ...(instructions !== null ? ['--mcp-config', JSON.stringify({ mcpServers: { corpus: mcp } })] : []),
         '--setting-sources', 'project', '--tools', '', '--permission-mode', 'dontAsk',
-        '--settings', JSON.stringify({ permissions: { allow: ['mcp__corpus'] } }), '--append-system-prompt', instructions];
+        ...(instructions !== null ? ['--settings', JSON.stringify({ permissions: { allow: ['mcp__corpus'] } }), '--append-system-prompt', instructions] : [])];
       let streamed = false;
       // Its own tools are off and the sandbox makes sure: the data is reachable only through the corpus tools.
-      await this.agent('/usr/bin/sandbox-exec', ['-p', agentProfile(this.host.paths, this.host.dir, dir), bin, ...args],
+      const going = this.agent('Claude Code', '/usr/bin/sandbox-exec', ['-p', agentProfile(this.host.paths, this.host.dir, dir), bin, ...args],
         followupPrompt(run.question, run.history), run, (ev) => {
           if (ev.type === 'stream_event') {
             // The answer as it's written. A new block of text after earlier text starts a new paragraph.
@@ -526,11 +644,17 @@ export class Ask {
               if (c.type === 'text' && String(c.text ?? '').trim()) run.emit({ t: 'text', text: String(c.text) });
             }
           } else if (ev.type === 'result') {
-            if (typeof ev.result === 'string') run.turn.answer = ev.result;
-            if (ev.is_error) run.emit({ t: 'error', text: String(ev.result || ev.subtype || 'Claude Code stopped') });
+            if (ev.is_error) failed = String(ev.result || ev.subtype || 'Claude Code stopped');
+            else if (typeof ev.result === 'string') run.turn.answer = ev.result;
           }
         }, dir, env);
+      try {
+        await going;
+      } catch (e) {
+        throw new Error([failed, (e as Error).message].filter(Boolean).join('\n'));
+      }
     });
+    if (failed) throw new Error(failed);
   }
 
   // Codex: signed in with your ChatGPT account, with an OpenAI API key, or on a local model server (--oss). With a key
@@ -538,11 +662,15 @@ export class Ask {
   private async codex(run: Run, s: AskSettings) {
     const bin = findCodex();
     if (!bin) throw new Error('Codex isn\'t on this Mac. It comes with the ChatGPT app, or install it on its own.');
-    const instructions = `${await this.instructions()}\n\n${CODEX_TOOLS}`;
+    const instructions = run.tools ? `${await this.instructions()}\n\n${CODEX_TOOLS}` : null;
+    // What it said went wrong (a failed turn), and what it reported on the way (reconnecting...), for Details.
+    let failed: string | null = null;
+    const said: string[] = [];
     await this.withRunDir(run, async (dir, box) => {
       // The tools are a command in its folder (custom tool servers can be turned off by a workspace's policy).
-      const ask = path.join(dir, 'ask');
-      fs.writeFileSync(ask, `#!/bin/sh\nexec ${shq(this.host.paths.python)} -I ${shq(this.toolsPath)} ask --box ${shq(box)} "$1"\n`, { mode: 0o755 });
+      if (instructions !== null) {
+        fs.writeFileSync(path.join(dir, 'ask'), `#!/bin/sh\nexec ${shq(this.host.paths.python)} -I ${shq(this.toolsPath)} ask --box ${shq(box)} "$1"\n`, { mode: 0o755 });
+      }
       const toml = (v: unknown) => JSON.stringify(v);
       const env: Record<string, string> = {};
       const how: string[] = [];
@@ -560,10 +688,10 @@ export class Ask {
       const args = ['--ask-for-approval', 'never', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
         '--color', 'never', ...how, '-c', 'analytics.enabled=false', '-c', 'web_search="disabled"', '-c', 'shell_environment_policy.inherit="none"', '-c', 'project_doc_max_bytes=0',
         '-c', 'features.multi_agent=false', '-c', 'features.apps=false', ...codexPermissions(this.host.paths, this.toolsPath),
-        '-c', `developer_instructions=${toml(instructions)}`,
+        ...(instructions !== null ? ['-c', `developer_instructions=${toml(instructions)}`] : []),
         ...(run.model && run.model !== 'default' ? ['--model', run.model] : []), '-'];
       const answer: string[] = [];
-      await this.agent(bin, args, followupPrompt(run.question, run.history), run, (ev) => {
+      const going = this.agent('Codex', bin, args, followupPrompt(run.question, run.history), run, (ev) => {
         const item = (ev.item ?? {}) as Record<string, unknown>;
         if (ev.type === 'item.completed' && item.type === 'command_execution' && !/(^|[\s;&|("'])\.\/ask\s/.test(String(item.command ?? ''))) {
           // Anything else it ran in its shell (the lookups through ./ask show as tool calls on their own).
@@ -574,14 +702,24 @@ export class Ask {
           answer.push(String(item.text ?? ''));
           run.emit({ t: 'text', text: String(item.text ?? '') });
         } else if (ev.type === 'turn.failed') {
-          const e = (ev.error ?? {}) as { message?: string };
-          run.emit({ t: 'error', text: e.message || 'Codex stopped' });
+          failed = ((ev.error ?? {}) as { message?: string }).message || 'Codex stopped';
         } else if (ev.type === 'error') {
-          run.emit({ t: 'notice', text: String(ev.message ?? 'Codex reported a problem') }); // e.g. reconnecting
+          // Reported on the way, often while it retries ("Reconnecting... 2/5 (401 Unauthorized ...)"): said plainly
+          // while it lasts, kept whole for Details should the turn fail.
+          const m = String(ev.message ?? '');
+          said.push(m);
+          const n = /Reconnecting\D*(\d+)\s*\/\s*(\d+)/i.exec(m);
+          if (n) run.emit({ t: 'notice', text: `Reconnecting… (try ${n[1]} of ${n[2]})` });
         }
       }, dir, env);
-      if (answer.length) run.turn.answer = answer[answer.length - 1];
+      try {
+        await going;
+      } catch (e) {
+        throw new Error([failed, ...said, (e as Error).message].filter(Boolean).join('\n'));
+      }
+      if (!failed && answer.length) run.turn.answer = answer[answer.length - 1];
     });
+    if (failed) throw new Error([failed, ...said].join('\n'));
   }
 }
 
@@ -675,4 +813,45 @@ export function codexPermissions(p: Paths, toolsPath: string): string[] {
   }
   const table = Object.entries(fsRules).map(([k, v]) => `${JSON.stringify(k)}=${JSON.stringify(v)}`).join(',');
   return ['-c', 'default_permissions="ump_ask"', '-c', 'permissions.ump_ask.extends=":workspace"', '-c', `permissions.ump_ask.filesystem={${table}}`];
+}
+
+// What `claude auth status --json` says: signed in or not, with which account and how ("claude.ai", or a Console
+// account), and the plan. Anything else (an older Claude Code without the command) is unknown.
+export function claudeSignIn(out: string): Omit<SignIn, 'at'> {
+  try {
+    const j = JSON.parse(out) as { loggedIn?: boolean; email?: string; authMethod?: string; subscriptionType?: string };
+    if (typeof j.loggedIn !== 'boolean') return { state: 'unknown' };
+    if (!j.loggedIn) return { state: 'out' };
+    const plan = j.subscriptionType ? `${j.subscriptionType[0].toUpperCase()}${j.subscriptionType.slice(1)} plan` : undefined;
+    return { state: 'in', who: j.email || undefined, how: j.authMethod === 'claude.ai' ? 'claude.ai' : j.authMethod || undefined, plan };
+  } catch {
+    return { state: 'unknown' };
+  }
+}
+
+// What `codex login status` says, in words: "Logged in using ChatGPT", "Logged in using an API key - sk-…", "Not
+// logged in". The key itself is never kept.
+export function codexSignIn(out: string): Omit<SignIn, 'at'> {
+  if (/not logged in/i.test(out)) return { state: 'out' };
+  if (/logged in using chatgpt/i.test(out)) return { state: 'in', how: 'ChatGPT' };
+  if (/logged in using an api key/i.test(out)) return { state: 'in', how: 'an API key' };
+  return { state: 'unknown' };
+}
+
+// The models Codex lists for your account (its own cache of them, ~/.codex/models_cache.json), the one set as its
+// default in ~/.codex/config.toml first. Null when it has none saved.
+export function codexModels(home: string): string[] | null {
+  try {
+    const cache = JSON.parse(fs.readFileSync(path.join(home, '.codex/models_cache.json'), 'utf8')) as { models?: { slug?: string; visibility?: string }[] };
+    const listed = (cache.models ?? []).filter((m) => m.slug && m.visibility !== 'hide').map((m) => m.slug!);
+    let def = '';
+    try {
+      def = /^\s*model\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(path.join(home, '.codex/config.toml'), 'utf8'))?.[1] ?? '';
+    } catch { /* no config of its own */ }
+    // Without a default of its own, Codex picks: "default" first, as for the others.
+    const all = def ? [def, ...listed.filter((m) => m !== def)] : ['default', ...listed];
+    return all.length > 1 || def ? all : null;
+  } catch {
+    return null;
+  }
 }

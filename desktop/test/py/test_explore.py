@@ -67,19 +67,35 @@ class Explore(unittest.TestCase):
         self.assertEqual(y["photos"]["count"], 3)
         self.assertEqual(y["photos"]["places"], ["Princeton"])
         self.assertEqual(y["messages"]["count"], 4, "Grace, the group chat, and your side of a Discord DM")
-        self.assertEqual({t["name"] for t in y["messages"]["threads"]}, {"Grace H", "Dinner club", "lin"})
+        self.assertEqual({t["name"] for t in y["messages"]["threads"]}, {"Grace Hopper", "Dinner club", "lin"}, "by the names Your People uses")
+        club = next(t for t in y["messages"]["threads"] if t["name"] == "Dinner club")
+        self.assertEqual((club["group"], club["members"], club["key"]), (True, ["Alan Turing"], None), "a group, as a group")
+        grace = next(t for t in y["messages"]["threads"] if t["name"] == "Grace Hopper")
+        self.assertEqual((grace["group"], grace["key"], grace["apps"]), (False, "gracehopper", ["Messages"]))
         self.assertEqual(y["steps"], 9000, "a Health day is that date, never the day before")
         self.assertEqual([s["text"] for s in y["searches"]], ["tokyo ramen"])
         self.assertEqual((y["watch_count"], [w["title"] for w in y["watched"]]), (1, ["How engines work"]))
         self.assertEqual({m["kind"] for m in y["made"]}, {"code", "writing"})
         self.assertEqual([e["title"] for e in y["events"]], ["Dinner with Grace"])
-        self.assertEqual(y["calls"][0]["name"], "Grace H")
+        self.assertEqual(y["calls"][0]["name"], "Grace Hopper")
+        self.assertNotIn("nearest", out, "a day with something on it")
 
+    def test_on_this_day_one_person_across_apps(self):
+        """Grace in Messages and on Instagram the same day is one face, opening the busier conversation."""
+        y = next(y for y in self.run_explore("on-this-day", "01-02")["years"] if y["year"] == 2024)
+        [grace] = y["messages"]["threads"]
+        self.assertEqual((grace["name"], grace["messages"], grace["apps"]), ("Grace Hopper", 2, ["Instagram"]))
+
+    def test_on_this_day_with_nothing_says_how_far_the_nearest_days_are(self):
+        out = self.run_explore("on-this-day", "03-16")
+        self.assertEqual(out["years"], [])
+        self.assertEqual(out["nearest"], {"before": 2, "after": 3}, "March 14 (Grace, in 2024) and March 19 (a photo)")
     def test_places_and_trips(self):
         out = self.run_explore("places")
         self.assertEqual(out["countries"], {"United States": 13, "Japan": 3})
         [trip] = out["trips"]
         self.assertEqual((trip["start"], trip["end"], trip["days"], trip["photos"]), ("2025-03-20", "2025-03-22", 3, 3))
+        self.assertEqual(len(trip["photo_ids"]), 3, "every photo of the trip, not a sample")
         self.assertEqual((trip["places"], trip["countries"]), (["Shinjuku"], ["Japan"]))
         self.assertGreater(trip["farthest_km"], 10000)
         self.assertEqual(len(out["points"]), 2, "home and Tokyo")
@@ -91,6 +107,7 @@ class Explore(unittest.TestCase):
         self.assertEqual(m["count"], 42, "messages you sent, in every app, groups too")
         self.assertEqual(sum(map(sum, m["grid"])), 42)
         self.assertEqual(out["kinds"]["coding"]["count"], 3, "only your own commits")
+        self.assertEqual(out["kinds"]["searches"]["count"], self.run_explore("curiosity")["searches"], "the searches Curiosity counts")
         self.assertEqual(out["steps"]["weekday"][2], 9000, "12 March 2025 was a Wednesday")
 
     def test_firsts(self):
@@ -110,6 +127,8 @@ class Explore(unittest.TestCase):
         s = self.run_explore("summary")
         self.assertEqual(s["places"]["trips"], 1)
         self.assertEqual(s["people"]["top"][0], "Grace Hopper")
+        people = self.run_explore("people")["people"]
+        self.assertEqual([p["messages"] for p in people], sorted((p["messages"] for p in people), reverse=True), "most messages first")
         rowid = s["on_this_day"]["cover"] or self.run_explore("places")["points"][0]["rowid"]
         t = self.run_explore("thumbs", str(rowid))
         self.assertTrue(t[str(rowid)].startswith("data:image/jpeg;base64,"))
@@ -218,3 +237,184 @@ class Explore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExploreMedia(unittest.TestCase):
+    """Listening, Moving and Sleep, Curiosity and Watching, on make_fixtures.media_corpus."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name).resolve()
+        cls.corpus = Path(make_fixtures.media_corpus(root / "corpus"))
+        cls.env = {k: v for k, v in os.environ.items() if k != "CORPUS_DIR"}
+        cls.env.update(CORPUS_DIR=str(cls.corpus), UMP_REPO=str(REPO), UMP_TZ="UTC", UMP_EXPLORE_CACHE=str(root / "cache"),
+                       PYTHONDONTWRITEBYTECODE="1")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    run_explore = Explore.run_explore
+
+    def test_listening(self):
+        out = self.run_explore("listening")
+        # 30 + 40 + 5 on Spotify (the 12-second skip isn't a play), 3 from the Mac's Spotify, 2 from YouTube's artist channel;
+        # Netflix playing on the Mac is watching.
+        self.assertEqual(out["plays"], 80)
+        self.assertEqual(out["from"], {"Spotify": 78, "YouTube": 2})
+        self.assertEqual([a["name"] for a in out["top_artists"]], ["The Looms", "The Weavers", "Ada's Band"])
+        self.assertEqual(out["top_artists"][1]["plays"], 32, "two plays on YouTube's Topic channel count for The Weavers")
+        self.assertEqual([(e["artist"], e["start"]) for e in out["eras"]], [("The Weavers", "2025-Q1"), ("The Looms", "2025-Q3")])
+        self.assertEqual(out["on_repeat"][0]["title"], "Spindle")
+        self.assertEqual(out["on_repeat"][0]["date"], "2025-07-04")
+        self.assertEqual(out["years"]["2025"]["new_artists"], 3)
+
+    def test_watching(self):
+        out = self.run_explore("watching")
+        # 11 on YouTube (the artist channel's songs are in Listening), 2 Netflix episodes, and Netflix the Mac was playing.
+        self.assertEqual(out["videos"], 14)
+        self.assertEqual(out["from"], {"YouTube": 11, "Netflix": 3})
+        self.assertEqual(out["top_channels"][0]["name"], "Engine Lab")
+        self.assertIn("Our Planet", [c["name"] for c in out["top_channels"]], "episodes are their show")
+        self.assertEqual([(r["title"], r["count"]) for r in out["rewatched"]], [("How engines work 0", 2)])
+        self.assertEqual((out["binges"][0]["date"], out["binges"][0]["count"]), ("2025-10-10", 5))
+
+    def test_curiosity(self):
+        out = self.run_explore("curiosity")
+        # 6 + 6 + 8, with Safari's "tokyo ramen" a minute after Google's counted once and the Gmail search left out.
+        self.assertEqual(out["searches"], 20)
+        self.assertEqual(out["top"][0], {**out["top"][0], "q": "weather", "count": 8})
+        self.assertEqual([t["word"] for t in out["years"]["2024"]["topics"]][:1], ["sourdough starter"])
+        self.assertNotIn("sourdough", [t["word"] for t in out["years"]["2024"]["topics"]], "not the word again once its phrase is in")
+        self.assertEqual([t["word"] for t in out["years"]["2025"]["topics"]][:1], ["tokyo"])
+        self.assertEqual([q["q"] for q in out["years"]["2024"]["questions"]], ["how to make sourdough starter", "why is my sourdough starter flat"])
+        trip = out["before_trips"][0]
+        self.assertEqual((trip["places"], trip["count"]), (["Shinjuku"], 6), "six different searches for Tokyo, which the trip's photos name; not the one in Gmail")
+        self.assertIn("is the tokyo jr pass worth it", [q["q"] for q in trip["searches"]])
+
+    def test_movement(self):
+        out = self.run_explore("movement")
+        self.assertEqual(out["days"], 20)
+        self.assertEqual(out["best"]["date"], "2025-03-22")
+        self.assertEqual((out["goal_days"], out["streak"]["days"], out["streak"]["start"]), (3, 3, "2025-03-20"))
+        self.assertEqual(out["trips"]["days"], 3, "the three days in Tokyo were a trip")
+        self.assertGreater(out["trips"]["avg"], 2 * out["trips"]["home_avg"])
+        s = out["sleep"]
+        self.assertEqual(s["nights"], 15, "a nap isn't a night")
+        self.assertEqual(s["years"]["2025"]["bedtime"], 23.5)
+        self.assertEqual(max(s["weekday"]), 470, "the late nights are longer")
+
+    def test_your_year_counts_what_the_pages_count(self):
+        """Your Year's numbers are the other pages' numbers for that year: songs past a skip, every video service but
+        not the artist channels' songs, each search once; and Your Rhythms counts videos as Watching does."""
+        out = self.run_explore("year", "2025")
+        listening, watching, curiosity = (self.run_explore(op) for op in ("listening", "watching", "curiosity"))
+        self.assertEqual(out["counts"]["songs played"], listening["years"]["2025"]["plays"])
+        self.assertEqual(out["counts"]["songs played"], 80)
+        self.assertEqual(out["counts"]["videos watched"], watching["years"]["2025"]["count"])
+        self.assertEqual(out["counts"]["videos watched"], 14)
+        self.assertEqual(out["counts"]["searches"], curiosity["years"]["2025"]["count"])
+        rh = self.run_explore("rhythms")["kinds"]["watching"]
+        self.assertEqual((rh["label"], rh["count"]), ("Videos you watched", watching["videos"]))
+
+    def test_a_years_panels_have_that_years_numbers(self):
+        """What a year picker shows below it, for each page: by hour, songs on repeat, long nights, watched again,
+        searched again, every question once, biggest days and streaks."""
+        ls = self.run_explore("listening")["years"]["2025"]
+        self.assertEqual(sum(ls["by_hour"]), 80)
+        self.assertEqual(ls["on_repeat"][0]["title"], "Spindle")
+        w = self.run_explore("watching")
+        self.assertEqual(sum(w["years"]["2025"]["by_hour"]), 14)
+        self.assertEqual(w["years"]["2025"]["binges"][0]["date"], "2025-10-10")
+        self.assertEqual([r["title"] for r in w["years"]["2025"]["rewatched"]], ["How engines work 0"])
+        c = self.run_explore("curiosity")
+        self.assertEqual(sum(len(v["questions"]) for v in c["years"].values()), c["questions"], "each question once, in the year first asked")
+        self.assertEqual(c["years"]["2025"]["top"][0]["q"], "weather")
+        self.assertEqual(sum(c["years"]["2024"]["by_hour"]), c["years"]["2024"]["count"])
+        mv = self.run_explore("movement")["years"]["2025"]
+        self.assertEqual((mv["goal_days"], mv["streak"]["days"], mv["top_days"][0]["date"]), (3, 3, "2025-03-22"))
+        self.assertEqual(self.run_explore("movement")["sleep"]["years"]["2025"]["longest"]["minutes"], 470)
+
+    def test_an_artist_opens_their_latest_play(self):
+        out = self.run_explore("listening")
+        looms = next(a for a in out["top_artists"] if a["name"] == "The Looms")
+        self.assertEqual(looms["last"][:10], "2025-07-30")
+        latest = self.run_explore("records", str(looms["rowid"]))[0]
+        self.assertEqual(latest["ts"][:10], "2025-07-30", "the latest play, not the first")
+
+
+class ExploreNotEnough(unittest.TestCase):
+    """A corpus with none of it: each artifact says so with zeros, and the app locks its tile."""
+
+    def test_empty(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t).resolve()
+            corpus = Path(make_fixtures.explore_corpus(root / "corpus"))
+            env = {k: v for k, v in os.environ.items() if k != "CORPUS_DIR"}
+            env.update(CORPUS_DIR=str(corpus), UMP_REPO=str(REPO), UMP_TZ="UTC", UMP_EXPLORE_CACHE=str(root / "cache"), PYTHONDONTWRITEBYTECODE="1")
+            out = {}
+            for op in ("listening", "movement", "curiosity", "watching"):
+                p = subprocess.run([sys.executable, str(EXPLORE), op], capture_output=True, text=True, env=env, timeout=120)
+                self.assertEqual(p.returncode, 0, p.stderr[-2000:])
+                out[op] = json.loads(p.stdout)
+            self.assertEqual((out["listening"]["plays"], out["listening"]["first"], out["listening"]["eras"]), (0, None, []))
+            self.assertEqual(out["movement"]["days"], 2)
+            self.assertIsNone(out["movement"]["sleep"])
+            self.assertEqual(out["curiosity"]["searches"], 21)
+            self.assertLess(out["watching"]["videos"], 30)
+
+
+class TheyKnow(unittest.TestCase):
+    """What They Know, on make_fixtures.ads_corpus."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name).resolve()
+        corpus = Path(make_fixtures.ads_corpus(root / "corpus"))
+        env = {k: v for k, v in os.environ.items() if k != "CORPUS_DIR"}
+        env.update(CORPUS_DIR=str(corpus), UMP_REPO=str(REPO), UMP_TZ="UTC", UMP_EXPLORE_CACHE=str(root / "cache"), PYTHONDONTWRITEBYTECODE="1")
+        p = subprocess.run([sys.executable, str(EXPLORE), "they-know"], capture_output=True, text=True, env=env, timeout=120)
+        assert p.returncode == 0, p.stderr[-2000:]
+        cls.out = json.loads(p.stdout)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_advertisers_once_each_with_every_service_and_route(self):
+        o = self.out
+        by = {a["name"]: a for a in o["advertiser_list"]}
+        self.assertEqual(o["advertisers"], 2, "Acme on Facebook and Instagram, and @acmeoutdoor on X, are one company")
+        self.assertEqual(by["Acme Outdoor"]["services"], {"Facebook": ["list", "activity"], "Instagram": ["list", "activity"], "X": ["lookalike"]})
+        self.assertNotIn("@acmeoutdoor", by, "named by its name, not its handle")
+        self.assertEqual((o["on_lists"], o["from_activity"]), (1, 2))
+        self.assertTrue(by["Acme Outdoor"]["emailed"], "you have email from Acme Outdoor")
+        self.assertFalse(by["Night Owl Games"]["emailed"])
+        self.assertEqual(o["emailed"], 1)
+        self.assertEqual(o["advertiser_list"][0]["name"], "Acme Outdoor", "on two services, by a list: first")
+
+    def test_what_they_decided_grouped_by_what_it_is(self):
+        groups = {(g["service"], g["what"]): g for g in self.out["decided"]}
+        self.assertEqual(groups[("Facebook and Instagram", "category")]["group"], "guess")
+        self.assertEqual(groups[("Facebook and Instagram", "category")]["services"], ["Facebook", "Instagram"], "the same list from both, said once")
+        self.assertEqual(groups[("X", "gender")]["group"], "guess")
+        self.assertEqual([i["value"] for i in groups[("Instagram", "interest")]["items"]], ["Rock climbing"], "an older import's interest, by its file")
+        self.assertTrue(groups[("X", "interest")]["items"][0]["off"], "an interest you turned off says so")
+        self.assertEqual(groups[("LinkedIn", "Member Skills")]["group"], "other")
+        self.assertFalse(any(g["what"] == "ad_targeting.csv" for g in self.out["decided"]), "an older import's whole targeting file isn't one of them")
+        self.assertEqual(self.out["decided_count"], 5)
+
+    def test_who_told_on_you_and_the_ads(self):
+        told = {t["name"]: t for t in self.out["told"]}
+        self.assertEqual((told["Night Owl Games"]["events"], told["Night Owl Games"]["types"]), (2, {"PURCHASE": 1, "PAGE_VIEW": 1}))
+        self.assertEqual(told["Night Owl Games"]["last"], "2026-01-03T00:00:00Z")
+        self.assertEqual(told["Corner Bakery"]["events"], 2, "an older import's record, its events read from the text")
+        self.assertEqual(self.out["told_months"], {"2026-01": 2})
+        ads = self.out["ads"]
+        self.assertEqual(ads["by_service"], {"Instagram": 2, "X": 1, "Google": 1})
+        self.assertEqual(ads["top"][0], {"name": "Acme Outdoor", "count": 2, "rowid": ads["top"][0]["rowid"]})
+        self.assertEqual(self.out["ads_count"], 4)
+        svc = {s["service"]: s for s in self.out["services"]}
+        self.assertEqual((svc["Facebook"]["advertisers"], svc["Facebook"]["told"], svc["X"]["advertisers"]), (2, 2, 1))

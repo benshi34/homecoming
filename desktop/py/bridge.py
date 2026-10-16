@@ -1675,6 +1675,20 @@ def main(argv):
         out(write_identity(json.loads(sys.stdin.read() or "{}")))
     elif cmd == "exclude-icloud":
         out(exclude_icloud())
+    elif cmd == "glance":
+        # A collected source at a glance (glance.py): its manifest keys as the arguments.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import glance
+        db = CORPUS / "corpus.db"
+        out(glance.glance(db, rest) if db.exists() else {"total": 0})
+    elif cmd == "samples":
+        # Records to show as they are (glance.py samples): {"sources", "mode", "limit", "offset", "q"} on stdin.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import glance
+        db = CORPUS / "corpus.db"
+        a = json.loads(sys.stdin.read() or "{}")
+        out(glance.samples(db, a.get("sources", []), a.get("mode", "years"), int(a.get("limit", 12)), int(a.get("offset", 0)), a.get("q", ""))
+            if db.exists() else {"rows": [], "total": 0})
     else:
         print(f"unknown command {cmd}", file=sys.stderr)
         return 2

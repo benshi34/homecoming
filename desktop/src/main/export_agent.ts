@@ -18,9 +18,10 @@ const BROWSER = ['navigate', 'computer', 'find', 'form_input', 'get_page_text', 
   .map((t) => `mcp__claude-in-chrome__${t}`);
 
 // email: the address the service said it would send the download link to, if the page showed it.
-// stopped: by the person (Stop, or turning AI off), not a failure.
+// stopped: by the person (Stop, or turning AI off), not a failure. reason: the Claude in Chrome extension isn't connected
+// ("chrome"), or there's no Claude Code to run ("no-claude").
 export type AgentOutcome = { status: Extract<AgentStatus, 'requested' | 'downloading' | 'not_ready' | 'needs_you' | 'failed'>; note: string; session?: string; email?: string;
-  stopped?: true };
+  stopped?: true; reason?: 'chrome' | 'no-claude' };
 
 const hostOf = (u?: string) => {
   try {
@@ -92,9 +93,13 @@ export function outcomeOf(text: string): Omit<AgentOutcome, 'session'> | null {
 
 export interface AgentRun { done: Promise<AgentOutcome>; stop(): void }
 
-// One run of Claude Code with the browser. onStep gets each short line it writes as it goes.
+// One run of Claude Code with the browser. onStep gets each short line it writes as it goes. Claude Code says whether
+// the Claude in Chrome extension is connected as it starts, before asking the model anything: if it isn't, the run stops
+// there, and says so, rather than trying without a browser. What went wrong in Claude Code itself goes to the log; the
+// note says it in plain words.
+// onSession gets its session as it starts, so a run cut short (the app quit) can be carried on.
 export function runAgent(o: { bin: string; prompt: string; resume?: string; reply?: string; model?: string; onStep: (line: string) => void; log: (line: string) => void;
-  timeoutMs?: number }): AgentRun {
+  onSession?: (id: string) => void; timeoutMs?: number }): AgentRun {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'homecoming-agent-'));
   const args = ['-p', '--chrome', '--model', o.model || 'sonnet', '--output-format', 'stream-json', '--verbose',
     '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }), '--setting-sources', 'project', '--tools', '',
@@ -107,8 +112,14 @@ export function runAgent(o: { bin: string; prompt: string; resume?: string; repl
   let err = '';
   let chrome: string | null = null;
   let stopped = false;
+  let noChrome = false;
+  let timedOut = false;
+  const limit = o.timeoutMs ?? 20 * 60_000;
   const done = new Promise<AgentOutcome>((resolve) => {
-    const timer = setTimeout(() => child.kill('SIGTERM'), o.timeoutMs ?? 20 * 60_000);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, limit);
     let buf = '';
     child.stdout.on('data', (d) => {
       buf += d;
@@ -123,8 +134,14 @@ export function runAgent(o: { bin: string; prompt: string; resume?: string; repl
         }
         if (ev.type === 'system' && ev.subtype === 'init') {
           session = String(ev.session_id ?? session ?? '') || session;
+          if (session) o.onSession?.(session);
           const servers = (ev.mcp_servers ?? []) as { name: string; status: string }[];
           chrome = servers.find((s) => s.name === 'claude-in-chrome')?.status ?? 'missing';
+          // Still connecting ("pending") may yet work; anything else won't.
+          if (chrome !== 'connected' && chrome !== 'pending') {
+            noChrome = true;
+            child.kill('SIGTERM');
+          }
         } else if (ev.type === 'assistant') {
           for (const c of ((ev.message as { content?: Record<string, unknown>[] })?.content ?? [])) {
             if (c.type !== 'text') continue;
@@ -139,19 +156,25 @@ export function runAgent(o: { bin: string; prompt: string; resume?: string; repl
     child.stderr.on('data', (d) => (err += d));
     child.on('error', (e) => {
       clearTimeout(timer);
-      resolve({ status: 'failed', note: e.message, session });
+      o.log(`Claude Code: ${e.message}`);
+      resolve({ status: 'failed', note: 'Claude Code couldn\'t start.', session });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
       fs.rmSync(dir, { recursive: true, force: true });
       if (err.trim()) o.log(`Claude Code: ${err.trim().split('\n').slice(-3).join(' ')}`);
+      const turnOn = { status: 'needs_you' as const, note: 'Turn on the Claude in Chrome extension.', session, reason: 'chrome' as const };
+      if (noChrome && !stopped) {
+        o.log(`Claude Code: the Claude in Chrome extension is ${chrome}.`);
+        return resolve(turnOn);
+      }
       const out = outcomeOf(text);
       if (out) return resolve({ ...out, session });
       if (stopped) return resolve({ status: 'failed', note: 'Stopped.', session, stopped: true });
-      if (chrome && chrome !== 'connected') {
-        return resolve({ status: 'needs_you', note: 'Open Chrome and turn on the Claude extension, then continue.', session });
-      }
-      resolve({ status: 'failed', note: code ? `Claude Code stopped (exit ${code}).` : 'Claude Code finished without saying how it went.', session });
+      if (chrome && chrome !== 'connected') return resolve(turnOn);
+      if (code) o.log(`Claude Code exited with code ${code}.`);
+      resolve({ status: 'failed', session, note: timedOut ? `It took more than ${Math.round(limit / 60_000)} minutes, so it was stopped.`
+        : code ? 'Claude Code stopped unexpectedly.' : 'It stopped partway, without saying how far it got.' });
     });
   });
   return { done, stop: () => { stopped = true; child.kill('SIGTERM'); } };

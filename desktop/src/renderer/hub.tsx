@@ -2,7 +2,7 @@
 // Recognizing a service in a list is easier than remembering it.
 
 import { useEffect, useMemo, useState } from 'react';
-import { count } from '../shared/format.ts';
+import { count, list } from '../shared/format.ts';
 import { CATEGORIES, type HubRow, hubRows, searchRows, sortRows } from '../shared/hub.ts';
 import type { DirectoryEntry, Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
@@ -23,8 +23,11 @@ function useDirectory(): DirectoryEntry[] | null {
 
 const SHOWN = 6;
 
-export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther }: {
-  snap: Snapshot; filter?: HubFilter; onOpen?: (sourceId: string) => void; onAdded?: (ids: string[]) => void; onAddOther: () => void;
+// onAddOther gets what was searched for, to start the name with. In the Setup Assistant, `chosen` and onChoose make
+// the accounts already in the app pickable too (Add puts them on your list).
+export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther, onFilter, chosen, onChoose }: {
+  snap: Snapshot; filter?: HubFilter; onOpen?: (sourceId: string) => void; onAdded?: (ids: string[]) => void; onAddOther: (query?: string) => void;
+  onFilter?: (f: HubFilter) => void; chosen?: Set<string>; onChoose?: (sourceId: string) => void;
 }) {
   const dir = useDirectory();
   const [q, setQ] = useState('');
@@ -36,6 +39,10 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
   const pass = (r: HubRow) => filter === 'all' || (filter === 'found' && !!r.found) || (filter === 'here' && r.state !== 'available')
     || (filter === 'export' && r.exportKnown);
   const shown = rows.filter(pass);
+  const pick = (f: HubFilter) => {
+    setFilter(f);
+    onFilter?.(f);
+  };
   const counts = { all: rows.length, found: rows.filter((r) => r.found).length, here: rows.filter((r) => r.state !== 'available').length, export: rows.filter((r) => r.exportKnown).length };
   const suggested = rows.filter((r) => r.found && r.state === 'available' && strongFind(r.found));
 
@@ -59,6 +66,8 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
         onClick={r.sourceId && onOpen ? () => onOpen(r.sourceId!) : undefined}
         trailing={r.state === 'available'
           ? (adding.has(r.slug!) ? <Spinner size={14} /> : <Button size="small" onClick={() => add([r.slug!])} testAction="hub-add">Add</Button>)
+          : r.sourceId && chosen && onChoose ? (chosen.has(r.sourceId) ? <span className="where">On your list</span>
+            : <Button size="small" onClick={() => onChoose(r.sourceId!)} testAction="hub-choose">Add</Button>)
           : r.section ? <StatusGlyph section={r.section} /> : undefined} />
     );
   };
@@ -67,13 +76,20 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
   const results = q.trim() ? searchRows(shown, q).slice(0, 120) : null;
   return (
     <div className="overview hub" data-testid="hub">
-      <p className="lede">Every service the app can collect your data from: {count(counts.here)} already in the app and {count(rows.length - counts.here)} more,
-        {' '}by kind. The ones your mail, browsing and apps point to come first. Add one and it gets the steps to get your data out.</p>
+      <div className="hub-head">
+        {filter === 'found'
+          ? <p className="lede">Services that turned up on this Mac: in your mail, in the sites you visit, and in the apps you have. Add the ones you use,
+            {' '}and each one gets its own page with the steps to get your data out. Nothing is sent anywhere to find them.</p>
+          : <p className="lede">Every service the app can collect your data from: {count(counts.here)} already in the app and {count(rows.length - counts.here)} more,
+            {' '}by kind. The ones your mail, browsing and apps point to come first. Add one and it gets the steps to get your data out.</p>}
+        {/* One that isn't listed, by name: added from where everything else is. */}
+        <Button onClick={() => onAddOther(q.trim())} testAction="hub-add-source"><Glyph name="plus" size={13} strokeWidth={2.2} />Add a Source…</Button>
+      </div>
       <div className="hub-bar">
         <div className="search"><Glyph name="search" size={14} /><input type="search" placeholder={`Search ${count(rows.length)} services`} value={q} onChange={(e) => setQ(e.target.value)} autoFocus data-testid="hub-search" /></div>
         <div className="segmented" role="tablist">
           {([['all', 'All'], ['found', 'In Your Data'], ['here', 'In the App'], ['export', 'With Export Steps']] as [HubFilter, string][]).map(([id, label]) => (
-            <button key={id} role="tab" aria-selected={filter === id} className={filter === id ? 'on' : ''} onClick={() => setFilter(id)} data-testid={`hub-filter-${id}`}>
+            <button key={id} role="tab" aria-selected={filter === id} className={filter === id ? 'on' : ''} onClick={() => pick(id)} data-testid={`hub-filter-${id}`}>
               {label} <span>{count(counts[id])}</span>
             </button>
           ))}
@@ -81,18 +97,24 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
       </div>
       {filter === 'found' && suggested.length > 0 && !q && (
         <div className="actions" style={{ padding: '0 0 6px' }}>
-          <Button kind="primary" onClick={() => add(suggested.map((r) => r.slug!))} testAction="hub-add-suggested">Add the {suggested.length} You Clearly Use</Button>
-          <span className="where">Apps or regular visits, and known export steps.</span>
+          <Button kind="primary" onClick={() => add(suggested.map((r) => r.slug!))} testAction="hub-add-suggested">
+            {suggested.length <= 3 ? `Add ${list(suggested.map((r) => r.name))}` : `Add the ${suggested.length} You Clearly Use`}</Button>
+          <span className="where">{suggested.length > 3 ? `${list(suggested.map((r) => r.name))}: you` : 'You'} have the app or visit often, and the steps to get your data are known.</span>
+        </div>
+      )}
+      {filter === 'found' && !q && counts.found === 0 && (
+        <div className="empty" data-testid="hub-found-none" style={{ padding: '30px 0' }}>
+          <h2>Nothing found yet</h2>The app looks through your mail, the sites you visit and your apps once they're read from this Mac. What you use turns up here then.
         </div>
       )}
       {results ? (
         <Group title={results.length ? `${results.length === 120 ? 'First 120' : count(results.length)} matching “${q.trim()}”` : `Nothing matches “${q.trim()}”`} testId="hub-results">
           {results.map((r) => row(r, true))}
-          <div className="kv"><Button kind="plain" onClick={onAddOther}>Not listed? Add it by name…</Button><span /></div>
+          <div className="kv"><Button kind="plain" onClick={() => onAddOther(q.trim())} testAction="hub-add-named">Not listed? Add “{q.trim()}” by Name…</Button><span /></div>
         </Group>
       ) : (
         CATEGORIES.map((c) => {
-          const these = sortRows(shown.filter((r) => r.category === c.id));
+          const these = sortRows(shown.filter((r) => r.category === c.id && (!r.adult || r.found || r.state !== 'available')));
           if (!these.length) return null;
           const all = open[c.id] || filter !== 'all' || these.length <= SHOWN + 1;
           const nFound = these.filter((r) => r.found).length;
@@ -118,7 +140,7 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
         </Group>
       )}
       <div className="group-footer">Services come from JustDeleteMe and JustGetMyData, two community directories, plus the accounts the app reads itself. Can't find one?
-        {' '}<Button kind="plain" onClick={onAddOther} testAction="hub-add-other">Add it by name</Button></div>
+        {' '}<Button kind="plain" onClick={() => onAddOther(q.trim())} testAction="hub-add-other">Add It by Name…</Button></div>
     </div>
   );
 }

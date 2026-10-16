@@ -1,8 +1,14 @@
 // Do It for Me's instructions to Claude and how its answer is read (main/export_agent.ts).
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { agentPrompt, outcomeOf } from '../../src/main/export_agent.ts';
+import { agentPrompt, outcomeOf, runAgent } from '../../src/main/export_agent.ts';
+
+const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fakes/fake_claude_browser.py');
 
 test('the request prompt: the export page, the service\'s own steps, everything picked, and when to stop', () => {
   const p = agentPrompt(BY_ID.instagram, 'request');
@@ -50,4 +56,39 @@ test('reading the result: the last RESULT line', () => {
   assert.deepEqual(outcomeOf('No email from Discord yet.\nRESULT: not_ready (it isn\'t ready yet)'), { status: 'not_ready', note: '' });
   assert.deepEqual(outcomeOf('Submitted.\nEMAIL: ada@alumni.example.edu\nRESULT: requested'), { status: 'requested', note: '', email: 'ada@alumni.example.edu' });
   assert.equal(outcomeOf('All done, I think.'), null);
+});
+
+// A run with the stand-in for Claude Code in Chrome (test/fakes/fake_claude_browser.py), its plan and extension as given.
+async function fakeRun(plan: object, chrome = 'connected') {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ump-agent-'));
+  const env = { FAKE_BROWSER_PLAN: path.join(dir, 'plan.json'), FAKE_BROWSER_LOG: path.join(dir, 'log'), FAKE_CHROME_STATUS: chrome };
+  fs.writeFileSync(env.FAKE_BROWSER_PLAN, JSON.stringify(plan));
+  const saved = { ...process.env };
+  Object.assign(process.env, env);
+  const logged: string[] = [];
+  const steps: string[] = [];
+  try {
+    const started = Date.now();
+    const out = await runAgent({ bin: FAKE, prompt: 'Request a full export of their Instagram data.', onStep: (l) => steps.push(l), log: (l) => logged.push(l) }).done;
+    return { out, steps, logged, ms: Date.now() - started };
+  } finally {
+    process.env = saved;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('without the Claude in Chrome extension, a run stops as it starts and says what to turn on', async () => {
+  const r = await fakeRun({ request: [{ steps: ['Opening Instagram', 'Trying without a browser'], result: 'requested', sleep: 2 }] }, 'failed');
+  assert.equal(r.out.status, 'needs_you');
+  assert.equal(r.out.reason, 'chrome');
+  assert.equal(r.out.note, 'Turn on the Claude in Chrome extension.');
+  assert.deepEqual(r.steps, [], 'it never went on without one');
+  assert.ok(r.ms < 1500, `stopped at once (${r.ms} ms)`);
+});
+
+test('a run that ends without a RESULT line says so in plain words, the details in the log', async () => {
+  const r = await fakeRun({ request: [{ steps: ['Opening Instagram'], result: '', sleep: 0.05 }] });
+  assert.equal(r.out.status, 'failed');
+  assert.equal(r.out.note, 'It stopped partway, without saying how far it got.');
+  assert.doesNotMatch(r.out.note, /Claude Code|exit/);
 });

@@ -30,7 +30,8 @@ export interface HubRow {
   category: string;
   state: 'built-in' | 'added' | 'available';
   slug?: string; // in the directory
-  domain?: string;
+  domain?: string; // the one shown
+  domains?: string[]; // every one it has, for search
   sourceId?: string; // built-in or added: the source it is
   section?: SourceView['section'];
   status?: string;
@@ -38,9 +39,27 @@ export interface HubRow {
   exportKnown: boolean;
   popular: boolean;
   rank: number; // within its kind: found first (strongest first), then popular, then known export steps
+  adult?: boolean; // left out of the lists you browse (a search finds it, and so does your own data)
 }
 
 const parents = (d: string) => d.split('.').map((_, i, a) => a.slice(i).join('.')).filter((x) => x.includes('.'));
+
+// Adult sites: not in the lists anyone scrolls through by default.
+const ADULT = new Set(['pornhub', 'xvideos', 'onlyfans']);
+
+// The address to show for a service: its own site, under its own name, .com first. Not a support subdomain, a
+// country's copy (amazon.ae) or the privacy vendor its form is hosted on (onetrust.com for Popeyes): nothing then.
+export function siteFor(name: string, domains: string[], site?: string): string | undefined {
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const n = norm(name);
+  const label = (d: string) => d.split('.').slice(-2)[0];
+  const host = (() => { try { return site ? new URL(site).hostname.replace(/^www\./, '') : ''; } catch { return ''; } })();
+  const named = (d: string) => n.length >= 3 && (norm(label(d)).includes(n) || n.includes(norm(label(d))));
+  const two = (d: string) => d.split('.').length === 2;
+  const cands = [host, ...domains].filter(Boolean);
+  return cands.find((d) => named(d) && two(d) && d.endsWith('.com')) ?? cands.find((d) => named(d) && two(d))
+    ?? cands.find((d) => named(d)) ?? (host && two(host) ? host : undefined);
+}
 
 export function hubRows(dir: DirectoryEntry[], views: SourceView[], services: ServiceEntry[], discovery: Discovery | null): HubRow[] {
   const view = new Map(views.map((v) => [v.id, v]));
@@ -67,7 +86,7 @@ export function hubRows(dir: DirectoryEntry[], views: SourceView[], services: Se
     if (added.has(e.slug) || e.domains.some((d) => parents(d).some((p) => builtInDomains.has(p)))) continue;
     const f = found.get(e.slug);
     rows.push({ key: `dir:${e.slug}`, name: e.name, category: KNOWN.has(e.category ?? '') ? e.category! : 'other', state: 'available', slug: e.slug,
-      domain: e.domains.find((d) => d.split('.').length === 2) ?? e.domains[0], found: f, exportKnown: !!e.export?.url, popular: !!e.popular,
+      domain: siteFor(e.name, e.domains, e.site), domains: e.domains, found: f, exportKnown: !!e.export?.url, popular: !!e.popular, adult: ADULT.has(e.slug),
       rank: f ? strength.get(e.slug)! : 100_000 + (e.popular ? 0 : 20_000) + (e.export?.url ? 0 : 10_000) });
   }
   return rows;
@@ -84,7 +103,7 @@ export function searchRows(rows: HubRow[], q: string): HubRow[] {
   const score = (r: HubRow) => {
     const name = r.name.toLowerCase();
     return name === n ? 0 : name.startsWith(n) ? 1 : name.split(/[\s/.-]+/).some((w) => w.startsWith(n)) ? 2
-      : name.includes(n) || (r.domain ?? '').includes(n) ? 3 : 9;
+      : name.includes(n) || [r.domain ?? '', ...(r.domains ?? [])].some((d) => d.includes(n)) ? 3 : 9;
   };
   return rows.filter((r) => score(r) < 9).sort((a, b) => score(a) - score(b) || a.rank - b.rank || a.name.localeCompare(b.name));
 }

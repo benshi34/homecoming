@@ -178,6 +178,110 @@ test('Codex with an API key, and with a local model: a settings folder of its ow
   assert.ok(!ran.args.includes('--model'), '"default" lets Codex choose');
 });
 
+test('an agent that fails says so in plain words, keeps its own under Details, isn\'t taken for the answer, and can be asked again', async () => {
+  settings.provider = 'claude-code';
+  settings.models = {};
+  plan('claude-plan.json', { error: 'Invalid API key · Please run /login', exit: 1 });
+  const a = await answer('Who did I text most?');
+  assert.equal(a.turn.error, 'Claude Code isn\'t signed in. Open Terminal, type claude, and sign in.');
+  assert.equal(a.turn.fix, 'sign-in');
+  assert.match(a.turn.errorDetail ?? '', /Invalid API key · Please run \/login/);
+  assert.doesNotMatch(a.turn.error, /sandbox-exec/);
+  assert.equal(a.turn.answer, '', 'the error isn\'t the answer');
+  assert.ok(!a.turn.events.some((e) => e.t === 'error'), 'nor shown again as a red line');
+  assert.equal(ask.list().find((c) => c.id === a.id)?.failed, true);
+
+  // Try Again: the same question in its place, and the failure isn't sent along as an earlier answer.
+  plan('claude-plan.json', { answer: 'Grace.', notes: false, steps: [] });
+  sent = [];
+  const r = ask.retry(a.id);
+  assert.equal(r.id, a.id);
+  while (!sent.some((x) => x.ch === 'ask-done')) await new Promise((x) => setTimeout(x, 20));
+  const c = ask.get(a.id)!;
+  assert.deepEqual(c.turns.map((t) => [t.question, t.answer, t.error]), [['Who did I text most?', 'Grace.', undefined]]);
+  assert.equal(claudeLog().prompt, 'Who did I text most?');
+  assert.equal(ask.list().find((x) => x.id === a.id)?.failed, undefined);
+  assert.throws(() => ask.retry(a.id), /nothing to try again/);
+
+  plan('claude-plan.json', { crash: true });
+  const crash = await answer('This will crash', a.id);
+  assert.equal(crash.turn.error, 'Claude Code stopped before it answered.');
+  assert.match(crash.turn.errorDetail ?? '', /RuntimeError: the fake Claude Code crashed/);
+  plan('claude-plan.json', { answer: 'Fine.', notes: false, steps: [] });
+  await answer('And now?', a.id);
+  assert.doesNotMatch(claudeLog().prompt, /This will crash|crashed/, 'the failed turn stays out of the history');
+  assert.match(claudeLog().prompt, /Earlier question 1\nWho did I text most\?\n\n### Your answer\nGrace\./);
+
+  settings.provider = 'codex';
+  plan('codex-plan.json', { fail: 'unexpected status 401 Unauthorized: Your authentication token has expired. Please try signing in again.', reconnects: 2 });
+  const b = await answer('Hello?');
+  assert.equal(b.turn.error, 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.');
+  assert.deepEqual(b.events.filter((e) => e.t === 'notice').map((e) => (e as { text: string }).text), ['Reconnecting… (try 1 of 5)', 'Reconnecting… (try 2 of 5)'],
+    'reconnecting, in plain words while it lasts');
+  assert.match(b.turn.errorDetail ?? '', /401 Unauthorized/);
+  assert.equal(b.turn.answer, '', '"Looking." on the way isn\'t an answer');
+});
+
+test('making sense of a download: text in, text out, with the agent and sign-in Ask uses, and no tools', async () => {
+  settings.provider = 'claude-code';
+  settings.models = {};
+  plan('claude-plan.json', { answer: '{"service": "Wattpad", "items": []}', notes: false });
+  assert.equal(await ask.complete('Write a mapping'), '{"service": "Wattpad", "items": []}');
+  let ran = claudeLog();
+  assert.equal(ran.prompt, 'Write a mapping');
+  for (const f of ['--mcp-config', '--append-system-prompt', '--bare']) assert.ok(!ran.args.includes(f), `no ${f}`);
+  assert.equal(ran.args[ran.args.indexOf('--tools') + 1], '');
+  assert.ok(ran.args.includes('--no-session-persistence'));
+
+  process.env.UMP_ASK_ANTHROPIC_KEY = 'sk-ant-test';
+  settings.provider = 'anthropic';
+  settings.models = { anthropic: 'claude-haiku-5-5' };
+  await ask.complete('Write a mapping');
+  ran = claudeLog();
+  assert.equal(ran.args[0], '--bare', 'the key, not your claude.ai sign-in');
+  assert.equal(ran.args[ran.args.indexOf('--model') + 1], 'claude-haiku-5-5');
+  assert.deepEqual(ran.env, ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']);
+  delete process.env.UMP_ASK_ANTHROPIC_KEY;
+
+  settings.provider = 'local';
+  settings.localServer = 'ollama';
+  settings.localUrl = 'http://localhost:11434/v1';
+  settings.models = {};
+  plan('codex-plan.json', { answer: '{"items": []}', notes: false, steps: [] });
+  assert.equal(await ask.complete('Write a mapping'), '{"items": []}');
+  const cx = codexLog();
+  assert.deepEqual(cx.args.slice(cx.args.indexOf('--oss'), cx.args.indexOf('--oss') + 3), ['--oss', '--local-provider', 'ollama'], 'the model on this Mac');
+  assert.ok(!cx.args.some((x: string) => x.startsWith('developer_instructions=')), 'no instructions for the tools');
+  assert.ok(cx.args.includes('default_permissions="ump_ask"'), 'its shell kept out of the home folder as in Ask');
+  assert.ok(!fs.existsSync(path.join(cx.cwd, 'ask')));
+
+  settings.provider = 'codex';
+  plan('codex-plan.json', { fail: '401 Unauthorized: token expired' });
+  await assert.rejects(ask.complete('Write a mapping'), (e: Error & { detail?: string }) =>
+    e.message === 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.' && /401/.test(e.detail ?? ''));
+});
+
+test('the local model\'s server: something answering at its address, checked on this Mac only', async () => {
+  settings.provider = 'local';
+  const srv = await fakeModelServer(['qwen3:8b']);
+  try {
+    settings.localUrl = `${srv.url}/v1`;
+    let r = await ask.checkLocal(true);
+    assert.equal(r.status.up, true);
+    assert.equal(r.changed, true);
+    assert.equal((await ask.checkLocal()).changed, false, 'kept a little while');
+    settings.localUrl = 'http://127.0.0.1:9/v1';
+    r = await ask.checkLocal();
+    assert.equal(r.status.up, false, 'a new address is checked at once');
+    assert.equal(ask.localStatus()?.url, 'http://127.0.0.1:9/v1');
+    settings.localUrl = 'http://192.0.2.1:11434/v1';
+    assert.equal((await ask.checkLocal(true)).status.up, null, 'not an address on this Mac: never asked');
+    assert.deepEqual(await ask.models('local'), ['default']);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('models: the built-in lists, and a local server\'s own', async () => {
   assert.deepEqual(await ask.models('anthropic'), ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5']);
   assert.deepEqual(await ask.models('openai'), ['default']);

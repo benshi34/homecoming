@@ -34,7 +34,7 @@ It reads, and changes only what you tell it to:
 ## What to expect
 
 - **It takes a few days, not an afternoon.** What's on your Mac is read first, while you request the rest. Some services take hours to prepare your download and others take weeks (Spotify can take 30 days), and some links expire within days. The app tracks each one, reminds you, and picks the file up from Downloads.
-- **AI, in one place** (optional, off until you turn it on): the Setup Assistant asks once, and the AI page lets you pick the agent (Claude Code or Codex, with your own sign-in, an API key, or a model on this Mac) and turn each use on or off. Everything that uses AI carries a sparkle mark.
+- **AI, in one place** (optional, off until you turn it on): the Setup Assistant asks once, and AI Settings (under Settings in the sidebar) lets you pick the agent (Claude Code or Codex, with your own sign-in, an API key, or a model on this Mac), shows whether it's signed in, and turns Do It for Me on or off. Ask and making sense of a download send nothing until you ask. Everything that uses AI carries a sparkle mark.
 - **Do It for Me** (optional): Claude Code requests each export in your Chrome, where you're signed in, and when the service's "your data is ready" email arrives in Apple Mail, it downloads it. It stops only when you need to sign in or enter a code, and carries on when you click Continue.
 - **Your iPhone** is read from an encrypted backup on this Mac, made in Finder. The app walks you through it. You'll need the backup's password, and making the backup can take a while.
 - **Free space:** the app warns you below 20 GB. A big Google or Photos download can be tens of gigabytes.

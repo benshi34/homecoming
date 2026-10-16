@@ -3,6 +3,7 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { BY_ID } from '../shared/catalog.ts';
+import { READ_ONLY_NOTE, READ_ONLY_OK } from '../shared/status.ts';
 import { count, waitRange } from '../shared/format.ts';
 import { accountChoices, assistantSteps, commonAccounts, defaultChosen, exportHandled, KEEP_GROUPS, LIBRARY_SOURCES, nextExportStep, progress, readyIn, recommended, STEP_GROUPS, type Step, stepIndex } from '../shared/progress.ts';
 import type { Action, FoundService, Snapshot, SourceView } from '../shared/types.ts';
@@ -11,19 +12,20 @@ import { Glyph, GlyphTile, SourceIcon } from './icons.tsx';
 import { AiAgreement, AiSettings } from './ai.tsx';
 import { Hub, type HubFilter } from './hub.tsx';
 import { Timeline } from './main_window.tsx';
-import { AccountForm, AddServiceSheet, AgentButton, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, Steps, vt } from './parts.tsx';
+import { AccountForm, AddServiceSheet, AgentButton, InboxButton, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, SkipForm, Steps, vt } from './parts.tsx';
 import { AiMark, animate, Banner, Button, Checkmark, Group, GroupRow, ProgressBar, reducedMotion, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
 import { Tick, WaitClock } from './moments.tsx';
 import { Welcome } from './welcome.tsx';
 
 interface PageSpec {
   body: ReactNode;
-  primary?: { label: string; onClick: () => void; disabled?: boolean; done?: boolean; ai?: boolean };
+  // quiet: drawn as a plain button, when the page has its own thing to do first (one blue button per page).
+  primary?: { label: string; onClick: () => void; disabled?: boolean; done?: boolean; ai?: boolean; quiet?: boolean };
   secondary?: ReactNode;
   wide?: boolean;
 }
 
-export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish: () => void; onExit: () => void }) {
+export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish: (showId?: string) => void; onExit: () => void }) {
   const views = snap.sources;
   const steps = useMemo(() => assistantSteps(views, snap.onboarding.chosen), [views, snap.onboarding.chosen]);
   // The page, by id: when the step list changes (accounts chosen, one dropped), the same page stays up.
@@ -69,13 +71,20 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
         {i > 0 && <Button onClick={back} testAction="assistant-back">Back</Button>}
         {step.kind !== 'done' && <Button kind="plain" onClick={onExit} testAction="assistant-exit">Skip Setup Assistant</Button>}
         <div className="spacer" />
-        <span className="where">{i + 1} of {steps.length}</span>
+        <StepCount steps={steps} index={i} />
         {page.secondary}
-        {page.primary && <Button kind="primary" size="large" onClick={page.primary.onClick} disabled={page.primary.disabled || page.primary.done} testAction="assistant-continue" ai={page.primary.ai}
+        {page.primary && <Button kind={page.primary.quiet ? 'default' : 'primary'} size="large" onClick={page.primary.onClick} disabled={page.primary.disabled || page.primary.done} testAction="assistant-continue" ai={page.primary.ai}
           className={page.primary.done ? 'is-done' : ''}>{page.primary.done && <Tick size={13} />}{page.primary.label}</Button>}
       </div>
     </div>
   );
+}
+
+// Where you are, by the timeline's steps: a count that doesn't jump when accounts are chosen (each export is
+// one step of Exports, counted in the timeline instead).
+function StepCount({ steps, index }: { steps: Step[]; index: number }) {
+  const groups = STEP_GROUPS.filter((g) => steps.some((s) => s.group === g));
+  return <span className="where" data-testid="step-count">{groups.indexOf(steps[index].group) + 1} of {groups.length}</span>;
 }
 
 function StepsBar({ steps, index }: { steps: Step[]; index: number }) {
@@ -112,7 +121,7 @@ interface Ctx {
   v: (id: string) => SourceView;
   next: () => void;
   jump: (stepId: string) => void;
-  onFinish: () => void;
+  onFinish: (showId?: string) => void;
   steps: Step[];
   index: number;
   draft: Set<string>;
@@ -129,24 +138,28 @@ function renderStep(step: Step, ctx: Ctx): PageSpec {
     case 'library': return { body: <LibraryPage ctx={ctx} />, primary: { label: 'Continue', onClick: ctx.next } };
     case 'keep': return { body: <KeepPage ctx={ctx} />, primary: { label: 'Continue', onClick: ctx.next } };
     case 'mac': return mac(ctx);
-    case 'iphone': return { body: <IphonePage ctx={ctx} />, primary: { label: 'Continue', onClick: ctx.next } };
+    // While the page has something to do (read it, unlock it, allow access), that's its blue button.
+    case 'iphone': return { body: <IphonePage ctx={ctx} />, primary: { label: 'Continue', onClick: ctx.next, quiet: ctx.v('iphone_backup').section === 'needs' } };
     case 'accounts': {
-      // Found services you ticked become sources first, so their export pages join the steps.
+      // Found services you ticked become sources first, so their export pages join the steps. What you chose is then
+      // those sources, so going Back shows them under Your accounts (not as found ones to add again).
       const apply = () => {
         const picked = [...ctx.draft];
         void api.action('*', 'choose-services', { slugs: picked.filter((x) => x.startsWith('found:')).map((x) => x.slice(6)),
           domains: picked.filter((x) => x.startsWith('sender:')).map((x) => x.slice(7)) })
-          .then((r) => api.action('*', 'choose-accounts', { chosen: [...picked.filter((x) => !/^(found|sender):/.test(x)), ...(r.ids ?? [])] }))
+          .then((r) => {
+            const chosen = [...picked.filter((x) => !/^(found|sender):/.test(x)), ...(r.ids ?? [])];
+            ctx.setDraft(new Set(chosen));
+            return api.action('*', 'choose-accounts', { chosen });
+          })
           .then(() => ctx.next());
       };
-      const n = [...ctx.draft].length;
+      const n = listedChoices(ctx).length;
       return { body: <AccountsPage ctx={ctx} />, primary: { label: n ? `Continue with ${n}` : 'Continue', onClick: apply } };
     }
     case 'ai': return ai(ctx);
     case 'exports': return exportsList(ctx);
     case 'export': return exportPage(ctx, step.sourceId!);
-    case 'mail': return mail(ctx);
-    case 'extras': return extras(ctx);
     case 'done': return done(ctx);
   }
 }
@@ -158,33 +171,46 @@ function welcome(ctx: Ctx): PageSpec {
 }
 
 function identity(ctx: Ctx): PageSpec {
-  const view = ctx.v('identity');
-  const save = (id: unknown, dismissed: string[]) => void api.action('identity', 'save-identity', { identity: id, dismissed }).then((r) => r.ok && ctx.next());
-  const found = ctx.snap.identityCandidates ?? [];
   return {
     primary: { label: 'Continue', onClick: () => (document.getElementById('identity-step') as HTMLFormElement | null)?.requestSubmit() },
-    body: (
-      <>
-        <Hero icon={<SourceIcon id="identity" size={64} />} title="Which of these are you?">
-          {found.length
-            ? 'These turned up in your data: on this Mac, in your exports and in your chats. Tick the ones that are you. It decides which messages, emails and commits are marked as yours.'
-            : 'Your names, email addresses and usernames decide which messages, emails and commits are marked as yours.'}
-        </Hero>
-        {!found.length && !ctx.snap.identityCandidatesReady && <div className="note" style={{ justifyContent: 'center', marginTop: 14 }}><Spinner size={12} /><span>Looking around this Mac…</span></div>}
-        <IdentityPicker snap={ctx.snap} formId="identity-step" busy={false} hideSubmit onSubmit={save} />
-        <div className="note"><Glyph name="info" size={13} /><span>Nothing was held back while you went through the steps: everything is collected either way. Exports still on their way will turn up more, and the app asks about them then and re-labels what's already in.</span></div>
-        {view.section === 'done' && <div className="note" style={{ justifyContent: 'center' }}><Checkmark size={13} /><span>Saved: {view.status}</span></div>}
-      </>
-    ),
+    // Not now is fine: it's asked again under Needs You, and collecting doesn't wait for it.
+    secondary: ctx.v('identity').section !== 'done' ? <Button onClick={ctx.next} testAction="identity-later">Skip for Now</Button> : undefined,
+    body: <IdentityPage ctx={ctx} />,
   };
+}
+
+function IdentityPage({ ctx }: { ctx: Ctx }) {
+  const view = ctx.v('identity');
+  const [err, setErr] = useState('');
+  const save = (id: unknown, dismissed: string[]) => void api.action('identity', 'save-identity', { identity: id, dismissed })
+    .then((r) => (r.ok ? ctx.next() : setErr(`Couldn't save it: ${r.error ?? 'something went wrong'}. Try again, or skip it for now.`)));
+  const found = ctx.snap.identityCandidates ?? [];
+  const looking = !found.length && !ctx.snap.identityCandidatesReady;
+  return (
+    <>
+      <Hero icon={<SourceIcon id="identity" size={64} />} title={found.length || looking ? 'Which of these are you?' : 'Who are you?'}>
+        {found.length
+          ? 'These turned up in your data: on this Mac, in your exports and in your chats. Tick the ones that are you. It decides which messages, emails and commits are marked as yours.'
+          : looking ? 'Your names, email addresses and usernames decide which messages, emails and commits are marked as yours.'
+            : 'Nothing that looks like you turned up yet. Type your name and an email address below: they decide which messages, emails and commits are marked as yours.'}
+      </Hero>
+      {looking && <div className="note" style={{ justifyContent: 'center', marginTop: 14 }}><Spinner size={12} /><span>Looking around this Mac…</span></div>}
+      <IdentityPicker snap={ctx.snap} formId="identity-step" busy={false} hideSubmit onSubmit={save} />
+      {err && <div className="form-error error" data-testid="identity-error">{err}</div>}
+      <div className="note"><Glyph name="info" size={13} /><span>Nothing was held back while you went through the steps: everything is collected either way. Exports still on their way will turn up more, and the app asks about them then and re-labels what's already in.</span></div>
+      {view.section === 'done' && <div className="note" style={{ justifyContent: 'center' }}><Checkmark size={13} /><span>Saved: {view.status}</span></div>}
+    </>
+  );
 }
 
 function access(ctx: Ctx): PageSpec {
   const view = ctx.v('fda');
   const granted = view.section === 'done';
   const unlocks = ctx.snap.sources.filter((s) => s.blockedBy === 'fda' && s.group !== 'setup');
+  const missing = !granted && view.section === 'needs';
   return {
-    primary: { label: 'Continue', onClick: ctx.next },
+    // Going on without it is allowed, and said plainly: its button is the blue one until then.
+    primary: missing ? { label: 'Continue Without It', onClick: ctx.next, quiet: true } : { label: 'Continue', onClick: ctx.next },
     body: (
       <>
         <Hero icon={<SourceIcon id="fda" size={64} />} title="Allow Full Disk Access">
@@ -206,6 +232,7 @@ function access(ctx: Ctx): PageSpec {
           )}
         </div>
         {!granted && view.steps && <Group title="How"><Steps view={view} /></Group>}
+        {missing && <div className="note"><Glyph name="info" size={13} /><span>You can go on without it: {unlocks.length ? unlocks.map((u) => u.name).join(', ') : 'those sources'} wait under Needs You until it's on, and Full Disk Access in Setup Checks turns it on any time.</span></div>}
       </>
     ),
   };
@@ -228,7 +255,7 @@ function useConfirm() {
   return { run, sheet };
 }
 
-const fixFor = (x: SourceView) => x.actions.find((y) => y.primary) ?? x.actions.find((y) => y.id === 'mark-done');
+const fixFor = (x: SourceView) => x.actions.find((y) => y.primary) ?? x.actions.find((y) => y.id === 'mark-done') ?? x.actions.find((y) => y.id === 'recheck');
 
 function LibraryPage({ ctx }: { ctx: Ctx }) {
   const { run, sheet } = useConfirm();
@@ -247,7 +274,9 @@ function LibraryPage({ ctx }: { ctx: Ctx }) {
           const a = fixFor(x);
           return (
             <GroupRow key={x.id} testId={`check-${x.id}`} icon={<SourceIcon id={x.id} size={26} />} title={x.name}
-              subtitle={<>{x.section === 'done' ? x.status : <span style={{ color: 'var(--orange)' }}>{x.status}</span>}<br />{ABOUT[x.id]}</>}
+              subtitle={<>{x.section === 'done' ? x.status : <span style={{ color: 'var(--orange)' }}>{x.status}</span>}<br />{ABOUT[x.id]}
+                {x.section !== 'done' && x.detail && <div className="pre selectable" style={{ marginTop: 4 }}>{x.detail}</div>}
+                {x.section !== 'done' && x.notes?.map((n) => <div key={n} style={{ marginTop: 4 }}>{n}</div>)}</>}
               trailing={x.section === 'done' ? <Checkmark size={18} /> : a ? <Button kind={a.primary ? 'primary' : 'default'} onClick={() => run(x.id, a)} testAction={a.id}>{a.label}</Button> : <StatusGlyph section={x.section} />} />
           );
         })}
@@ -261,9 +290,9 @@ function LibraryPage({ ctx }: { ctx: Ctx }) {
 const KEEP_COPY: Record<string, { title: string; risk: string; setting: string }> = {
   retention_messages: { title: 'Messages', risk: 'Messages can delete conversations once they\'re 30 days or a year old.', setting: 'Messages → Settings → General → Keep messages: Forever' },
   retention_safari: { title: 'Safari', risk: 'Safari deletes browsing history after a year unless told otherwise.', setting: 'Safari → Settings → General → Remove history items: Manually' },
-  retention_claude: { title: 'Claude Code', risk: 'Claude Code deletes conversation transcripts after 30 days.', setting: 'The button sets cleanupPeriodDays in ~/.claude/settings.json' },
+  retention_claude: { title: 'Claude Code', risk: 'Claude Code deletes conversation transcripts after 30 days.', setting: 'Keep Them changes that one setting in Claude Code, and says first exactly what it changes.' },
   retention_codex: { title: 'Codex', risk: '', setting: '' },
-  retention_shell: { title: 'Terminal', risk: 'zsh keeps only your last 1,000 commands, and doesn\'t record when you ran them.', setting: 'The button adds four lines to the end of ~/.zshrc: times on, keep a million commands' },
+  retention_shell: { title: 'Terminal', risk: 'Terminal keeps only your last 1,000 commands, and doesn\'t record when you ran them.', setting: 'Keep Every Command adds a few lines to your Terminal settings, and says first exactly what it adds.' },
   retention_iphone_messages: { title: 'Messages on the iPhone', risk: 'The iPhone has its own Keep Messages setting and can delete conversations after 30 days or a year.', setting: 'iPhone Settings → Apps → Messages → Keep Messages: Forever' },
   retention_maps: { title: 'Google Maps Timeline', risk: 'Timeline deletes visits older than 3 months unless told otherwise.', setting: 'Google Maps → Your Timeline → ⋯ → Location & privacy settings → Auto-delete Timeline: Don\'t auto-delete' },
   retention_google: { title: 'Google activity and YouTube', risk: 'Newer Google accounts delete search and app activity after 18 months, and YouTube history after 36.', setting: 'Activity controls → Web & App Activity and YouTube History → Auto-delete: Don\'t auto-delete. Tick "Include Chrome history" too.' },
@@ -278,8 +307,10 @@ function KeepRow({ x, run }: { x: SourceView; run: (id: string, a: Action) => vo
       subtitle={x.section === 'done' ? `${x.status}.` : <><span style={{ color: 'var(--orange)' }}>{copy.risk}</span><br />{copy.setting}</>}
       trailing={x.section === 'done' ? <Checkmark size={18} /> : (
         <>
-          {a && <Button kind={a.primary ? 'primary' : 'default'} onClick={() => run(x.id, a)} testAction={a.id}>{a.label}</Button>}
+          {/* A list of settings: plain buttons, as in System Settings, not a row of blue ones. */}
+          {a && <Button onClick={() => run(x.id, a)} testAction={a.id}>{a.label}</Button>}
           {a?.id !== 'mark-done' && x.actions.some((y) => y.id === 'mark-done') && <Button onClick={() => void api.action(x.id, 'mark-done')} testAction="mark-done">I've Done It</Button>}
+          {x.actions.filter((y) => y.id === 'skip').map((y) => <Button key={y.id} kind="plain" onClick={() => void api.action(x.id, 'skip')} testAction="skip">{y.label}</Button>)}
           {!a && <StatusGlyph section={x.section} />}
         </>
       )} />
@@ -305,7 +336,7 @@ function KeepPage({ ctx }: { ctx: Ctx }) {
           </Group>
         );
       })}
-      <Group title="Things that can't be changed" footer="These keep only a short window and have no setting. Reading them regularly is how nothing ages out: each read adds what's new to your library and keeps what it saw before.">
+      <Group title="History with no setting" footer="These keep only a short window and have no setting. Reading them regularly is how nothing ages out: each read adds what's new to your library and keeps what it saw before.">
         <div className="group-box">
           <GroupRow testId="keep-daily" icon={<SourceIcon id="app_usage" size={26} />} title="Read this Mac every day"
             subtitle="Screen Time keeps about 4 weeks, the Mac's call log about 6 months, and Chrome about 90 days. Runs while the app is open."
@@ -366,7 +397,7 @@ function IphonePage({ ctx }: { ctx: Ctx }) {
   };
   return (
     <>
-      <Hero icon={<SourceIcon id="iphone_backup" size={64} />} title="Add your iPhone" badge="Highly Recommended" />
+      <Hero icon={<SourceIcon id="iphone_backup" size={64} />} title="Add your iPhone" badge="Highly Recommended">{view.blurb}</Hero>
       <div className="group-box" style={{ marginTop: 22 }} data-testid="iphone-status">
         <div className="status-box">
           <div style={{ marginTop: 1 }}>{view.section === 'done' ? <Checkmark size={20} /> : <StatusGlyph section={view.section} size={20} />}</div>
@@ -377,13 +408,21 @@ function IphonePage({ ctx }: { ctx: Ctx }) {
           </div>
         </div>
         {view.section === 'needs' && pw && !pw.input && <div className="actions"><Button kind="primary" onClick={() => read()} disabled={busy}>Read Backup</Button></div>}
-        {view.section === 'needs' && !pw && <div className="actions"><Button kind="primary" onClick={() => void api.action('iphone_backup', 'open-app')}>Open Finder</Button><Button onClick={() => void api.action('iphone_backup', 'recheck')}>Check Again</Button></div>}
+        {/* Waiting on something else (Full Disk Access, a Python package): its own buttons, from the status. */}
+        {view.section === 'needs' && !pw && (
+          <div className="actions">
+            {view.actions.filter((a) => a.id !== 'skip').map((a) => (
+              <Button key={a.id} kind={a.primary ? 'primary' : 'default'} onClick={() => void api.action(a.id === 'open-fda-settings' ? 'fda' : 'iphone_backup', a.id)} testAction={a.id}>{a.label}</Button>
+            ))}
+          </div>
+        )}
         {view.section === 'unavailable' && <div className="actions"><Button onClick={() => void api.action('iphone_backup', 'unskip')}>Include It Again</Button></div>}
       </div>
       {view.section === 'needs' && pw?.input === 'password' && <Group title="Unlock the backup"><PasswordForm onSubmit={read} busy={busy} /></Group>}
       {view.warnings.map((w, k) => <div key={k} style={{ marginTop: 12 }}><Banner kind="warning">{w}</Banner></div>)}
       {view.steps && view.section === 'needs' && <Group title="Make a backup"><Steps view={view} /></Group>}
       {view.section === 'done' && <PhoneParts view={view} />}
+      {view.section === 'working' && view.notes?.map((n) => <div key={n} className="note"><Glyph name="info" size={13} /><span>{n}</span></div>)}
       {view.section === 'working' && <div className="note"><Glyph name="info" size={13} /><span>This keeps going in the background. Continue whenever you like.</span></div>}
       {view.section === 'needs' && <div style={{ textAlign: 'center', marginTop: 12 }}><Button kind="plain" onClick={() => void api.action('iphone_backup', 'skip', { reason: 'No iPhone backup for now' }).then(ctx.next)}>I don't have an iPhone backup</Button></div>}
     </>
@@ -393,12 +432,22 @@ function IphonePage({ ctx }: { ctx: Ctx }) {
 // One account on the Accounts page, wherever it is: a built-in, a service already added, or one found in your data.
 interface Account { id: string; name: string; subtitle: string; tag?: string; rank: number }
 
+// The chosen accounts that are on the page: what "Continue with N" counts.
+function listedChoices(ctx: Ctx): string[] {
+  const here = new Set(accountChoices(ctx.snap.sources).map((x) => x.id));
+  const found = new Set([...(ctx.snap.discovery?.found ?? []).map((f) => `found:${f.slug}`), ...(ctx.snap.discovery?.unmatched ?? []).map((u) => `sender:${u.domain}`)]);
+  return [...ctx.draft].filter((id) => here.has(id) || found.has(id));
+}
+
 function AccountsPage({ ctx }: { ctx: Ctx }) {
   const found = ctx.snap.discovery?.found ?? [];
   const allFound = found.length + (ctx.snap.discovery?.unmatched.length ?? 0);
-  const wait = (id: string) => (BY_ID[id]?.waitHours ? `Takes ${waitRange(BY_ID[id].waitHours!)}` : '');
+  // How long it takes, or for one set up by hand, how it's done.
+  const HOW: Record<string, string> = { other_mail: 'Through Mail on this Mac, no waiting', maps_timeline: 'Exported from your phone, no waiting',
+    slack: 'Exported by a workspace admin', zoom: 'Downloaded from Zoom\'s web portal' };
+  const wait = (id: string) => (BY_ID[id]?.waitHours ? `Takes ${waitRange(BY_ID[id].waitHours!)}` : HOW[id] ?? '');
   const common: Account[] = commonAccounts(ctx.snap.sources).map((x, k) => ({ id: x.id, name: x.name, rank: k,
-    subtitle: `${wait(x.id)}${x.optional ? ' · Can be hundreds of GB, so it starts off' : ''}`, tag: x.section === 'done' ? 'Collected' : undefined }));
+    subtitle: `${wait(x.id)}${x.optional ? ' · Can be hundreds of GB, so it isn\'t on your list unless you add it' : ''}`, tag: x.section === 'done' ? 'Collected' : undefined }));
   const added: Account[] = accountChoices(ctx.snap.sources).filter((x) => BY_ID[x.id]?.custom)
     .map((x, k) => ({ id: x.id, name: x.name, rank: 100 + k, subtitle: wait(x.id), tag: x.section === 'done' ? 'Collected' : undefined }));
   const fromData = (list: FoundService[]): Account[] => list.map((f, k) => ({ id: `found:${f.slug}`, name: f.name, rank: 1000 + k,
@@ -420,6 +469,7 @@ function AccountsPage({ ctx }: { ctx: Ctx }) {
     ctx.setDraft(n);
   }, 'move');
   const [browsing, setBrowsing] = useState<HubFilter | null>(null);
+  const [naming, setNaming] = useState<string | null>(null); // adding one that isn't listed, by name
   const row = (a: Account, on: boolean) => (
     <GroupRow key={a.id} testId={`account-${a.id}`} style={vt(`acct-${a.id.replace(/[^A-Za-z0-9_-]/g, '-')}`)}
       icon={<SourceIcon id={a.id} group="web" size={26} name={a.name} />}
@@ -449,15 +499,17 @@ function AccountsPage({ ctx }: { ctx: Ctx }) {
       )}
       <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 14 }}>
         {allFound > picks.length && <Button onClick={() => setBrowsing('found')} testAction="see-all-found">See All {count(allFound)} Found…</Button>}
-        <Button onClick={() => setBrowsing('all')} testAction="browse-all-services">Browse All Services…</Button>
+        <Button onClick={() => setBrowsing('all')} testAction="browse-all-services">Browse All Sources…</Button>
       </div>
       {browsing && (
         <Sheet onClose={() => setBrowsing(null)} testId="hub-sheet" width={760}>
-          <h2>{browsing === 'found' ? 'Found in your data' : 'All services'}</h2>
-          <Hub snap={ctx.snap} filter={browsing} onAdded={(ids) => ctx.setDraft(new Set([...ctx.draft, ...ids]))} onAddOther={() => setBrowsing(null)} />
+          <h2>{browsing === 'found' ? 'Found in your data' : 'All sources'}</h2>
+          <Hub snap={ctx.snap} filter={browsing} onAdded={(ids) => ctx.setDraft(new Set([...ctx.draft, ...ids]))}
+            onAddOther={(q) => { setBrowsing(null); setNaming(q ?? ''); }} chosen={ctx.draft} onChoose={(id) => ctx.setDraft(new Set([...ctx.draft, id]))} />
           <div className="sheet-actions"><Button kind="primary" onClick={() => setBrowsing(null)}>Done</Button></div>
         </Sheet>
       )}
+      {naming !== null && <AddServiceSheet initialName={naming} onClose={() => setNaming(null)} onAdded={(id) => ctx.setDraft(new Set([...ctx.draft, id]))} />}
     </>
   );
 }
@@ -479,10 +531,12 @@ function exportsList(ctx: Ctx): PageSpec {
             const v = ctx.v(x);
             const src = BY_ID[x];
             const done = exportHandled(v);
+            // Skipped isn't done: no checkmark, and its page can include it again.
+            const skipped = v.section === 'unavailable' || v.deferred;
             return (
               <GroupRow key={x} testId={`exports-${x}`} icon={<SourceIcon id={x} group="web" size={26} />} onClick={() => ctx.jump(`export:${x}`)}
                 title={v.name} subtitle={done ? v.status : src.waitHours ? `Takes ${waitRange(src.waitHours)}` : v.status}
-                trailing={done ? <Checkmark size={18} /> : undefined} />
+                trailing={skipped ? <span className="where">Skipped</span> : done ? <Checkmark size={18} /> : undefined} />
             );
           })}
         </div>
@@ -517,17 +571,24 @@ function ReadyNotice({ ctx }: { ctx: Ctx }) {
 function exportPage(ctx: Ctx, id: string): PageSpec {
   const view = ctx.v(id);
   const src = BY_ID[id];
+  if (src.group === 'guided') return guidedPage(ctx, id);
   const asked = !!view.requestedAt || view.section === 'done' || view.section === 'working';
   // This one is passed over even before the snapshot shows it asked for.
   const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id));
   const markAndNext = () => void api.action(id, 'mark-requested').then(() => ctx.confirmed(id, onward));
-  const primary = view.section === 'done' || asked
-    ? { label: ctx.justAsked === id ? 'Requested' : 'Continue', onClick: onward, done: ctx.justAsked === id }
-    : { label: 'I\'ve Requested It', onClick: markAndNext };
+  // Saying you asked for it is the footer's button while that's the next thing to say (not yet asked, or asked for a
+  // new one after the link ran out); otherwise the footer just moves on, quietly when the page has its own next step.
+  const mark = view.actions.find((a) => a.id === 'mark-requested');
+  const sayAsked = mark && (!asked || view.onTheWay === 'expired');
+  const pageHasStep = view.section === 'needs' && view.actions.some((a) => a.primary && a.id !== 'mark-requested');
+  const primary = sayAsked && ctx.justAsked !== id
+    ? { label: mark.label, onClick: markAndNext, quiet: pageHasStep }
+    : { label: ctx.justAsked === id ? 'Requested' : 'Continue', onClick: onward, done: ctx.justAsked === id, quiet: pageHasStep };
+  const skips = view.actions.some((a) => a.id === 'skip');
   const secondary = (
     <>
       <Button onClick={() => ctx.jump('exports')} testAction="all-exports">All Exports</Button>
-      {view.section !== 'done' && !asked && <Button onClick={() => void api.action(id, 'skip', { reason: 'Not now' }).then(onward)} testAction="skip-export">Skip for Now</Button>}
+      {skips && !asked && <Button onClick={() => void api.action(id, 'skip', { reason: 'Not now' }).then(onward)} testAction="skip-export">Skip for Now</Button>}
     </>
   );
   const statusBox = (
@@ -540,17 +601,7 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
           {view.section === 'working' && !view.waiting && <ProgressBar value={view.progress} small />}
         </div>
       </div>
-      {view.section !== 'done' && (
-        <div className="actions">
-          {/* Claude in the person's Chrome (Do It for Me): request it, carry on, stop, try again. */}
-          {view.actions.filter((a) => a.id.startsWith('agent-')).map((a) => <AgentButton key={a.id} snap={ctx.snap} id={id} action={a} />)}
-          {/* In the person's own browser: signed in already, with their passwords. */}
-          <Button kind={view.actions.some((a) => a.id.startsWith('agent-') && a.primary) ? 'default' : 'primary'} onClick={() => void api.action(id, view.requestedAt && src.downloadUrl ? 'open-download' : 'open')} testAction="open">
-            {view.requestedAt && src.downloadUrl ? `Open the Download Page in ${ctx.snap.defaultBrowser}` : `Open ${view.name} in ${ctx.snap.defaultBrowser}`}
-          </Button>
-          <Button onClick={() => void api.action(id, 'add-file')} testAction="add-file">Add the Download…</Button>
-        </div>
-      )}
+      {view.section !== 'done' && <ExportActions ctx={ctx} view={view} skip={['skip', ...(sayAsked ? ['mark-requested'] : [])]} />}
     </div>
   );
   return {
@@ -559,9 +610,107 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
       <>
         <Hero icon={<SourceIcon id={id} size={64} />} title={`Request your ${view.name} data`}>{view.blurb}</Hero>
         <div style={{ marginTop: 22 }}>{statusBox}</div>
-        {view.section !== 'done' && <div className="group-footer">When the download lands in Downloads, the app takes it from there: this page turns green.</div>}
+        {view.section !== 'done' && !view.actions.some((a) => a.id === 'import-found') && <div className="group-footer">When the download lands in Downloads, the app takes it from there: this page turns green.</div>}
         {view.steps && view.section !== 'done' && <Group title="Steps"><Steps view={view} /></Group>}
         {view.notes && view.notes.length > 0 && <div style={{ marginTop: 12 }}>{view.notes.map((n, k) => <div key={k} className="note"><Glyph name="info" size={13} /><span>{n}</span></div>)}</div>}
+      </>
+    ),
+  };
+}
+
+// An export page's buttons: whatever its state offers (import what's in Downloads, try again, include it again, answer
+// Claude...), apart from the ones in the footer. Pages open in the person's own browser, signed in already.
+function ExportActions({ ctx, view, skip }: { ctx: Ctx; view: SourceView; skip: string[] }) {
+  const [reply, setReply] = useState('');
+  const [form, setForm] = useState<Action | null>(null);
+  const [confirm, setConfirm] = useState<Action | null>(null);
+  const id = view.id;
+  const src = BY_ID[id];
+  const run = (a: Action, payload?: unknown) => {
+    if (a.confirm && !confirm) return setConfirm(a);
+    if (a.input === 'skip-reason' && payload === undefined) return setForm(a);
+    void api.action(id, a.id, payload);
+  };
+  const label = (a: Action) => (a.id === 'open' && a.label === 'Open the Export Page' ? `Open ${view.name} in ${ctx.snap.defaultBrowser}`
+    : a.id === 'open-download' && src.downloadUrl ? `Open the Download Page in ${ctx.snap.defaultBrowser}` : a.label);
+  const acts = view.actions.filter((a) => !skip.includes(a.id));
+  // Only when Claude asked something: carrying on after a quit has nothing to answer.
+  const answering = acts.some((a) => a.input === 'reply');
+  // Read-only: what only looks or opens a page works; the rest is disabled, and says why.
+  const off = (aid: string) => ctx.snap.readOnly && !ctx.snap.demo && !READ_ONLY_OK.has(aid);
+  if (!acts.length) return null;
+  return (
+    <>
+      {answering && (
+        <div className="agent-reply">
+          <input type="text" value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Answer Claude here, or leave it empty once you've done it in Chrome"
+            onKeyDown={(e) => e.key === 'Enter' && (void api.action(id, 'agent-continue', { reply }), setReply(''))} data-testid="agent-reply" disabled={off('agent-continue')} />
+        </div>
+      )}
+      <div className="actions" data-testid="export-actions">
+        {acts.map((a) => (a.input === 'reply'
+          ? <Button key={a.id} kind={a.primary ? 'primary' : 'default'} ai={a.ai} disabled={off(a.id)} onClick={() => { void api.action(id, a.id, { reply }); setReply(''); }} testAction={a.id}>{a.label}</Button>
+          : a.id === 'open-inbox' ? <InboxButton key={a.id} view={view} action={a} />
+          : a.id.startsWith('agent-') ? <AgentButton key={a.id} snap={ctx.snap} id={id} action={a} />
+            : <Button key={a.id} kind={a.primary ? 'primary' : 'default'} disabled={off(a.id)} title={off(a.id) ? READ_ONLY_NOTE : undefined} onClick={() => run(a)} testAction={a.id}>{label(a)}</Button>))}
+      </div>
+      {form && <SkipForm view={view} action={form} onSubmit={(reason) => { run(form, { reason }); setForm(null); }} onCancel={() => setForm(null)} />}
+      {confirm && (
+        <Sheet onClose={() => setConfirm(null)} testId="confirm">
+          <h2>{confirm.label}?</h2>
+          <p>{confirm.confirm}</p>
+          <div className="sheet-actions">
+            <Button onClick={() => setConfirm(null)}>Cancel</Button>
+            <Button kind="primary" onClick={() => { void api.action(id, confirm.id, { confirmed: true }); setConfirm(null); }}>{confirm.label}</Button>
+          </div>
+        </Sheet>
+      )}
+    </>
+  );
+}
+
+// A service set up by hand rather than requested (Outlook and other mail through Mail, Maps Timeline from the phone,
+// Slack, Zoom): its own buttons and steps, and the file it leaves you with, dropped on the window or in Downloads.
+function guidedPage(ctx: Ctx, id: string): PageSpec {
+  const view = ctx.v(id);
+  const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id));
+  const done = view.section === 'done';
+  const mail = id === 'other_mail';
+  const acts = view.actions.filter((a) => !['skip', 'mark-done', 'unmark-done'].includes(a.id));
+  return {
+    primary: { label: 'Continue', onClick: onward },
+    secondary: (
+      <>
+        <Button onClick={() => ctx.jump('exports')} testAction="all-exports">All Exports</Button>
+        {!done && view.section !== 'unavailable' && !view.deferred && (
+          <Button onClick={() => void api.action(id, 'skip', { reason: mail ? 'No other mail accounts' : 'Not now' }).then(onward)} testAction="skip-export">
+            {mail ? 'I Don\'t Have Any' : 'Skip for Now'}
+          </Button>
+        )}
+      </>
+    ),
+    body: (
+      <>
+        <Hero icon={<SourceIcon id={id} size={64} />} title={view.name}>{view.blurb}</Hero>
+        <div className="group-box" style={{ marginTop: 22 }} data-testid="export-status">
+          <div className="status-box">
+            <div style={{ marginTop: 1 }}>{done ? <Checkmark size={20} /> : <StatusGlyph section={view.section} size={20} />}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="big appear-soft" key={view.status} data-testid="status">{view.status}</div>
+              {view.detail && <div className="pre">{view.detail}</div>}
+              {view.section === 'working' && <ProgressBar value={view.progress} small />}
+            </div>
+          </div>
+          {!done && acts.length > 0 && (
+            <div className="actions">
+              {acts.map((a) => <Button key={a.id} kind={a.primary ? 'primary' : 'default'} onClick={() => void api.action(id, a.id)} testAction={a.id}>{a.label}</Button>)}
+            </div>
+          )}
+        </div>
+        {mail && !done && view.section !== 'unavailable' && <Group title="Account"><AccountForm view={view} /></Group>}
+        {view.steps && !done && <Group title="Steps"><Steps view={view} /></Group>}
+        {view.notes && view.notes.length > 0 && <div style={{ marginTop: 12 }}>{view.notes.map((n, k) => <div key={k} className="note"><Glyph name="info" size={13} /><span>{n}</span></div>)}</div>}
+        {!done && view.section !== 'unavailable' && !view.deferred && <div className="drop">{mail ? 'Drop the exported .mbox folders on this window, or put them in Downloads.' : 'Drop the export on this window, or put it in Downloads.'}</div>}
       </>
     ),
   };
@@ -588,72 +737,26 @@ function ai(ctx: Ctx): PageSpec {
   };
 }
 
-function mail(ctx: Ctx): PageSpec {
-  const view = ctx.v('other_mail');
-  return {
-    primary: { label: 'Continue', onClick: ctx.next },
-    secondary: view.section !== 'done' && view.section !== 'unavailable'
-      ? <Button onClick={() => void api.action('other_mail', 'skip', { reason: 'No other mail accounts' }).then(ctx.next)}>I Don't Have Any</Button> : undefined,
-    body: (
-      <>
-        <Hero icon={<SourceIcon id="other_mail" size={64} />} title="Other email accounts">{view.blurb}</Hero>
-        <div className="group-box" style={{ marginTop: 22 }}>
-          <div className="status-box"><StatusGlyph section={view.section} size={20} /><div className="big">{view.status}</div></div>
-          {view.section !== 'done' && <div className="actions"><Button onClick={() => void api.action('other_mail', 'open-internet-accounts')}>Open Internet Accounts…</Button></div>}
-        </div>
-        <Group title="Account"><AccountForm view={view} /></Group>
-        {view.steps && view.section !== 'done' && <Group title="Steps"><Steps view={view} /></Group>}
-        <div className="drop">Drop the exported .mbox folders on this window, or put them in Downloads.</div>
-      </>
-    ),
-  };
-}
-
-function extras(ctx: Ctx): PageSpec {
-  return { primary: { label: 'Continue', onClick: ctx.next }, body: <ExtrasPage ctx={ctx} /> };
-}
-
-function ExtrasPage({ ctx }: { ctx: Ctx }) {
-  const maps = ctx.v('maps_timeline');
-  const optional = ctx.snap.sources.filter((s) => s.group === 'guided' && s.optional);
-  const mine = ctx.snap.sources.filter((s) => s.group === 'web' && BY_ID[s.id]?.custom);
-  const [adding, setAdding] = useState(false);
-  return (
-      <>
-        <Hero icon={<SourceIcon id="maps_timeline" size={64} />} title="A few more places">
-          Google Maps Timeline lives on your phone now. The rest are optional: they're under Needs You whenever you want them.
-        </Hero>
-        <Group title="Google Maps Timeline">
-          <div className="group-box">
-            <div className="status-box"><StatusGlyph section={maps.section} size={20} /><div><div className="big">{maps.status}</div></div></div>
-          </div>
-        </Group>
-        {maps.steps && maps.section !== 'done' && <div style={{ marginTop: 10 }}><Steps view={maps} /></div>}
-        <Group title="Optional">
-          {optional.map((o) => <GroupRow key={o.id} icon={<SourceIcon id={o.id} size={24} />} title={o.name} subtitle={o.blurb} trailing={<StatusGlyph section={o.section} />} />)}
-        </Group>
-        <Group title="Anything else" testId="your-services"
-          footer="A site or app that isn't anywhere in the app, however small: a writing site, a fitness app, a forum. Whatever its download holds is kept, in any format.">
-          {mine.map((o) => <GroupRow key={o.id} testId={`mine-${o.id}`} icon={<SourceIcon id={o.id} group="web" size={24} />} title={o.name} subtitle={o.status} trailing={<StatusGlyph section={o.section} />} />)}
-          <div className="kv"><Button kind="plain" onClick={() => setAdding(true)} testAction="open-add-service">Add Another Service…</Button><span /></div>
-        </Group>
-        {adding && <AddServiceSheet onClose={() => setAdding(false)} onAdded={() => undefined} />}
-      </>
-  );
-}
-
 function done(ctx: Ctx): PageSpec {
   const now = new Date();
   const prog = progress(ctx.snap.sources, now);
+  // What's left for you, every one of it: each opens its page in the main window.
+  const left = ctx.snap.sources.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional);
   return {
-    primary: { label: 'Open Overview', onClick: ctx.onFinish },
+    primary: { label: 'Open Overview', onClick: () => ctx.onFinish() },
     wide: false,
     body: (
       <>
-        <Hero icon={<Checkmark size={72} />} title="You're all set for now">
+        <Hero icon={<Checkmark size={72} />} title={left.length ? 'That\'s the setup done' : 'You\'re all set for now'}>
           The app keeps going on its own: it reads this Mac every day, imports each export as it lands in Downloads, and lets you know when one should be ready.
+          {left.length ? ` ${left.length === 1 ? 'One thing still needs' : `${left.length} things still need`} you: they're under Needs You.` : ''}
         </Hero>
         <Group title={`${Math.round(prog.percent * 100)}% collected · ${prog.collected} of ${prog.applicable} sources`}><Timeline phases={prog.phases} /></Group>
+        {left.length > 0 && (
+          <Group title="Still needs you" testId="done-left">
+            {left.map((v) => <GroupRow key={v.id} testId={`left-${v.id}`} icon={<SourceIcon id={v.id} group={v.group} size={24} />} title={v.name} subtitle={v.status} onClick={() => ctx.onFinish(v.id)} />)}
+          </Group>
+        )}
         {prog.waiting.length > 0 && (
           <Group title="On the way">
             {prog.waiting.map((w) => <GroupRow key={w.id} icon={<SourceIcon id={w.id} size={24} />} title={w.name} subtitle={readyIn(w, now)} />)}

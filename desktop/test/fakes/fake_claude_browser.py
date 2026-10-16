@@ -4,7 +4,7 @@ stream-json events (init with the Claude in Chrome server, a line of text per st
 The plan is JSON from $FAKE_BROWSER_PLAN: {"request": [first run, the run after Continue, ...], "download": [...]}; a
 run is {"steps": [...], "result": "requested" | "needs_you Sign in." | ..., "sleep": seconds between steps}. The prompt
 says which list; each new run takes the next one, and so does each --resume of a session. $FAKE_BROWSER_LOG gets one JSON line per run
-(its arguments and prompt)."""
+(its arguments and prompt). $FAKE_CHROME_STATUS: how the Claude in Chrome extension is ("connected" unless set)."""
 
 import json
 import os
@@ -13,6 +13,12 @@ import time
 
 args = sys.argv[1:]
 prompt = sys.stdin.read()
+if "--no-session-persistence" in args:
+    # The app checking whether the Claude in Chrome extension is there (main.ts chromeStatus): it reads the first event and
+    # stops. Not a run, so it isn't logged and takes nothing from the plan.
+    print(json.dumps({"type": "system", "subtype": "init", "session_id": "chrome-check", "tools": [],
+                      "mcp_servers": [{"name": "claude-in-chrome", "status": os.environ.get("FAKE_CHROME_STATUS", "connected")}]}), flush=True)
+    sys.exit(0)
 plan = json.load(open(os.environ["FAKE_BROWSER_PLAN"]))
 log = os.environ.get("FAKE_BROWSER_LOG")
 runs = [json.loads(l) for l in open(log) if l.strip()] if log and os.path.exists(log) else []

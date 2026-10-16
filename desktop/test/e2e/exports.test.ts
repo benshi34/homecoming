@@ -14,12 +14,13 @@ let run: Running;
 
 before(async () => {
   sb = sandbox({ identity: true });
-  // A stand-in for the Claude CLI: keeps what it was asked, answers with a mapping for the Wattpad download below.
+  // A stand-in for the Claude CLI: keeps what it was asked, answers with a mapping for the Wattpad download below (as
+  // its stream-json result line).
   const fakeClaude = path.join(sb.home, 'fake-claude');
   fs.writeFileSync(fakeClaude, `#!/bin/sh\ncat > "${path.join(sb.home, 'asked.txt')}"\ncat "${path.join(sb.home, 'reply.json')}"\n`, { mode: 0o755 });
   const mapping = { service: 'Wattpad', items: [{ describe: 'Stories you wrote', file: 'wattpad-export.json', path: 'stories', kind: 'post',
     time: 'created', title: 'title', author: 'me' }] };
-  fs.writeFileSync(path.join(sb.home, 'reply.json'), JSON.stringify({ result: `Here it is:\n\`\`\`json\n${JSON.stringify(mapping)}\n\`\`\`` }));
+  fs.writeFileSync(path.join(sb.home, 'reply.json'), JSON.stringify({ type: 'result', is_error: false, result: `Here it is:\n\`\`\`json\n${JSON.stringify(mapping)}\n\`\`\`` }));
   run = await launch(sandboxEnv(sb, {
     UMP_NO_AUTORUN: '1', UMP_CLAUDE_CMD: fakeClaude, UMP_NOTIFICATIONS_DB: notificationDb(), UMP_SIGNAL_MS: '500',
     UMP_URLS: JSON.stringify({
@@ -110,8 +111,10 @@ test('an export that reveals another of your addresses asks, then re-labels', as
   let s = await until(run.page, 'new identity found', (x) => /new .* found/.test(find(x, 'identity').status), 60_000);
   assert.equal(find(s, 'identity').section, 'needs');
   await selectSource(run.page, 'identity');
-  await run.page.locator('[data-testid=detail] button[data-action=save-identity]').click();
+  // The form is open already: no Review button above it that would only open it again.
   const form = run.page.locator('[data-testid=identity-form]');
+  await form.waitFor();
+  assert.equal(await run.page.locator('[data-testid=detail] [data-testid=actions] button[data-action=save-identity]').count(), 0);
   const work = form.locator('[data-testid="cand-email:ada.work@example.com"]');
   await work.waitFor();
   assert.match(await work.innerText(), /New/);
@@ -143,9 +146,23 @@ test('Downloads watcher: an unexpected export waits for a yes', async () => {
   assert.equal(readJson(path.join(sb.corpus, 'manifest.json')).instagram.count, 1);
 
   await selectSource(run.page, 'facebook');
+  assert.match(find(s, 'facebook').detail!, /You hadn't asked Facebook and Messenger for your data in the app, so it waits for a yes\. Importing moves it out of Downloads/);
   await clickAction(run.page, 'ignore-found');
   s = await until(run.page, 'facebook ignored', (x) => !find(x, 'facebook').status.startsWith('Found'));
   assert.equal(find(s, 'facebook').status, 'Not requested yet');
+  // Ignore can be undone: from its toast, or later from the page.
+  await run.page.locator('[data-testid=toasts] button[data-action=toast-undo]').waitFor();
+  await run.page.locator('[data-testid=detail] [data-testid=ignored]', { hasText: '1 ignored file in Downloads' }).waitFor();
+  await shot(run.page, 'ignored-file');
+  await run.page.locator('[data-testid=detail] button[data-action=unignore-found]').click();
+  s = await until(run.page, 'shown again', (x) => find(x, 'facebook').status === 'Found the export in Downloads');
+  await until(run.page, 'not ignored any more', () => !readJson(path.join(sb.userData, 'state.json')).ignoredFiles.some((k: string) => k.includes('facebook-ada')));
+  await clickAction(run.page, 'ignore-found');
+  s = await until(run.page, 'facebook ignored again', (x) => !find(x, 'facebook').status.startsWith('Found'));
+  await run.page.locator('[data-testid=toasts] button[data-action=toast-undo]').last().click();
+  s = await until(run.page, 'undone from the toast', (x) => find(x, 'facebook').status === 'Found the export in Downloads');
+  await clickAction(run.page, 'ignore-found');
+  s = await until(run.page, 'and ignored', (x) => !find(x, 'facebook').status.startsWith('Found'));
   assert.ok(fs.existsSync(path.join(sb.downloads, path.basename(sb.exports.facebook))), 'ignored files stay put');
   await until(run.page, 'ignore saved', () => readJson(path.join(sb.userData, 'state.json')).ignoredFiles.some((k: string) => k.includes('facebook-ada')));
   assert.ok(fs.existsSync(path.join(sb.downloads, 'package-broken.zip')), 'half-downloaded zips are left alone');
@@ -156,16 +173,55 @@ test('Downloads watcher: an unexpected export waits for a yes', async () => {
   assert.ok(!find(await snap(run.page), 'instagram').status.startsWith('Found'));
 });
 
+test('a download for a source you skipped is shown, and importing it includes the source again', async () => {
+  await act(run.page, 'claude_ai', 'skip', { reason: 'I don\'t use Claude.ai' });
+  await until(run.page, 'skipped', (x) => find(x, 'claude_ai').section === 'unavailable');
+  fs.copyFileSync(sb.exports.claude_ai, path.join(sb.downloads, path.basename(sb.exports.claude_ai)));
+  let s = await until(run.page, 'found', (x) => find(x, 'claude_ai').status === 'Found the export in Downloads');
+  assert.equal(find(s, 'claude_ai').section, 'needs');
+  assert.match(find(s, 'claude_ai').detail!, /You skipped Claude\.ai\. Importing it includes Claude\.ai again/);
+  await selectSource(run.page, 'claude_ai');
+  await shot(run.page, 'skipped-found');
+  await clickAction(run.page, 'import-found');
+  s = await until(run.page, 'included and imported', (x) => !x.jobs.length && find(x, 'claude_ai').section !== 'unavailable' && !find(x, 'claude_ai').status.startsWith('Found'), 90_000);
+  assert.equal(readJson(path.join(sb.userData, 'state.json')).sources.claude_ai.skipped, undefined, 'included again');
+  assert.ok(!fs.existsSync(path.join(sb.downloads, path.basename(sb.exports.claude_ai))), 'moved out of Downloads');
+});
+
+test('with Watch Downloads off, an export waits in Downloads; turned back on, it is picked up', async () => {
+  await act(run.page, 'notion', 'mark-requested');
+  await run.page.evaluate(() => (window as unknown as { api: { settings(x: object): Promise<unknown> } }).api.settings({ watchDownloads: false }));
+  const name = path.basename(sb.exports.notion);
+  fs.copyFileSync(sb.exports.notion, path.join(sb.downloads, name));
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.ok(fs.existsSync(path.join(sb.downloads, name)), 'left alone while it\'s off');
+  assert.equal(readJson(path.join(sb.userData, 'state.json')).sources.notion.lastFileAt, undefined);
+  await run.page.click('button[aria-label=Settings]');
+  await run.page.locator('[data-testid=settings]', { hasText: 'Off: add each download on its page' }).waitFor();
+  await shot(run.page, 'settings-watch-off');
+  await run.page.locator('[data-testid=toggle-watch]').click();
+  await until(run.page, 'picked up once it is on', () => !fs.existsSync(path.join(sb.downloads, name)) && !!readJson(path.join(sb.userData, 'state.json')).sources.notion?.lastFileAt, 30_000);
+  await run.page.keyboard.press('Escape');
+  await until(run.page, 'imported', (x) => !x.jobs.length, 90_000);
+});
+
+test('Open Messages and the like go through the same door as links, so tests never open real apps', async () => {
+  await act(run.page, 'retention_messages', 'open-app');
+  await until(run.page, 'logged', () => opened().includes('app: Messages'));
+});
+
 test('adding files by hand, and the mistakes people make', async () => {
   // A photo zip handed to Discord
   let r = await act(run.page, 'discord', 'add-file', { paths: [path.join(sb.downloads, 'holiday-photos (2).zip')] });
   assert.equal(r.ok, false);
   let s = await until(run.page, 'wrong file error', (x) => /doesn't look like a Discord export/.test(find(x, 'discord').detail ?? ''));
-  assert.equal(find(s, 'discord').status, 'The import failed');
+  // Nothing went in, so it asks for the right download, not to run the import again.
+  assert.equal(find(s, 'discord').status, 'That download couldn\'t be used');
+  assert.equal(find(s, 'discord').actions[0].id, 'add-file');
   // A truncated download
   r = await act(run.page, 'reddit', 'add-file', { paths: [path.join(sb.downloads, 'package-broken.zip')] });
   assert.equal(r.ok, false);
-  s = await until(run.page, 'broken zip error', (x) => /isn't a complete file/.test(find(x, 'reddit').detail ?? ''));
+  s = await until(run.page, 'broken zip error', (x) => /looks incomplete or damaged/.test(find(x, 'reddit').detail ?? ''));
   // The right export for a different source is filed where it belongs
   r = await act(run.page, 'reddit', 'add-file', { paths: [sb.exports.x] });
   assert.equal(r.ok, true);
@@ -204,15 +260,28 @@ test('another service: add it by name, drop its download in any format, and ever
   // Claude reads the structure (never the values unless allowed), writes a mapping, the person checks and uses it.
   await selectSource(run.page, id);
   await run.page.click('[data-action=open-mapping]');
+  const sheet = run.page.locator('[data-testid=mapping-sheet]');
+  assert.match(await sheet.locator('p').first().innerText(), /^Claude reads how the download is laid out/, 'the agent that will answer, by name');
+  // What's sent is there to open, not in the way.
+  assert.equal(await run.page.locator('[data-testid=mapping-prompt]').count(), 0);
+  await sheet.locator('[data-testid=mapping-sent] .disclose-btn').click();
   const prompt = run.page.locator('[data-testid=mapping-prompt]');
   await prompt.filter({ hasText: 'Structure:' }).waitFor();
   assert.match(await prompt.innerText(), /"title": "text \(up to 21 characters\)"/);
   assert.doesNotMatch(await prompt.innerText(), /Difference Engine/, 'no content without permission');
   await shot(run.page, 'mapping-ask');
-  // AI isn't on yet: nothing is sent until it is.
+  // AI isn't on yet: nothing is sent until it is, and turning it on goes through what that means, once.
   assert.equal(await run.page.locator('[data-action=ask-claude]').count(), 0);
-  await run.page.click('[data-action=mapping-ai-on]');
-  await run.page.click('[data-action=ask-claude]');
+  await sheet.locator('button[data-action=mapping-turn-on]', { hasText: 'Turn On AI and Ask…' }).click();
+  await sheet.locator('[data-testid=ai-agreement]').waitFor();
+  assert.notEqual((await snap(run.page)).settings.aiOn, true, 'not on by itself');
+  await shot(run.page, 'mapping-agreement');
+  await sheet.locator('button[data-action=mapping-ai-on]').click();
+  // Claude Code with your claude.ai account, as Ask uses it: its data settings are confirmed first, as in Ask.
+  const retention = run.page.locator('[data-testid=ask-retention]');
+  await retention.waitFor();
+  await retention.locator('input[type=checkbox]').check();
+  await retention.locator('button[data-action=confirm-retention]').click();
   await run.page.locator('[data-testid=mapping-preview]', { hasText: 'Stories you wrote' }).waitFor({ timeout: 30_000 });
   assert.match(await run.page.locator('[data-testid=mapping-preview]').innerText(), /2 found, 100% with a time/);
   assert.doesNotMatch(fs.readFileSync(path.join(sb.home, 'asked.txt'), 'utf8'), /Difference Engine/, 'what was sent had no content');
@@ -232,7 +301,9 @@ test('another service: add it by name, drop its download in any format, and ever
   assert.ok(!fs.existsSync(path.join(sb.home, 'mapping-library/wattpad.json')), 'nothing written into the app');
   fs.mkdirSync(path.join(sb.home, 'mapping-library'), { recursive: true });
   fs.copyFileSync(path.join(sb.corpus, 'mappings/wattpad.json'), path.join(sb.home, 'mapping-library/wattpad.json'));
-  const again = await act(run.page, '*', 'add-service', { name: 'Wattpad' });
+  // Wattpad by name again is the Wattpad that's here, not a second copy that would never get its files.
+  assert.equal((await act(run.page, '*', 'add-service', { name: 'Wattpad' })).id, id);
+  const again = await act(run.page, '*', 'add-service', { slug: 'wattpad' }); // from the directory: a second account
   assert.notEqual(again.id, id);
   await until(run.page, 'starts with the shared mapping', (x) => !!x.mappings['wattpad-2']);
   assert.equal((await act(run.page, 'discord', 'remove-service')).ok, false);
@@ -254,7 +325,8 @@ test('another service: add it by name, drop its download in any format, and ever
   assert.equal(find(s, gr.id).url, 'https://www.goodreads.com', 'no export page known: its home page, never an account page');
   await run.page.click('[data-testid=nav-found]');
   await run.page.locator('[data-testid=hub-filter-found][aria-selected=true]').waitFor();
-  await run.page.click('[data-testid=nav-add-service]');
+  // Adding one that isn't listed starts on the same page.
+  await run.page.click('[data-testid=hub] button[data-action=hub-add-source]');
   await run.page.locator('[data-testid=add-service] #svc-name').waitFor();
   await run.page.keyboard.press('Escape');
 });
@@ -339,7 +411,7 @@ test('a notification on this Mac that sounds like Spotify saying it is ready: "l
   assert.match(find(s, 'spotify').status, /^Looks ready: a notification from Mail/);
   assert.match(find(s, 'spotify').detail!, /"Spotify Your Spotify data is ready to download/);
   assert.match(find(s, 'spotify').detail!, /check your email or Spotify to be sure/);
-  assert.ok(opened().includes('notify: Your Spotify data looks ready'));
+  assert.ok(opened().includes('notify: Your Spotify data looks ready → spotify'), 'and clicking it opens Spotify');
   await selectSource(run.page, 'spotify');
   await shot(run.page, 'looks-ready');
   // The setting that lets the iPhone's notifications in, with why.

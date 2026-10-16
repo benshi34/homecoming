@@ -3,8 +3,8 @@
 // "photo" is a drawn gradient (no rowid here is ever looked up). Dates are relative to today, like real data would be.
 
 import type {
-  EmbedData, FirstItem, FirstKind, GroupChat, GroupChats, JourneyPlace, Journeys, Leg, Made, MadeKind, OnThisDay, People, Person, PersonDetail, Places, Rhythm,
-  Rhythms, Stream, StreamEvent, Trip, YearStory,
+  Curiosity, EmbedData, FirstItem, FirstKind, GroupChat, GroupChats, JourneyPlace, Journeys, Leg, Listening, Made, MadeKind, Movement, OnThisDay, People, Person, PersonDetail,
+  Places, Rhythm, Rhythms, Stream, StreamEvent, Trip, Watching, YearStory, AdHow, Advertiser, Decided, TheyKnow, Told,
 } from '../shared/explore.ts';
 import { count } from '../shared/format.ts';
 import type { ExampleSet } from './explore.tsx';
@@ -403,6 +403,195 @@ const STREAM: Stream = {
   records: STREAM_EVENTS.reduce((a, e) => a + e.count, 0), left_out: int(800, 2000), file: null, events: STREAM_EVENTS,
 };
 
+// ---------------------------------------------------------------- listening, moving and sleep, curiosity, watching
+
+const ymd = (back: number, m: number, d: number) => y(back, `${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+const everyMonth = (f: (yy: number, m: number) => number) => {
+  const out: Record<string, number> = {};
+  for (const yy of YEARS) for (let m = 1; m <= 12; m++) if (Number(yy) < THIS_YEAR || m <= TODAY.getMonth() + 1) out[`${yy}-${String(m).padStart(2, '0')}`] = Math.round(f(Number(yy), m));
+  return out;
+};
+const hourly = (f: (h: number) => number) => Array.from({ length: 24 }, (_, h) => Math.round(f(h)));
+
+// Who they played: an artist leads for a season or two at a time, the way taste goes.
+const ARTISTS: [string, string[]][] = [
+  ['Phoebe Bridgers', ['Kyoto', 'Garden Song', 'Motion Sickness', 'I Know the End']], ['Japanese Breakfast', ['Be Sweet', 'Kokomo, IN', 'Paprika', 'Slide Tackle']],
+  ['Khruangbin', ['Time (You and I)', 'Pelota', 'So We Won’t Forget']], ['Bon Iver', ['Hey, Ma', 'Holocene', 'Naeem']],
+  ['Mitski', ['My Love Mine All Mine', 'Nobody', 'Washing Machine Heart']], ['Fred again..', ['Delilah (pull me out of this)', 'adore u', 'Danielle (smile on my face)']],
+  ['Big Thief', ['Change', 'Simulation Swarm', 'Not']], ['Caroline Polachek', ['Welcome To My Island', 'So Hot You’re Hurting My Feelings', 'Bunny Is A Rider']],
+  ['Bad Bunny', ['Tití Me Preguntó', 'Me Porto Bonito', 'Ojitos Lindos']], ['Tame Impala', ['Borderline', 'Let It Happen', 'The Less I Know The Better']],
+  ['Rosalía', ['DESPECHÁ', 'Malamente', 'BIZCOCHITO']], ['Kendrick Lamar', ['Not Like Us', 'luther', 'squabble up']],
+];
+const ERA_ARTISTS = ['Bon Iver', 'Tame Impala', 'Phoebe Bridgers', 'Japanese Breakfast', 'Bad Bunny', 'Khruangbin', 'Mitski', 'Big Thief', 'Rosalía', 'Fred again..', 'Caroline Polachek', 'Phoebe Bridgers', 'Kendrick Lamar', 'Mitski'];
+const listenYear = (yy: string, i: number) => {
+  const plays = Number(yy) === THIS_YEAR ? int(1900, 2600) : int(2900, 4200);
+  const lead = [ERA_ARTISTS[i * 2], ERA_ARTISTS[i * 2 + 1]];
+  const order = [...new Set([...lead, ...ARTISTS.map(([a]) => a).sort(() => rand() - 0.5)])];
+  const top_artists = order.slice(0, 10).map((name, j) => ({ name, plays: Math.round(plays * 0.22 / (j + 1.4)), rowid: row() }));
+  const top_tracks = top_artists.slice(0, 5).flatMap((a, j) => ARTISTS.find(([n]) => n === a.name)![1].slice(0, 2).map((title, k) => ({ title, artist: a.name, plays: Math.round(a.plays / (2.2 + k + j * 0.2)), rowid: row() })))
+    .sort((a, b) => b.plays - a.plays).slice(0, 10);
+  return { plays, minutes: Math.round(plays * 3.4), artists: int(160, 320), new_artists: int(40, 110), top_artists, top_tracks };
+};
+const LISTEN_YEARS = Object.fromEntries(YEARS.map((yy, i) => [yy, listenYear(yy, i)]));
+const allArtists = new Map<string, { plays: number; years: Record<string, number> }>();
+for (const [yy, v] of Object.entries(LISTEN_YEARS)) for (const a of v.top_artists) {
+  const e = allArtists.get(a.name) ?? { plays: 0, years: {} };
+  e.plays += a.plays;
+  e.years[yy] = a.plays;
+  allArtists.set(a.name, e);
+}
+const LISTENING: Listening = {
+  plays: Object.values(LISTEN_YEARS).reduce((a, v) => a + v.plays, 0), minutes: Object.values(LISTEN_YEARS).reduce((a, v) => a + v.minutes, 0), artists: 1184, songs: 6420,
+  first: { title: 'Holocene', artist: 'Bon Iver', ts: `${YEARS[0]}-01-04T08:12:00Z`, rowid: row() }, last: `${iso(TODAY)}T08:40:00Z`, from: { Spotify: 1, YouTube: 1 },
+  top_artists: [...allArtists].sort((a, b) => b[1].plays - a[1].plays).map(([name, e]) => {
+    const ys = Object.keys(e.years).sort();
+    return { name, plays: e.plays, minutes: Math.round(e.plays * 3.4), first: `${ys[0]}-02-01T19:00:00Z`, last: `${ys[ys.length - 1]}-09-20T19:00:00Z`, rowid: row(), years: e.years };
+  }),
+  top_tracks: Object.values(LISTEN_YEARS).flatMap((v) => v.top_tracks).sort((a, b) => b.plays - a.plays).filter((t, i, a) => a.findIndex((x) => x.title === t.title) === i).slice(0, 30),
+  years: LISTEN_YEARS,
+  eras: ERA_ARTISTS.slice(0, YEARS.length * 2).map((artist, i) => {
+    const yy = YEARS[Math.floor(i / 2)], q = (i % 2) * 2 + 1;
+    return { artist, start: `${yy}-Q${q}`, end: `${yy}-Q${q + 1}`, plays: int(180, 520), rowid: row() };
+  }).filter((e) => Number(e.start.slice(0, 4)) < THIS_YEAR || Number(e.start.slice(-1)) <= Math.floor(TODAY.getMonth() / 3) + 1),
+  on_repeat: [['Kyoto', 'Phoebe Bridgers', 1, 3, 28, 14], ['Not Like Us', 'Kendrick Lamar', 0, 5, 11, 12], ['Me Porto Bonito', 'Bad Bunny', 2, 11, 20, 11], ['Delilah (pull me out of this)', 'Fred again..', 1, 8, 1, 9]]
+    .map(([title, artist, back, m, d, plays]) => ({ title: title as string, artist: artist as string, date: ymd(back as number, m as number, d as number), plays: plays as number, rowid: row() })),
+  months: everyMonth((yy, m) => 220 + 90 * Math.sin(m / 2) + (yy - THIS_YEAR + 6) * 12 + int(0, 60)),
+  by_hour: hourly((h) => (h < 7 ? 6 : 0) + 140 * Math.exp(-((h - 8.5) ** 2) / 2) + 90 * Math.exp(-((h - 15) ** 2) / 8) + 160 * Math.exp(-((h - 20.5) ** 2) / 5)),
+  weekday: [3120, 3310, 3240, 3390, 3660, 2840, 2510],
+};
+
+// Steps and sleep: more on trips (a city on foot), more again since training for the half marathon.
+const stepYear = (yy: string, i: number) => {
+  const avg = 7600 + i * 180 + int(-300, 300), days = Number(yy) === THIS_YEAR ? TODAY.getMonth() * 30 + TODAY.getDate() : 365;
+  return { days, avg, steps: avg * days, km: Math.round(avg * days * 0.00074), flights: int(2400, 4100), best: { date: ymd(THIS_YEAR - Number(yy), 5, 18), steps: int(24000, 31000), km: 21.4, rowid: row() } };
+};
+const MOVEMENT: Movement = {
+  days: 2180, first: `${YEARS[1]}-01-01`, last: iso(TODAY), steps: 18_337_400, km: 13_570, avg: 8412,
+  best: { date: ymd(1, 3, 30), steps: 31_204, km: 23.8, rowid: row() }, goal: 10_000, goal_days: 612,
+  streak: { days: 23, start: iso(new Date(TODAY.getTime() - 40 * 864e5)), end: iso(new Date(TODAY.getTime() - 18 * 864e5)) },
+  years: Object.fromEntries(YEARS.slice(1).map((yy, i) => [yy, stepYear(yy, i)])),
+  months: everyMonth((yy, m) => (yy === Number(YEARS[0]) ? 0 : 7400 + 1500 * Math.sin((m - 3) / 1.9) + (yy === THIS_YEAR - 1 && (m === 4 || m === 5) ? 3200 : 0) + (yy === THIS_YEAR && m >= 8 ? 2600 : 0))),
+  weekday: [8120, 8840, 8410, 9020, 7650, 12_480, 10_930],
+  top_days: [['Tokyo', 1, 3, 30, 31_204], ['Kyoto', 1, 4, 3, 29_870], ['Lisbon', 1, 5, 18, 27_110], ['Porto', 1, 5, 22, 25_640], ['New York', 1, 12, 23, 24_980],
+    ['Mexico City', 2, 11, 19, 24_310], ['Chicago', 0, 9, 6, 23_760], ['Paris', 4, 6, 11, 23_120], ['Oaxaca', 2, 11, 24, 22_480], ['Chicago', 0, 9, 27, 21_940]]
+    .map(([place, back, m, d, steps]) => ({ date: ymd(back as number, m as number, d as number), steps: steps as number, km: Math.round((steps as number) * 0.0074) / 10, rowid: row(), place: place as string, trip: place !== 'Chicago' })),
+  trips: { avg: 14_820, days: 64, home_avg: 8_050 },
+  sleep: {
+    nights: 1460, avg_min: 438,
+    years: Object.fromEntries(YEARS.slice(3).map((yy, i) => [yy, { nights: 365, avg_min: 452 - i * 7, bedtime: 23.6 + i * 0.22, wake: 7.4 + i * 0.05 }])),
+    bedtime_months: {}, weekday: [436, 442, 438, 431, 401, 462, 471],
+    longest: { date: ymd(1, 4, 9), minutes: 641, rowid: row() }, shortest: { date: ymd(1, 7, 31), minutes: 214, rowid: row() },
+  },
+};
+
+// What they looked up, a year at a time: each year has its own words.
+const TOPICS: [string, number][][] = [
+  [['sourdough starter', 64], ['home workout', 51], ['zoom backgrounds', 38], ['banana bread', 33], ['puzzles', 22], ['seattle', 19]],
+  [['climbing shoes', 58], ['vancouver', 41], ['muir woods', 33], ['camping gear', 29], ['bouldering', 27], ['tent', 18]],
+  [['london', 72], ['paris museums', 46], ['eurostar', 31], ['react hooks', 28], ['louvre tickets', 17], ['jet lag', 15]],
+  [['austin bbq', 49], ['typescript', 44], ['running shoes', 36], ['lease renewal', 21], ['postgres', 19], ['sxsw', 14]],
+  [['oaxaca', 81], ['spanish lessons', 47], ['mezcal', 32], ['day of the dead', 30], ['mexico city tacos', 27], ['tlayuda', 12]],
+  [['tokyo', 112], ['lisbon', 94], ['chicago apartments', 77], ['jr pass', 41], ['moving checklist', 38], ['winter coat', 36], ['wicker park', 29]],
+  [['half marathon', 88], ['running gels', 34], ['denver', 29], ['lakefront trail', 26], ['knee pain running', 19], ['sourdough', 12]],
+];
+const QUESTIONS: string[][] = [
+  ['how to make sourdough starter', 'why is my bread so dense', 'how long to proof dough'],
+  ['what size climbing shoes', 'is muir woods open', 'how to set up a tent alone'],
+  ['what to see in paris in 3 days', 'is the eurostar worth it', 'how to beat jet lag'],
+  ['what are typescript generics', 'how to negotiate rent', 'how often to replace running shoes'],
+  ['is oaxaca safe', 'how do you say i’m vegetarian in spanish', 'what is mole negro'],
+  ['is the jr pass worth it', 'how cold does chicago get', 'how to pack books for moving', 'what to wear to a wedding in napa'],
+  ['how to train for a half marathon', 'what pace for a 2 hour half', 'should you run the day before a race'],
+];
+const CURIOSITY: Curiosity = {
+  searches: 48_210, queries: 31_870, questions: 6_420, first: { q: 'weather san francisco', ts: `${YEARS[0]}-01-04T08:30:00Z`, rowid: row() }, last: `${iso(TODAY)}T08:00:00Z`,
+  top: [['weather', 412], ['chicago weather', 188], ['ramen near me', 96], ['google translate', 88], ['half marathon pace calculator', 61], ['tokyo weather', 44], ['first ascent hours', 39], ['lakefront trail', 31]]
+    .map(([q, n], i) => ({ q: q as string, count: n as number, first: `${YEARS[i % 3]}-03-01T12:00:00Z`, last: `${THIS_YEAR}-09-01T12:00:00Z`, rowid: row() })),
+  years: Object.fromEntries(YEARS.map((yy, i) => [yy, {
+    count: int(5400, 8200), topics: TOPICS[i].map(([word, n]) => ({ word, count: n, rowid: row() })),
+    questions: QUESTIONS[i].map((q, j) => ({ q, ts: `${yy}-${String(2 + j * 3).padStart(2, '0')}-12T21:00:00Z`, rowid: row() })),
+  }])),
+  months: everyMonth((yy, m) => 520 + 120 * Math.sin(m) + int(0, 160)),
+  by_hour: hourly((h) => (h < 7 ? 8 : 0) + 260 * Math.exp(-((h - 11) ** 2) / 10) + 300 * Math.exp(-((h - 21) ** 2) / 6)),
+  before_trips: [
+    { trip: 'lisbon', places: ['Lisbon', 'Porto'], start: y(1, '05-16'), days: 10, count: 38, searches: ['lisbon pastel de nata best', 'lisbon tram 28', 'porto port cellars', 'lisbon to porto train'] },
+    { trip: 'tokyo', places: ['Tokyo', 'Kyoto'], start: y(1, '03-28'), days: 11, count: 52, searches: ['tokyo jr pass worth it', 'fushimi inari early morning', 'kyoto bamboo forest', 'tokyo cherry blossom forecast'] },
+    { trip: 'mexico', places: ['Mexico City', 'Oaxaca'], start: y(2, '11-18'), days: 11, count: 27, searches: ['mexico city tacos al pastor', 'oaxaca tlayuda', 'oaxaca day of the dead', 'mexico city to oaxaca flight'] },
+  ].map((t) => ({ ...t, searches: t.searches.map((q, j) => ({ q, ts: `${t.start}T20:00:00Z`.replace(/-\d\dT/, `-${String(Math.max(1, 12 - j * 3)).padStart(2, '0')}T`), rowid: row() })) })),
+};
+
+const CHANNELS: [string, string][] = [['Tiny Desk Concerts', 'YouTube'], ['The Great British Baking Show', 'Netflix'], ['Climbing Daily', 'YouTube'], ['Binging with Babish', 'YouTube'],
+  ['Kurzgesagt', 'YouTube'], ['Our Planet', 'Netflix'], ['Running Channel', 'YouTube'], ['Chicago Architecture Center', 'YouTube'], ['Japan Walk', 'YouTube'], ['Fireship', 'YouTube']];
+const WATCHING: Watching = {
+  videos: 64_310, channels: 4_210, from: { YouTube: 58_900, Netflix: 5_410 }, first: { title: 'Golden Gate Bridge in 4K', channel: 'Fog City Films', ts: `${YEARS[0]}-01-06T21:00:00Z`, rowid: row() },
+  last: `${iso(TODAY)}T21:30:00Z`,
+  top_channels: CHANNELS.map(([name, service], i) => ({ name, count: Math.round(2400 / (i + 1.2)), first: `${YEARS[i % 4]}-02-01T20:00:00Z`, last: `${THIS_YEAR}-09-12T21:00:00Z`, rowid: row(), service, years: {} })),
+  rewatched: [['How to Train for Your First Half Marathon', 'Running Channel', 9], ['Fushimi Inari at Dawn', 'Japan Walk', 6], ['Phoebe Bridgers: Tiny Desk', 'Tiny Desk Concerts', 5], ['The Perfect Sourdough', 'Binging with Babish', 4]]
+    .map(([title, channel, n]) => ({ title: title as string, channel: channel as string, count: n as number, rowid: row(), service: 'YouTube' })),
+  years: Object.fromEntries(YEARS.map((yy, i) => [yy, { count: int(7400, 10_800), channels: int(600, 1100), top_channels: CHANNELS.slice(i % 3, i % 3 + 6).map(([name]) => ({ name, count: int(120, 420), rowid: row() })) }])),
+  binges: [[ymd(1, 1, 14), 41, 'The Great British Baking Show'], [ymd(2, 12, 26), 33, 'Our Planet'], [ymd(0, 2, 2), 29, 'Climbing Daily']].map(([date, n, channel]) => ({ date: date as string, count: n as number, rowid: row(), channel: channel as string })),
+  after_midnight: 0.07, months: everyMonth((yy, m) => 640 + 220 * Math.cos(m / 1.9) + int(0, 180)),
+  by_hour: hourly((h) => (h < 2 ? 140 : h < 7 ? 12 : 0) + 120 * Math.exp(-((h - 12.5) ** 2) / 3) + 620 * Math.exp(-((h - 21.5) ** 2) / 4)),
+  weekday: [8100, 7900, 8300, 8800, 9900, 11_200, 10_100],
+};
+
+// ---------------------------------------------------------------- what they know
+
+// What advertisers keep about this person: brands they deal with, and a long tail of ones they've never heard of
+// (made-up names, the way a real list mixes a shop you use with a dealership three states away).
+const BRANDS = ['Strava', 'Spotify', 'United Airlines', 'Airbnb', 'Amazon', 'Uber', 'NYT Cooking', 'REI Co-op', 'Patagonia', 'Allbirds', 'Sweetgreen',
+  'Warby Parker', 'Lyft', 'Duolingo', 'Goodreads', 'First Ascent Climbing'];
+const PART_A = ['Lake', 'North', 'Blue', 'Summit', 'Harbor', 'Pine', 'Golden', 'Prairie', 'Maple', 'Union', 'Cedar', 'River', 'Bright', 'Midwest', 'Pacific',
+  'Urban', 'Stone', 'Copper', 'Willow', 'Granite', 'Evergreen', 'Metro', 'Sunrise', 'Evanston', 'Oak Park', 'Naperville', 'Milwaukee', 'Lincoln Park'];
+const PART_B = ['Realty', 'Motors', 'Fitness', 'Dental', 'Insurance', 'Bank', 'Credit Union', 'Outfitters', 'Coffee', 'Mattress Co.', 'Pet Supply', 'Furniture',
+  'Wireless', 'Travel', 'Apparel', 'Home Goods', 'Wellness', 'Auto Group', 'Solar', 'Kitchens', 'Skincare', 'Vision', 'Subaru', 'Toyota', 'Hotels'];
+const AD_NAMES = [...BRANDS, ...PART_A.flatMap((a) => PART_B.map((b) => `${a} ${b}`)).sort(() => rand() - 0.5).slice(0, 1180)];
+const ADVERTISERS: Advertiser[] = AD_NAMES.map((name, i) => {
+  const list = i < 10 || rand() < 0.36, activity = i < BRANDS.length || rand() < 0.7 || !list;
+  const how = [...(list ? ['list'] : []), ...(activity ? ['activity'] : [])] as AdHow[];
+  return { name, services: { Facebook: how, Instagram: how }, emailed: i < 8, rowid: row() };
+}); // the brands they know first, then the long tail as it came (shuffled): the way a real list reads, not a b c
+const items = (values: string[], off: string[] = []) => values.map((value) => ({ value, rowid: row(), ...(off.includes(value) ? { off: true } : {}) }));
+const decided = (service: string, what: string, label: string, group: Decided['group'], values: string[], off: string[] = []): Decided => (
+  { service, services: service.split(' and '), what, label, group, items: items(values, off) });
+const DECIDED: Decided[] = [
+  decided('Facebook and Instagram', 'category', 'Categories you\'re reached under', 'guess', ['Frequent travelers', 'Lives away from family', 'Recently moved', 'Away from hometown',
+    'Technology early adopters', 'Commuters', 'Engaged shoppers', 'Owns: iPhone 16', 'New job', 'Pet owners (all)']),
+  decided('X', 'age', 'Your age', 'guess', ['25-34']), decided('X', 'gender', 'Your gender', 'guess', ['female']), decided('X', 'location', 'Where you are', 'guess', ['Chicago, IL']),
+  decided('X', 'audiences', 'Audiences you\'re in', 'guess', ['214 audiences']),
+  decided('LinkedIn', 'Member Traits', 'Member Traits', 'guess', ['Frequent Traveler', 'Job Seeker', 'Open to Education']),
+  decided('LinkedIn', 'High Value Audience Segments', 'High Value Audience Segments', 'guess', ['Tech Professionals', 'Early Adopters']),
+  decided('LinkedIn', 'Buyer Groups', 'Buyer Groups', 'guess', ['IT Decision Makers', 'Software Buyers']),
+  decided('Facebook and Instagram', 'interest', 'Interests', 'interest', ['Rock climbing', 'Running', 'Half marathon', 'Ramen', 'Japan', 'Lisbon', 'Board games', 'Indie music', 'Sourdough', 'Golf']),
+  decided('X', 'interest', 'Interests', 'interest', ['Bouldering', 'Marathon training', 'Tokyo', 'Chicago', 'Japanese Breakfast', 'Phoebe Bridgers', 'Board games', 'Python',
+    'Open source', 'Baking', 'The Bear', 'Cycling', 'Golf', 'Cryptocurrency', 'Fantasy football', 'Parenting'], ['Cryptocurrency', 'Parenting']),
+  decided('X', 'show', 'Shows you watch', 'interest', ['The Bear', 'Severance', 'Shōgun', 'The Great British Bake Off']),
+  decided('LinkedIn', 'Member Interests', 'Member Interests', 'interest', ['Software Development', 'Outdoor Recreation', 'Running', 'Climbing', 'Travel', 'Cooking', 'Personal Finance']),
+  decided('LinkedIn', 'Member Skills', 'Member Skills', 'other', ['Python', 'TypeScript', 'PostgreSQL', 'React', 'Distributed Systems', 'API Design', 'Mentoring']),
+];
+const toldBy = (name: string, service: string, types: Record<string, number>, back: number): Told => {
+  const last = new Date(TODAY.getTime() - back * 864e5), span = 400 * 864e5;
+  // Each time, spread over the 400 days before the last (bursts around a purchase, the way a shop's tracking reads).
+  const timeline = Object.entries(types).flatMap(([type, n]) => Array.from({ length: n }, () => ({ type, ts: new Date(last.getTime() - rand() ** 1.6 * span).toISOString() })))
+    .sort((a, b) => a.ts.localeCompare(b.ts));
+  return { name, service, events: timeline.length, types, first: timeline[0]?.ts ?? null, last: last.toISOString(), rowid: row(), timeline };
+};
+const TOLD: Told[] = [
+  toldBy('Airbnb', 'Facebook', { SEARCH: 14, VIEW_CONTENT: 9, ADD_TO_WISHLIST: 4, PURCHASE: 2 }, 12), toldBy('United Airlines', 'Facebook', { SEARCH: 11, VIEW_CONTENT: 6, PURCHASE: 3 }, 30),
+  toldBy('REI Co-op', 'Facebook', { VIEW_CONTENT: 9, ADD_TO_CART: 3, PURCHASE: 1 }, 33), toldBy('Strava', 'Facebook', { PAGE_VIEW: 8, CUSTOM: 4 }, 2),
+  toldBy('Lakeshore Realty', 'Facebook', { PAGE_VIEW: 5, LEAD: 1 }, 70), toldBy('Sweetgreen', 'Facebook', { ACTIVATE_APP: 4, PURCHASE: 2 }, 6),
+  toldBy('REI Co-op', 'X', { SiteVisit: 1 }, 33),
+].sort((a, b) => b.events - a.events);
+const THEY_KNOW: TheyKnow = {
+  advertisers: ADVERTISERS.length, on_lists: ADVERTISERS.filter((a) => a.services.Facebook.includes('list')).length,
+  from_activity: ADVERTISERS.filter((a) => a.services.Facebook.includes('activity')).length, emailed: ADVERTISERS.filter((a) => a.emailed).length,
+  decided_count: DECIDED.reduce((n, g) => n + g.items.length, 0) + 412, told_count: TOLD.length, ads_count: 480,
+  services: [{ service: 'Facebook', advertisers: ADVERTISERS.length, how: {}, decided: 32, told: 6, ads: 0 }, { service: 'Instagram', advertisers: ADVERTISERS.length, how: {}, decided: 32, told: 0, ads: 420 },
+    { service: 'X', advertisers: 11, how: {}, decided: 46, told: 1, ads: 60 }, { service: 'LinkedIn', advertisers: 0, how: {}, decided: 48, told: 0, ads: 0 }],
+  advertiser_list: ADVERTISERS, decided: DECIDED, told: TOLD, told_months: everyMonth((yy, m) => (yy === THIS_YEAR ? 4 + int(0, 9) : int(0, 6))),
+  ads: { by_service: { Instagram: 420, X: 60 }, top: ['Strava', 'REI Co-op', 'United Airlines', 'Airbnb', 'Patagonia', 'Lakeshore Realty', 'Duolingo', 'Allbirds'].map((name, i) => ({ name, count: 64 - i * 7, rowid: row() })), months: {} },
+};
+
 // ---------------------------------------------------------------- what Ask shows
 
 // The evening Maya found the Chicago apartment, and that summer by the lake: what the tour's (and the launch video's)
@@ -434,6 +623,6 @@ export const exampleEmbed = async (key: string): Promise<EmbedData | { error: st
 
 export const EXAMPLES: ExampleSet = {
   data: { 'on-this-day': OTD, people: PEOPLE, person: PERSON, places: PLACES, rhythms: RHYTHMS, firsts: FIRSTS, made: MADE, groups: GROUPS, journeys: JOURNEYS, year: YEAR,
-    stream: STREAM },
+    stream: STREAM, listening: LISTENING, movement: MOVEMENT, curiosity: CURIOSITY, watching: WATCHING, 'they-know': THEY_KNOW },
   thumb,
 };

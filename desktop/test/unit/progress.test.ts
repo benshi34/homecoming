@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { accountChoices, assistantSteps, commonAccounts, defaultChosen, nextExportStep, POPULARITY, progress, readyIn, RECOMMENDED, recommended, STEP_GROUPS, stepIndex } from '../../src/shared/progress.ts';
+import { accountChoices, assistantSteps, commonAccounts, defaultChosen, nextExportStep, POPULARITY, progress, readyIn, RECOMMENDED, recommended, STEP_GROUPS, stepIndex, type Waiting, wayTag } from '../../src/shared/progress.ts';
 import { CATALOG, setServices } from '../../src/shared/catalog.ts';
 import type { FoundService } from '../../src/shared/types.ts';
 import { H, hoursAgo, NOW, probe, state, stats, views } from './helpers.ts';
@@ -59,10 +59,16 @@ describe('progress', () => {
   });
 
   test('readyIn wording', () => {
-    const w = (from: number, by: number) => ({ id: 'x', name: 'X', readyFrom: NOW.getTime() + from * H, readyBy: NOW.getTime() + by * H, ready: from <= 0 });
-    assert.equal(readyIn(w(0.5, 5), NOW), 'ready within the hour');
-    assert.equal(readyIn(w(6, 48), NOW), 'ready in about 6 h');
-    assert.equal(readyIn(w(72, 720), NOW), 'ready in about 3 days');
+    const w = (from: number, by: number, state: Waiting['state'] = from <= 0 ? 'due' : 'waiting') => ({ id: 'x', name: 'X', readyFrom: NOW.getTime() + from * H, readyBy: NOW.getTime() + by * H, ready: from <= 0, state });
+    assert.equal(readyIn(w(0.5, 5), NOW), 'could be ready within the hour');
+    assert.equal(readyIn(w(6, 48), NOW), 'could be ready in about 6 h');
+    assert.equal(readyIn(w(72, 720), NOW), 'could be ready in about 3 days');
+    assert.equal(readyIn(w(-1, 10, 'ready'), NOW), 'ready: it said so');
+    assert.equal(readyIn(w(-500, -100, 'expired'), NOW), 'its link has probably expired');
+    assert.equal(wayTag(w(-1, 10, 'ready'))?.text, 'Ready', 'Ready only once the service said so');
+    assert.equal(wayTag(w(-1, 10, 'due'))?.text, 'Due');
+    assert.equal(wayTag(w(-50, -2, 'late'))?.text, 'Late');
+    assert.equal(wayTag(w(2, 10)), null, 'not yet due: no tag');
     assert.equal(readyIn(w(-1, 10), NOW), 'should be ready now');
     assert.equal(readyIn(w(-50, -2), NOW), 'should have arrived by now');
   });
@@ -72,7 +78,11 @@ describe('Setup Assistant steps', () => {
   test('one page per step, in the order of a first setup', () => {
     const steps = assistantSteps(views());
     assert.deepEqual(steps.slice(0, 6).map((s) => s.id), ['welcome', 'access', 'library', 'mac', 'iphone', 'accounts']);
-    assert.deepEqual(steps.slice(-5).map((s) => s.id), ['mail', 'extras', 'identity', 'keep', 'done'], 'who you are once there is data; keeping history going last');
+    assert.deepEqual(steps.slice(-3).map((s) => s.id), ['identity', 'keep', 'done'], 'who you are once there is data; keeping history going last');
+    assert.ok(!steps.some((s) => s.id === 'mail' || s.id === 'extras'), 'no Extras section');
+    const ids = steps.map((s) => s.id);
+    assert.ok(ids.includes('export:other_mail') && ids.includes('export:maps_timeline'), 'Outlook and Maps Timeline are accounts, each with its page');
+    assert.ok(!ids.includes('export:slack') && !ids.includes('export:whatsapp_chats'), 'optional ones start off; gap-fillers are not accounts');
     for (const s of steps) assert.ok(STEP_GROUPS.includes(s.group), s.group);
     assert.equal(new Set(steps.map((s) => s.id)).size, steps.length);
   });
@@ -90,8 +100,9 @@ describe('Setup Assistant steps', () => {
 
   test('the account list puts optional ones last', () => {
     const list = accountChoices(views()).map((v) => v.id);
-    assert.equal(list[list.length - 1], 'google_photos_drive');
-    assert.equal(list.length, CATALOG.filter((s) => s.group === 'web').length);
+    assert.ok(['google_photos_drive', 'slack', 'zoom'].includes(list[list.length - 1]), list.join());
+    assert.deepEqual(list.slice(-3).sort(), ['google_photos_drive', 'slack', 'zoom']);
+    assert.equal(list.length, CATALOG.filter((s) => s.group === 'web').length + 4, 'every web account, and Outlook, Maps Timeline, Slack and Zoom');
   });
 
   test('the accounts most people use are listed most used first, without the ones you added', () => {
@@ -137,7 +148,7 @@ describe('Setup Assistant steps', () => {
     assert.equal(nextExportStep(steps, asked, order[0]), `export:${order[2]}`, 'skips what is handled');
     assert.equal(nextExportStep(steps, asked, order[2]), ids[ids.indexOf(`export:${order[2]}`) + 1]);
     const none = assistantSteps(vs, []);
-    assert.equal(none[stepIndex(none, 'exports')].id, 'mail', 'all turned off: on past the exports, not back to the start');
+    assert.equal(none[stepIndex(none, 'exports')].id, 'identity', 'all turned off: on past the exports, not back to the start');
   });
 
   test('the export pages keep their order as imports finish', () => {
@@ -151,7 +162,9 @@ describe('Setup Assistant steps', () => {
     const steps = assistantSteps(views(), ['discord']);
     assert.equal(steps[stepIndex(steps, 'keep')].id, 'keep');
     assert.equal(steps[stepIndex(steps, 'history')].id, 'library', 'a step saved before the History page was split');
-    assert.equal(steps[stepIndex(steps, 'export:spotify')].id, 'mail', 'an account dropped since: carry on after the exports');
+    assert.equal(steps[stepIndex(steps, 'export:spotify')].id, 'identity', 'an account dropped since: carry on after the exports');
+    assert.equal(steps[stepIndex(steps, 'mail')].id, 'identity', 'a page that is gone (Outlook and other email): carry on there');
+    assert.equal(steps[stepIndex(steps, 'extras')].id, 'identity');
     assert.equal(stepIndex(steps, undefined), 0);
     assert.equal(stepIndex(steps, 'nonsense'), 0);
   });

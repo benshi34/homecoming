@@ -127,7 +127,7 @@ test('errors land on the right sources', () => {
   assert.deepEqual(errorsBySource(job, { code: 1, signal: null, failed: ['build_index'], errors: { build_index: 'disk full' } }, map),
     { imessage: 'disk full', photos: 'disk full' });
   assert.deepEqual(errorsBySource(job, { code: 2, signal: null, failed: [], errors: {} }, map),
-    { imessage: 'Stopped with exit code 2. b c d', photos: 'Stopped with exit code 2. b c d' });
+    { imessage: 'It stopped before it finished. The last thing it said: b c d', photos: 'It stopped before it finished. The last thing it said: b c d' });
   assert.deepEqual(errorsBySource(job, { code: 0, signal: null, failed: [], errors: {} }, map), {});
   const imp = { ...job, kind: 'import', sourceIds: ['discord', 'linkedin'] } as Job;
   assert.deepEqual(errorsBySource(imp, { code: 1, signal: null, failed: ['imports'], errors: { imports: 'BadZipFile' } }, map),

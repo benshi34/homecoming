@@ -27,7 +27,7 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 CORPUS = Path(os.environ.get("CORPUS_DIR") or Path(__file__).resolve().parent.parent / "corpus")
 DB = CORPUS / "corpus.db"
 OUT = CORPUS / "stream"
-VERSION = 1  # bump when events change shape or rules change, so every month is rebuilt
+VERSION = 2  # bump when events change shape or rules change, so every month is rebuilt (2: whole days on their own date)
 
 # ---------------------------------------------------------------- time
 
@@ -79,6 +79,24 @@ def parse(ts, tz=None):
     if t.tzinfo is None:
         t = t.replace(tzinfo=timezone.utc)
     return t.astimezone(zone_of(tz) or TZ)
+
+
+def whole_day(ts, tz=None):
+    """A record of a whole day (a day's Health totals, an all-day event) as midnight of its own date, here: a date
+    written without a zone ("2026-09-10T00:00:00", Health's) or a floating all-day one at UTC midnight is that date;
+    an instant with the record's own zone is the date it was there. Or None."""
+    if not ts:
+        return None
+    s = str(ts)
+    t = parse(s, tz)
+    if not t:
+        return None
+    zoned = s.endswith("Z") or re.search(r"[+-]\d\d:?\d\d$", s)
+    try:
+        d = t.date() if zoned and tz else date.fromisoformat(s[:10])
+    except ValueError:
+        d = t.date()
+    return datetime(d.year, d.month, d.day, tzinfo=TZ)
 
 
 def month_range(month):
@@ -218,8 +236,12 @@ class Rec:
             self.meta = {}
         self.fields = self.meta.get("fields") if isinstance(self.meta.get("fields"), dict) else {}
         tz = self.meta.get("timezone") or self.meta.get("tz")
-        self.t = parse(ts, tz)
-        self.end = parse(ts_end, tz)
+        if self.kind == "health_day" or self.meta.get("all_day") is True:
+            # A whole day is a date, not an instant: on its own day (and in its own month), wherever this Mac is.
+            self.t, self.end = whole_day(ts, tz), whole_day(ts_end, tz)
+        else:
+            self.t = parse(ts, tz)
+            self.end = parse(ts_end, tz)
         self.me = str(is_me) == "1" or self.author == "me"
 
     @property

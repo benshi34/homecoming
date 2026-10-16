@@ -68,6 +68,7 @@ const G: Record<string, ReactNode> = {
   warning: <><path d="M12 4.5 20.5 19h-17Z" /><path d="M12 10v4M12 16.8h.01" /></>,
   sidebar: <><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M9.5 5v14" /></>,
   shield: <><path d="M12 3.5 19 6v5.5c0 4.2-3 7.6-7 9-4-1.4-7-4.8-7-9V6Z" /><path d="m9 12 2.2 2.2L15.5 10" /></>,
+  eye: <><path d="M2.8 12c2.1-4 5.4-6.2 9.2-6.2s7.1 2.2 9.2 6.2c-2.1 4-5.4 6.2-9.2 6.2S4.9 16 2.8 12Z" /><circle cx="12" cy="12" r="3.1" /></>,
 };
 
 // Source -> [glyph, tile color]. Colors are system colors (see styles.css).

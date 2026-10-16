@@ -1,6 +1,7 @@
 // Shapes shared by the main process, the renderer and the tests.
 
-import type { AskSettings } from './ask.ts';
+import type { AskSettings, LocalStatus, SignIn } from './ask.ts';
+import type { Inbox } from './inbox.ts';
 
 export type Access = 'ok' | 'blocked' | 'absent';
 
@@ -95,8 +96,12 @@ export interface Identified {
 // Per-source memory the app keeps between launches (userData/state.json). Never holds passwords.
 // "Do It for Me" (main/export_agent.ts): Claude Code requesting or downloading an export in the person's Chrome.
 export type AgentMode = 'request' | 'download';
-export type AgentStatus = 'queued' | 'running' | 'needs_you' | 'failed' | 'requested' | 'downloading' | 'not_ready';
-export interface AgentState { mode: AgentMode; status: AgentStatus; at: string; step?: string; note?: string; session?: string }
+// stopped: by the person's Stop; dismissed: "I'll Do It Myself". Both are kept a while, so the page can say what to do next.
+export type AgentStatus = 'queued' | 'running' | 'needs_you' | 'failed' | 'requested' | 'downloading' | 'not_ready' | 'stopped' | 'dismissed';
+// auto: started by the app, not the person: a look while it's on its way ("check"), or the download after a ready email
+// ("ready"). reason: why it needs you or failed, when that changes what the page offers.
+export interface AgentState { mode: AgentMode; status: AgentStatus; at: string; step?: string; note?: string; session?: string;
+  auto?: 'check' | 'ready'; reason?: 'chrome' | 'no-claude' | 'quit' }
 
 export interface SourceState {
   requestedAt?: string;
@@ -105,11 +110,16 @@ export interface SourceState {
   readySignal?: { at: string; via: string; text: string; link?: string; sender?: string };
   agent?: AgentState;
   notifyEmail?: string; // where the service said it would email the download link (Do It for Me saw it when requesting)
+  checkedAt?: string; // Claude last looked for it (or that look was stopped): the next look waits from here
+  noChecks?: string; // when the person said Stop Checking: Claude doesn't look for it by itself until they ask again
   stepsDone?: number[];
   skipped?: string; // reason
   doneAt?: string; // guided sources marked done by hand
   lastError?: string;
   lastErrorAt?: string;
+  // 'file': a download that couldn't be used (incomplete, locked, not this service's), so nothing was imported;
+  // otherwise the import itself failed.
+  lastErrorKind?: 'file';
   lastRunAt?: string;
   importedAt?: string;
   lastFileAt?: string; // a download for this source was last moved into corpus/imports/
@@ -121,6 +131,7 @@ export interface SourceState {
 export interface FoundFile extends Identified {
   foundAt: string;
   sourceId: string;
+  ignoredAt?: string; // the person chose Ignore: kept here (it's in ignoredFiles too) so the page can show it again
 }
 
 export interface Settings {
@@ -129,8 +140,14 @@ export interface Settings {
   // "Do It for Me" is on (the person said yes once), and downloads start by themselves once an export is ready.
   agentExports?: boolean;
   agentDownloads?: boolean;
-  // Closing the window leaves the app in the menu bar, reading and watching; it opens at login (the packaged app).
+  // While an export is on its way, Claude opens Chrome every few hours to look for it (needs downloads on). On unless turned off.
+  agentChecks?: boolean;
+  // Closing the window leaves the app in the menu bar, reading and watching (the packaged app).
   background?: boolean;
+  // Opening at login (the packaged app): follows background until the person sets it.
+  openAtLogin?: boolean;
+  backgroundNoticeAt?: string; // the window was first closed with the app staying in the menu bar, and it said so
+
   // AI as a whole (the AI page, agreed to once): undefined until the person decides; off stops Ask, Do It for Me and the
   // download helper. Which agent does the work is the Ask provider (AskSettings.provider), shared by all of them.
   aiOn?: boolean;
@@ -156,6 +173,7 @@ export interface Onboarding {
   done: boolean;
   step?: string;
   chosen?: string[];
+  skippedAt?: string; // left before the end: the Overview offers to carry on
 }
 
 export interface JobView {
@@ -179,7 +197,8 @@ export interface Action {
   primary?: boolean;
   ai?: boolean; // done by an AI agent: drawn with the AI mark
   // Extra input the renderer collects before calling the action.
-  input?: 'password' | 'identity' | 'account' | 'skip-reason' | 'file';
+  // reply: Claude asked something, and the answer box goes with this action.
+  input?: 'password' | 'identity' | 'account' | 'skip-reason' | 'file' | 'reply';
   confirm?: string;
 }
 
@@ -214,6 +233,13 @@ export interface SourceView {
   tag?: string;
   requestedAt?: string;
   accountName?: string;
+  // Asked for and not in yet, as far as the app can tell: before its usual wait is up, ready (an email or a
+  // notification said so), past its usual wait, late, or its link has probably expired.
+  onTheWay?: 'waiting' | 'ready' | 'due' | 'late' | 'expired';
+  deferred?: boolean; // skipped "for now": kept under Needs You's optional ones, not put away
+  inboxes?: Inbox[]; // where its "it's ready" email will come, for Look in Gmail and the like (shared/inbox.ts)
+  ignored?: string[]; // files in Downloads the person chose to ignore for this source
+  arrived?: boolean; // came home while the window was closed: its banner shows when the window opens again
 }
 
 export interface Summary {
@@ -232,6 +258,8 @@ export interface Snapshot {
   probeTime?: string;
   corpusPath?: string;
   readOnly: boolean;
+  demo?: boolean; // a made-up library (scripts/demo.mjs)
+  agentInstalled?: boolean; // Do It for Me can run: Claude Code is on this Mac (or the demo's stand-in)
   label?: string;
   accent?: string;
   onboarding: Onboarding;
@@ -243,8 +271,9 @@ export interface Snapshot {
   services: ServiceEntry[];
   // corpus/mappings/<folder>.json: how a service's export is read (connectors/mapped_exports.py).
   mappings: Record<string, { service: string; items: { describe: string; kind: string }[] }>;
-  // How the app can ask Claude to write a mapping: the Claude CLI, the API (ANTHROPIC_API_KEY), or neither (copy and paste).
-  claude: 'cli' | 'api' | 'codex' | null; // what can write a mapping for a download it doesn't know
+  // What can write a mapping for a download the app doesn't know: the agent Ask uses (Claude Code or Codex), if it's on
+  // this Mac, or nothing (copy and paste). 'api' is no longer used.
+  claude: 'cli' | 'api' | 'codex' | null;
   // Found in your data and not yet in the app: built-in accounts and services already added are left out.
   discovery: Discovery | null;
   defaultBrowser: string; // where export pages open: "Safari", "Google Chrome"
@@ -257,9 +286,33 @@ export interface AskView {
   settings: AskSettings;
   installed: { 'claude-code': boolean; codex: boolean };
   keys: { anthropic: boolean; openai: boolean };
+  local?: LocalStatus; // whether the local model's server answers (checked on this Mac only)
+  signIn?: Partial<Record<'claude-code' | 'codex', SignIn>>; // whether Claude Code and Codex are signed in, as they say
 }
 
 export interface ContentGroup { title: string; rows: { label: string; count: number }[] }
+
+// A record as it is, for a source's samples (py/glance.py samples): what it is, when, who, what it says, and a few
+// things from its meta (call length, steps, the repository...).
+export interface SampleRecord {
+  rowid: number; source: string; kind: string; ts: string; ts_end?: string | null; author?: string | null; is_me: boolean;
+  thread?: string | null; thread_name?: string | null; title?: string | null; text?: string | null; url?: string | null;
+  meta: Record<string, string | number | boolean>;
+}
+
+// A collected source at a glance (py/glance.py): records month by month (local time), by hour and weekday (Sunday
+// first), day by day for the last year, and what's worth saying about them, in words.
+export interface Glance {
+  total: number;
+  kinds?: Record<string, number>;
+  months?: Record<string, number>; // "2019-03" -> records
+  hours?: number[]; // 24
+  weekdays?: number[]; // 7, Sunday first
+  recent?: Record<string, number>; // "2026-10-15" -> records, the last year or so
+  first?: string | null;
+  last?: string | null;
+  facts?: { label: string; value: string; detail?: string | null }[];
+}
 
 // A service found in your data (bridge.py discover-services), matched against data/services.json.
 export interface FoundService {

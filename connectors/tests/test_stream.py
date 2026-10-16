@@ -62,6 +62,10 @@ RECORDS = [
     rec("instagram_activity", 1, "2026-09-10T12:00:00Z", title="ad", meta={"file": "ads_viewed"}),
     # A day's totals, at local midnight.
     rec("health", 1, "2026-09-10T07:00:00Z", "health_day", is_me=True, meta={"steps": 1234, "distance_km": 1.5, "tz": "America/Los_Angeles"}),
+    # Whole days are dates: one written as Health writes them (midnight, no zone, in Chicago), and an all-day event
+    # (Calendar keeps it at UTC midnight). Each on its own day, not the evening before in Los Angeles.
+    rec("health", 2, "2026-09-12T00:00:00", "health_day", is_me=True, meta={"steps": 4321, "tz": "America/Chicago"}),
+    rec("calendar", 3, "2026-09-13T00:00:00Z", "event", ts_end="2026-09-14T00:00:00Z", title="Away day", meta={"all_day": True}),
     # The month's edges in Los Angeles: late on Sep 30 (Oct 1 in UTC) is September; late on Aug 31 is August.
     rec("imessage", 7, "2026-10-01T05:30:00Z", "message", author="Grace Hopper", thread="c1", thread_name="Grace Hopper", text="Last of September"),
     rec("imessage", 8, "2026-09-01T06:30:00Z", "message", author="Grace Hopper", thread="c1", thread_name="Grace Hopper", text="Last of August"),
@@ -152,7 +156,7 @@ class Stream(unittest.TestCase):
         self.assertNotIn("Win", json.dumps(self.events), "spam is left out")
 
     def test_one_dinner_in_two_calendars(self):
-        cal = self.of("calendar")
+        cal = [e for e in self.of("calendar") if e["title"] != "Away day"]
         self.assertEqual(len(cal), 1)
         self.assertEqual(cal[0]["title"], "Dinner")
         self.assertEqual(len(cal[0]["refs"]), 2)
@@ -175,6 +179,13 @@ class Stream(unittest.TestCase):
         self.assertEqual(h[0]["title"], "You walked 1,234 steps, 1.5 km")
         self.assertTrue(h[0]["all_day"])
         self.assertTrue(h[0]["start"].startswith("2026-09-10T00:00:00-07:00"))
+
+    def test_whole_days_land_on_their_own_date(self):
+        h = {e["title"]: e for e in self.of("health")}
+        self.assertTrue(h["You walked 4,321 steps"]["start"].startswith("2026-09-12T00:00:00"), h["You walked 4,321 steps"]["start"])
+        away = next(e for e in self.of("calendar") if e["title"] == "Away day")
+        self.assertTrue(away["all_day"])
+        self.assertTrue(away["start"].startswith("2026-09-13T00:00:00"), away["start"])
 
     def test_files_written_once_and_again_only_where_records_changed(self):
         out = self.corpus / "stream"

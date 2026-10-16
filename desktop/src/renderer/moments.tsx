@@ -13,7 +13,8 @@ const BANNER_MS = 5200, POP_MS = 2600;
 // Mac sources finish in a burst on the first read: their rows pop, but only what you asked for gets a banner.
 const BANNERED = new Set(['web', 'guided', 'iphone']);
 
-// Sources that came home since the window opened: moved to done with records, or done again with more of them.
+// Sources that came home since the window opened (moved to done with records, or done again with more of them), and
+// on opening, those that came home while it was closed.
 export function useArrivals(sources: SourceView[]): { banners: Arrival[]; popped: Set<string>; dismiss: (key: string) => void } {
   const prev = useRef<Map<string, { section: string; records: number }> | null>(null);
   const [banners, setBanners] = useState<Arrival[]>([]);
@@ -21,10 +22,12 @@ export function useArrivals(sources: SourceView[]): { banners: Arrival[]; popped
   useEffect(() => {
     const before = prev.current;
     prev.current = new Map(sources.map((v) => [v.id, { section: v.section, records: v.records }]));
-    if (!before) return;
+    // The window's first look: only what came home while it was closed (main.ts marks it), never everything already here.
     const came = sources.filter((v) => {
+      if (v.group === 'setup' || v.section !== 'done' || !(v.records > 0)) return false;
+      if (!before) return !!v.arrived;
       const b = before.get(v.id);
-      return v.group !== 'setup' && v.section === 'done' && v.records > 0 && !!b && (b.section !== 'done' || v.records > b.records);
+      return !!b && (b.section !== 'done' || v.records > b.records);
     });
     if (!came.length) return;
     const now = Date.now();

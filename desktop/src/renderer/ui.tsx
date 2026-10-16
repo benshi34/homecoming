@@ -1,7 +1,7 @@
 // Controls drawn to look and move like AppKit's: push buttons, switches, the spoked spinner, grouped forms,
 // sheets. Animations go through the View Transitions API and respect Reduce Motion.
 
-import { type CSSProperties, type ReactNode, useEffect, useId, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Glyph } from './icons.tsx';
 
@@ -147,10 +147,27 @@ export function GroupRow({ icon, title, subtitle, trailing, onClick, testId, sel
   );
 }
 
+// Sheets open now, oldest first: Escape closes only the one on top (a record opened from a list of them goes back
+// to the list).
+const openSheets: object[] = [];
+export const sheetOpen = () => openSheets.length > 0;
+
 // A window-modal sheet that drops from the top of the window, like AppKit's.
 export function Sheet({ children, onClose, testId, width = 460 }: { children: ReactNode; onClose: () => void; testId?: string; width?: number }) {
+  const me = useRef({});
   useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const token = me.current;
+    openSheets.push(token);
+    return () => {
+      openSheets.splice(openSheets.indexOf(token), 1);
+    };
+  }, []);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || openSheets[openSheets.length - 1] !== me.current) return;
+      e.stopImmediatePropagation();
+      onClose();
+    };
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onClose]);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { CATALOG } from '../../src/shared/catalog.ts';
-import { computeSources, gapYears, LAW_HINT, latestBackup, mirrorIsCurrent, nextUp, robustFirst, summarize, totals } from '../../src/shared/status.ts';
+import { computeSources, gapYears, LAW_HINT, latestBackup, mirrorIsCurrent, nextUp, READ_ONLY_OK, robustFirst, summarize, totals } from '../../src/shared/status.ts';
 import type { Backup, JobView } from '../../src/shared/types.ts';
 import { actionIds, H, hoursAgo, input, NOW, probe, state, stats, view, views } from './helpers.ts';
 
@@ -52,7 +52,8 @@ describe('setup', () => {
   test('Full Disk Access', () => {
     const no = view('fda', { probe: probe({ fda: false, sources: { imessage: 'blocked', photos: 'blocked', ai_coding: 'ok' } }) });
     assert.equal(no.section, 'needs');
-    assert.equal(no.status, 'Needed for 2 sources on this Mac');
+    assert.equal(no.status, 'Needed for 3 sources on this Mac', 'and the iPhone backup it can\'t see yet');
+    assert.equal(view('fda', { probe: probe({ fda: false, backups: [backup()], sources: { imessage: 'blocked', photos: 'blocked', ai_coding: 'ok' } }) }).status, 'Needed for 2 sources on this Mac');
     assert.deepEqual(actionIds(no), ['open-fda-settings', 'recheck']);
     assert.equal(view('fda', { probe: probe({ fda: null }) }).section, 'unavailable');
     assert.equal(view('fda').section, 'done');
@@ -137,7 +138,7 @@ describe('setup', () => {
     assert.equal(view('retention_codex').section, 'unavailable');
     const g = view('retention_google');
     assert.equal(g.section, 'needs');
-    assert.deepEqual(actionIds(g), ['open-external', 'mark-done']);
+    assert.deepEqual(actionIds(g), ['open-external', 'mark-done', 'skip'], 'with "I Don\'t Use Google"');
     assert.equal(view('retention_google', { state: state((s) => (s.sources.google_takeout = { skipped: 'I don\'t use it' })) }).section, 'unavailable');
     assert.equal(view('retention_maps').status, 'Timeline deletes visits older than 3 months by default');
     assert.equal(view('retention_maps', { state: state((s) => (s.sources.retention_maps = { doneAt: hoursAgo(1) })) }).section, 'done');
@@ -346,6 +347,7 @@ describe('web exports', () => {
   test('every export page says which privacy law to pick on a request form, and to ask for a copy, not deletion', () => {
     for (const id of ['discord', 'spotify', 'google_takeout']) assert.ok(view(id).notes!.includes(LAW_HINT), id);
     assert.ok(!view('reddit').notes!.includes(LAW_HINT), 'Reddit\'s own steps already walk through its form');
+    for (const id of ['other_mail', 'maps_timeline']) assert.ok(!view(id).notes!.includes(LAW_HINT), `${id}: set up by hand, no request form`);
     assert.match(LAW_HINT, /never deletion/);
   });
 
@@ -364,14 +366,14 @@ describe('web exports', () => {
     const mailed = view('spotify', { state: state((s) => (s.sources.spotify = { requestedAt: hoursAgo(5),
       readySignal: { at: hoursAgo(1), via: 'Mail', sender: 'Spotify', text: 'Your Spotify data is ready to download', link: 'https://www.spotify.com/account/privacy/download' } })) });
     assert.equal(mailed.status, 'Ready: Spotify emailed you 1 h ago');
-    assert.equal(mailed.actions.find((a) => a.id === 'open-ready')?.label, 'Open the download link');
+    assert.equal(mailed.actions.find((a) => a.id === 'open-ready')?.label, 'Open the Download Link');
   });
 
   test('iPhone notifications on this Mac: why to turn them on, and whether they are', () => {
     const off = view('iphone_notifications', { probe: probe({ notifications: { readable: true, iphone: false } }) });
     assert.equal(off.section, 'needs');
     assert.ok(off.optional);
-    assert.deepEqual(actionIds(off), ['open-notification-settings', 'mark-done']);
+    assert.deepEqual(actionIds(off), ['open-notification-settings', 'mark-done', 'skip']);
     assert.match(off.detail!, /Many services tell you on your iPhone/);
     assert.equal(view('iphone_notifications', { probe: probe({ notifications: { readable: true, iphone: true } }) }).section, 'done');
     const told = view('iphone_notifications', { state: state((s) => (s.sources.iphone_notifications = { doneAt: hoursAgo(1) })) });
@@ -396,14 +398,127 @@ describe('web exports', () => {
     const working = with_({ mode: 'request', status: 'running', at: hoursAgo(0), step: 'Opening Instagram\'s export page' });
     assert.deepEqual([working.section, working.status, actionIds(working)], ['working', 'Opening Instagram\'s export page', ['agent-stop']]);
     const needs = with_({ mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Sign in to Instagram in Chrome.', session: 's1' });
-    assert.deepEqual([needs.section, needs.status, actionIds(needs)], ['needs', 'Needs you: Sign in to Instagram in Chrome.', ['agent-continue', 'agent-dismiss']]);
+    assert.deepEqual([needs.section, needs.status, actionIds(needs)], ['needs', 'Needs you: Sign in to Instagram in Chrome.', ['agent-continue', 'open-chrome', 'agent-dismiss']]);
+    assert.equal(needs.actions[0].input, 'reply', 'its answer box goes with Continue');
+    assert.ok(needs.steps?.length, 'the steps stay, to do it yourself');
     const failed = with_({ mode: 'request', status: 'failed', at: hoursAgo(0), note: 'The page never loaded.' });
     assert.equal(failed.status, 'Claude couldn\'t finish: The page never loaded.');
     assert.equal(failed.actions[0].id, 'agent-request');
+    assert.ok(failed.steps?.length, 'and here too');
     assert.equal(with_({ mode: 'request', status: 'failed', at: hoursAgo(3) }, { requestedAt: hoursAgo(1) }).status.startsWith('Requested'), true, 'requested since: that wins');
     assert.equal(with_({ mode: 'request', status: 'needs_you', at: hoursAgo(60) }).status, 'Not requested yet', 'after two days it is old news');
     const down = with_({ mode: 'download', status: 'downloading', at: hoursAgo(0) }, { requestedAt: hoursAgo(20) });
     assert.deepEqual([down.section, down.status], ['working', 'Downloading in Chrome']);
+  });
+
+  test('Do It for Me needs Claude Code: without it, nothing offers to start Claude, and a run that failed for it says how to set it up', () => {
+    const none = (more: object = {}) => view('instagram', { claudeCode: false, state: state((s) => (s.sources.instagram = more as never)) });
+    assert.ok(!actionIds(none()).some((a) => ['agent-request', 'agent-download', 'agent-continue'].includes(a)), 'no Do It for Me');
+    assert.equal(none().actions.find((a) => a.primary)?.id, 'open', 'opening the page yourself comes first');
+    assert.ok(!actionIds(none({ requestedAt: hoursAgo(30) })).some((a) => a.startsWith('agent-')), 'no Look for It either');
+    const failed = none({ agent: { mode: 'request', status: 'failed', at: hoursAgo(0), note: 'Claude Code isn\'t on this Mac.', reason: 'no-claude' } });
+    assert.equal(failed.status, 'Do It for Me needs Claude Code');
+    assert.ok(actionIds(failed).includes('get-claude-code'));
+    assert.ok(!failed.actions.some((a) => a.label === 'Try Again'), 'not Try Again, which can only fail');
+    assert.ok(failed.steps?.length);
+    assert.ok(actionIds(view('instagram')).includes('agent-request'), 'with it there (or not known), Do It for Me is offered');
+  });
+
+  test('Do It for Me turned off sets aside what Claude was doing, as AI off does', () => {
+    const v = view('instagram', { state: state((s) => {
+      Object.assign(s.settings, { aiOn: true, agentExports: false });
+      s.sources.instagram = { agent: { mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Sign in.', session: 's' } };
+    }) });
+    assert.equal(v.status, 'Not requested yet');
+    assert.ok(actionIds(v).includes('agent-request'), 'asking again goes through its sheet');
+  });
+
+  test('waiting its turn: named after the one Claude is doing, with a clock rather than a busy bar', () => {
+    const vs = views({ state: state((s) => {
+      s.sources.facebook = { agent: { mode: 'request', status: 'running', at: hoursAgo(0), step: 'Choosing JSON' } };
+      s.sources.discord = { agent: { mode: 'request', status: 'queued', at: hoursAgo(0) } };
+    }) });
+    const d = vs.find((v) => v.id === 'discord')!;
+    assert.equal(d.status, 'Waiting: Claude is doing Facebook and Messenger first');
+    assert.equal(d.waiting, true);
+    assert.equal(vs.find((v) => v.id === 'facebook')!.waiting, undefined);
+  });
+
+  test('after Homecoming quit mid-run: carry on or start over, with nothing to answer', () => {
+    const quit = (session?: string) => view('instagram', { state: state((s) => (s.sources.instagram = {
+      agent: { mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Homecoming quit before it finished.', reason: 'quit', session } })) });
+    const v = quit('s1');
+    assert.equal(v.status, 'Interrupted when Homecoming quit');
+    assert.deepEqual(v.actions.map((a) => [a.id, a.label]), [['agent-continue', 'Carry On'], ['agent-request', 'Start Over'], ['agent-dismiss', 'I\'ll Do It Myself']]);
+    assert.ok(!v.actions.some((a) => a.input === 'reply'), 'no answer box');
+    assert.deepEqual(actionIds(quit()), ['agent-request', 'agent-dismiss'], 'never started: start it');
+  });
+
+  test('the Claude in Chrome extension not connected: open Chrome or try again, with nothing to answer', () => {
+    const v = view('instagram', { state: state((s) => (s.sources.instagram = {
+      agent: { mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Turn on the Claude in Chrome extension.', reason: 'chrome', session: 's1' } })) });
+    assert.equal(v.status, 'Needs you: turn on Claude in Chrome');
+    assert.deepEqual(actionIds(v), ['open-chrome', 'agent-request', 'agent-dismiss']);
+    assert.equal(v.actions[0].primary, true);
+    assert.ok(!v.actions.some((a) => a.input === 'reply'));
+  });
+
+  test('stopped, or taken over, while requesting: not requested yet, and what to do if Claude had asked already', () => {
+    const at = (status: string) => view('instagram', { state: state((s) => (s.sources.instagram = { agent: { mode: 'request', status, at: hoursAgo(0.1) } as never })) });
+    assert.equal(at('stopped').status, 'Not requested yet');
+    assert.match(at('stopped').detail!, /^You stopped Claude 6 min ago\. If it had already asked Instagram for your data, choose I've Requested It\./);
+    assert.match(at('dismissed').detail!, /^Doing it yourself: follow the steps below, then choose I've Requested It\./);
+  });
+
+  test('a download that never arrived says so, instead of quietly going back to waiting', () => {
+    const v = view('instagram', { state: state((s) => (s.sources.instagram = { requestedAt: hoursAgo(30), agent: { mode: 'download', status: 'downloading', at: hoursAgo(1) } })) });
+    assert.equal(v.section, 'needs');
+    assert.equal(v.status, 'Nothing arrived from Chrome');
+    assert.match(v.detail!, /Look in Chrome's downloads/);
+    assert.equal(v.actions[0].id, 'agent-download');
+  });
+
+  test('Claude\'s checks: Stop Checking while they\'re on, a quiet note when one didn\'t finish, and asking again turns them back on', () => {
+    const on = (src: object) => state((s) => {
+      Object.assign(s.settings, { aiOn: true, agentExports: true, agentDownloads: true });
+      s.sources.discord = src as never;
+    });
+    const waiting = view('discord', { state: on({ requestedAt: hoursAgo(30) }) });
+    assert.ok(actionIds(waiting).includes('agent-no-checks'));
+    const failed = view('discord', { state: on({ requestedAt: hoursAgo(30), agent: { mode: 'download', status: 'failed', at: hoursAgo(0.1), note: 'Gmail wouldn\'t load.', auto: 'check' } }) });
+    assert.match(failed.status, /^Requested 30 h ago/, 'a look it made by itself is no news');
+    assert.ok(failed.notes!.some((n) => /^Claude looked for it 6 min ago, but couldn't finish: Gmail wouldn't load\. It looks again every few hours\./.test(n)), failed.notes!.join('\n'));
+    const mine = view('discord', { state: on({ requestedAt: hoursAgo(30), agent: { mode: 'download', status: 'failed', at: hoursAgo(0.1), note: 'Gmail wouldn\'t load.' } }) });
+    assert.equal(mine.status, 'Claude couldn\'t finish: Gmail wouldn\'t load.', 'one you asked for is');
+    const stopped = view('discord', { state: on({ requestedAt: hoursAgo(30), noChecks: hoursAgo(1) }) });
+    assert.ok(!actionIds(stopped).includes('agent-no-checks'));
+    assert.ok(stopped.notes!.some((n) => /you chose Stop Checking\. Look for It turns that back on/.test(n)));
+    const off = view('discord', { state: state((s) => {
+      Object.assign(s.settings, { aiOn: true, agentExports: true, agentDownloads: true, agentChecks: false });
+      s.sources.discord = { requestedAt: hoursAgo(30) };
+    }) });
+    assert.ok(!actionIds(off).includes('agent-no-checks'), 'checks turned off in Settings: nothing to stop');
+  });
+
+  test('with Watch Downloads off, no page promises to pick the file up from Downloads', () => {
+    const st = state((s) => {
+      s.settings.watchDownloads = false;
+      s.sources.google_takeout = { requestedAt: hoursAgo(10) };
+    });
+    assert.match(view('google_takeout', { state: st }).detail!, /download it, then add it here \(Watch Downloads is off in Settings\)/);
+    const tl = view('maps_timeline', { state: state((s) => (s.settings.watchDownloads = false)) });
+    assert.ok(!tl.steps!.some((x) => /picks it up from Downloads/.test(x.text)), tl.steps!.map((x) => x.text).join('\n'));
+    assert.ok(view('maps_timeline').steps!.some((x) => /picks it up from Downloads/.test(x.text)), 'on, it does');
+  });
+
+  test('once it\'s ready, the page stops saying what it watches for', () => {
+    const v = view('spotify', { state: state((s) => (s.sources.spotify = { requestedAt: hoursAgo(5), readySignal: { at: hoursAgo(1), via: 'Mail', sender: 'Spotify', text: 'Your data is ready' } })) });
+    assert.ok(!v.notes!.some((n) => /While you wait/.test(n)));
+  });
+
+  test('read-only mode allows looking and opening pages, nothing that changes what is kept', () => {
+    for (const id of ['open', 'open-ready', 'open-download', 'recheck', 'open-chrome', 'get-claude-code']) assert.ok(READ_ONLY_OK.has(id), id);
+    for (const id of ['mark-requested', 'unrequest', 'skip', 'toggle-step', 'agent-request', 'agent-dismiss', 'ignore-found', 'import-found', 'add-file', 'run']) assert.ok(!READ_ONLY_OK.has(id), id);
   });
 
   test('requested: waiting, then ready, then late, then expired', () => {
@@ -422,7 +537,11 @@ describe('web exports', () => {
     assert.match(late.status, /taking longer than usual/);
     const expired = view('google_takeout', { state: at(48 + 24 * 8) });
     assert.match(expired.status, /probably expired/);
-    assert.ok(actionIds(expired).includes('unrequest'));
+    assert.deepEqual(actionIds(expired), ['open', 'mark-requested', 'add-file'], 'ask again, then say so: no button that only resets');
+    assert.equal(expired.actions[1].label, 'I\'ve Requested a New One');
+    assert.equal(expired.onTheWay, 'expired');
+    assert.equal(late.onTheWay, 'late');
+    assert.equal(ready.onTheWay, 'due');
   });
 
   test('ready exports outrank exports not started yet', () => {
@@ -436,9 +555,30 @@ describe('web exports', () => {
     const st = state((s) => s.found.push({ path: '/d/package.zip', name: 'package.zip', kind: 'discord', valid: true, size: 6e6, foundAt: hoursAgo(0), sourceId: 'discord' }));
     const v = view('discord', { state: st });
     assert.equal(v.section, 'needs');
-    assert.equal(v.priority, 9);
-    assert.equal(v.detail, 'package.zip (6.0 MB)');
+    assert.equal(v.priority, 4.5, 'a file waiting in Downloads comes before settings to change');
+    assert.match(v.detail!, /^package\.zip \(6\.0 MB\)\n/);
+    assert.match(v.detail!, /You hadn't asked Discord for your data in the app, so it waits for a yes\. Importing moves it out of Downloads/, 'why it asks');
     assert.deepEqual(actionIds(v), ['import-found', 'ignore-found']);
+  });
+
+  test('a download for a source you skipped is offered too, and importing it includes the source again', () => {
+    const st = state((s) => {
+      s.sources.discord = { skipped: 'Not now' };
+      s.found.push({ path: '/d/package.zip', name: 'package.zip', kind: 'discord', valid: true, size: 6e6, foundAt: hoursAgo(0), sourceId: 'discord' });
+    });
+    const v = view('discord', { state: st });
+    assert.deepEqual([v.section, v.status, actionIds(v)], ['needs', 'Found the export in Downloads', ['import-found', 'ignore-found']]);
+    assert.match(v.detail!, /You skipped Discord\. Importing it includes Discord again/);
+    assert.equal(view('discord', { state: state((s) => (s.sources.discord = { skipped: 'I don\'t use it' })) }).section, 'unavailable', 'nothing found: still skipped');
+    assert.equal(view('discord', { state: state((s) => (s.sources.discord = { skipped: 'Not now' })) }).status, 'Set aside for now', 'or set aside for now');
+  });
+
+  test('an ignored download is not offered again, but the page can show it', () => {
+    const st = state((s) => s.found.push({ path: '/d/package.zip', name: 'package.zip', kind: 'discord', valid: true, size: 6e6, foundAt: hoursAgo(1),
+      sourceId: 'discord', ignoredAt: hoursAgo(0) }));
+    const v = view('discord', { state: st });
+    assert.equal(v.status, 'Not requested yet');
+    assert.deepEqual(v.ignored, ['package.zip']);
   });
 
   test('importing, imported, failed', () => {
@@ -586,5 +726,71 @@ describe('helpers', () => {
     assert.equal(computeSources(input({ state: st })).find((v) => v.id === 'notion')!.section, 'working');
     const later = new Date(NOW.getTime() + 2 * H);
     assert.equal(computeSources(input({ state: st, now: later })).find((v) => v.id === 'notion')!.section, 'needs');
+  });
+});
+
+describe('ways back and plain next steps (the UX audit)', () => {
+  test('a check you made by hand can be undone, and one that isn\'t for you can be set aside and brought back', () => {
+    const checked = view('retention_google', { state: state((s) => (s.sources.retention_google = { doneAt: hoursAgo(1) })) });
+    assert.equal(checked.status, 'Checked by you');
+    assert.deepEqual(actionIds(checked), ['unmark-done']);
+    assert.equal(view('retention_google').actions.find((a) => a.id === 'skip')?.label, 'I Don\'t Use Google');
+    const notMine = view('retention_google', { state: state((s) => (s.sources.retention_google = { skipped: 'Not using it' })) });
+    assert.equal(notMine.section, 'unavailable');
+    assert.equal(notMine.status, 'Not using Google');
+    assert.deepEqual(actionIds(notMine), ['unskip']);
+    assert.ok(view('retention_google').notes!.some((n) => /gone for good/.test(n)), 'says why it matters');
+  });
+
+  test('changing a settings file asks first, and says what it changes', () => {
+    const retention = (claude: object) => ({ ...probe().retention, claude: claude as never });
+    const fix = view('retention_claude', { probe: probe({ retention: retention({ present: true, days: 7 }) }) }).actions[0];
+    assert.match(fix.confirm ?? '', /cleanupPeriodDays in ~\/\.claude\/settings\.json/);
+    assert.equal(view('retention_claude', { probe: probe({ retention: retention({ present: true, days: 100000 }) }) }).status, 'Kept forever');
+  });
+
+  test('waiting on Full Disk Access: the way to turn it on is right there', () => {
+    const p = probe({ fda: false, sources: { ...probe().sources, imessage: 'blocked' } });
+    const msgs = view('imessage', { probe: p });
+    assert.deepEqual(actionIds(msgs), ['open-fda-settings', 'recheck']);
+    const safari = view('retention_safari', { probe: probe({ fda: false, retention: { ...probe().retention, safari: { readable: false, value: null } as never } }) });
+    assert.deepEqual(actionIds(safari), ['open-fda-settings', 'mark-done'], 'or check it by hand, then Done');
+    const phone = view('iphone_backup', { probe: probe({ fda: false, backups: [] }) });
+    assert.deepEqual(actionIds(phone), ['open-fda-settings', 'recheck'], 'not Open Finder');
+  });
+
+  test('"Not now" sets it aside under Needs You, not away in Not Collecting', () => {
+    for (const id of ['discord', 'photos']) {
+      const v = view(id, { state: state((s) => (s.sources[id] = { skipped: 'Not now' })) });
+      assert.equal(v.section, 'needs', id);
+      assert.equal(v.optional, true);
+      assert.equal(v.deferred, true);
+      assert.equal(v.status, 'Set aside for now');
+      assert.deepEqual(actionIds(v), ['unskip']);
+    }
+    assert.equal(view('discord', { state: state((s) => (s.sources.discord = { skipped: 'I don\'t use it' })) }).section, 'unavailable');
+  });
+
+  test('a download that couldn\'t be used asks for the download again, not to run the import again', () => {
+    const bad = view('discord', { state: state((s) => (s.sources.discord = { lastError: 'package.zip looks incomplete or damaged, so it wasn\'t added. Download it again.', lastErrorAt: hoursAgo(0.1), lastErrorKind: 'file' })) });
+    assert.equal(bad.status, 'That download couldn\'t be used');
+    assert.equal(bad.actions[0].id, 'add-file');
+    assert.ok(bad.actions[0].primary);
+    assert.ok(!actionIds(bad).includes('reimport'));
+    const failed = view('discord', { state: state((s) => (s.sources.discord = { lastError: 'The importer couldn\'t read this export', lastErrorAt: hoursAgo(0.1) })) });
+    assert.equal(failed.status, 'The import failed');
+    assert.equal(failed.actions[0].id, 'reimport');
+  });
+
+  test('the privacy-law note is for asking: not once it\'s asked for or in', () => {
+    const asked = view('discord', { state: state((s) => (s.sources.discord = { requestedAt: hoursAgo(1) })) });
+    assert.ok(!asked.notes!.includes(LAW_HINT));
+  });
+
+  test('what waits on you outranks settings to change', () => {
+    const retention = (claude: object) => ({ ...probe().retention, claude: claude as never });
+    const p = probe({ retention: retention({ present: true, days: 7 }) });
+    const ready = view('instagram', { probe: p, state: state((s) => (s.sources.instagram = { requestedAt: hoursAgo(30), readySignal: { at: hoursAgo(1), via: 'Mail', text: 'Your information is ready', sender: 'Instagram' } })) });
+    assert.ok(ready.priority < view('retention_claude', { probe: p }).priority);
   });
 });

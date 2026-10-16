@@ -7,6 +7,7 @@ import { setServices } from '../shared/catalog.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { Assistant } from './assistant.tsx';
+import { Celebrations } from './celebrate.tsx';
 import { Glyph } from './icons.tsx';
 import { MainWindow, type Nav } from './main_window.tsx';
 import { animate } from './ui.tsx';
@@ -16,7 +17,7 @@ const layoutOf = (s: Snapshot) => s.sources.map((v) => `${v.id}:${v.section}:${v
 
 function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
-  const [toasts, setToasts] = useState<{ id: number; text: string; kind: string }[]>([]);
+  const [toasts, setToasts] = useState<{ id: number; text: string; kind: string; undo?: { sourceId: string; action: string } }[]>([]);
   const [assistant, setAssistant] = useState<boolean | null>(null); // null: follow onboarding.done
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -43,7 +44,7 @@ function App() {
     const offT = api.onToast((t) => {
       const id = ++n;
       setToasts((ts) => [...ts.filter((x) => x.text !== t.text).slice(-2), { id, ...t }]);
-      setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), t.kind === 'error' ? 9000 : 5000);
+      setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), t.kind === 'error' || t.undo ? 9000 : 5000);
     });
     const offM = api.onMenu((cmd) => {
       if (cmd === 'show-settings') setSettingsOpen(true);
@@ -51,6 +52,7 @@ function App() {
       if (cmd === 'show-hub') animate(() => { setAssistant(false); setNav('hub'); });
       if (cmd === 'show-assistant') animate(() => setAssistant(true));
       if (cmd === 'show-overview') animate(() => { setAssistant(false); setNav('overview'); });
+      if (cmd === 'show-ai') animate(() => { setAssistant(false); setNav('ai'); });
       if (cmd.startsWith('open-source:')) animate(() => { setAssistant(false); setFocus({ id: cmd.slice(12), n: Date.now() }); });
     });
     return () => {
@@ -90,19 +92,26 @@ function App() {
 
   if (!snap) return <div className="window wide"><div className="sidebar drag" /><div className="column"><div className="empty">Checking this Mac…</div></div></div>;
 
-  const showAssistant = assistant ?? !snap.onboarding.done;
-  const finish = () => {
-    void api.onboarding({ done: true });
+  // Left part-way, it stays left (the Overview offers to carry on) until it's finished.
+  const showAssistant = assistant ?? (!snap.onboarding.done && !snap.onboarding.skippedAt);
+  const leave = (patch: Partial<Snapshot['onboarding']>) => {
+    void api.onboarding(patch);
     animate(() => {
       setAssistant(false);
       setNav('overview');
     });
   };
+  // Finished; from a row on the last page, straight to that source.
+  const finish = (showId?: string) => {
+    leave({ done: true });
+    if (showId) setFocus({ id: showId, n: Date.now() });
+  };
+  const exit = () => leave({ skippedAt: new Date().toISOString() });
   const style = snap.accent ? ({ '--accent': snap.accent } as CSSProperties) : undefined;
   return (
     <div style={{ height: '100%', ...style }} data-testid="app" data-mode={showAssistant ? 'assistant' : 'main'}>
       {showAssistant
-        ? <Assistant snap={snap} onFinish={finish} onExit={finish} />
+        ? <Assistant snap={snap} onFinish={finish} onExit={exit} />
         : <MainWindow snap={snap} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen} nav={nav} setNav={setNav} focus={focus}
           adding={adding} setAdding={setAdding} onAssistant={() => animate(() => setAssistant(true))} />}
       <div className="toasts" data-testid="toasts">
@@ -110,12 +119,26 @@ function App() {
           <div key={t.id} className={`toast ${t.kind}`}>
             <Glyph name={t.kind === 'error' ? 'warning' : 'checkCircle'} size={16} />
             <span>{t.text}</span>
+            {t.undo && <button className="toast-undo" data-action="toast-undo" onClick={() => {
+              void api.action(t.undo!.sourceId, t.undo!.action);
+              setToasts((ts) => ts.filter((x) => x.id !== t.id));
+            }}>Undo</button>}
           </div>
         ))}
       </div>
-      {dragging && <div className="dropping" />}
+      {dragging && <div className="dropping"><div className="dropping-label">{dropLabel(snap)}</div></div>}
+      {/* A source coming home, an export asked for: worth a moment, in the Setup Assistant and the window alike. */}
+      <Celebrations sources={snap.sources} />
     </div>
   );
+}
+
+// What happens to files dropped now: the source on screen gets them, else they go wherever their contents say.
+function dropLabel(snap: Snapshot): string {
+  const onScreen = document.querySelector('[data-testid=detail]')?.getAttribute('data-source')
+    ?? document.querySelector('[data-testid=assistant]')?.getAttribute('data-step')?.replace(/^export:/, '');
+  const v = onScreen ? snap.sources.find((x) => x.id === onScreen && ['web', 'guided'].includes(x.group)) : undefined;
+  return v ? `Drop to add it to ${v.name}` : 'Drop an export to add it to your library';
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

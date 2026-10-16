@@ -548,7 +548,96 @@ META_FILES = (
     (r"personal_information/personal_information/(personal_information|profile_changes)|instagram_profile_information|"
      r"profile_information/(profile_information|profile_update_history)\.json", "profile"),
 )
+# What advertisers and the services keep about you. Each of these files is one long list (thousands of advertisers
+# in one file): kept whole, nothing could count or search it, so each advertiser, category, company and ad is a
+# record. kind "advertiser": an advertiser that has you in an audience, and how (meta.how); "inference": something
+# a service decided about you (meta.what: interest, category, gender, age, ...); "off_platform": a company that
+# told a service what you did in its app or on its website (meta.events); "ad": an ad you were shown.
+META_ADS = (r"advertisers_using_your_activity|other_categories_used_to_reach_you|"
+            r"your_activity_off_meta_technologies\.json$|ads_and_topics/ads_viewed\.json$")
+ADVERTISER_HOW = {
+    "list": "uploaded a list (its customers, subscribers or contacts) that you were matched to",
+    "activity": "matched you from what you did on its website, in its app or in its store",
+    "store": "matched you from a visit to its store",
+    "lookalike": "aims its ads at people like those on its lists, and you were counted as one",
+    "catalog": "showed you products from its catalog, picked from what you looked at",
+    "excluded": "chose not to show you its ads",
+}
 MEDIA_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mp4", ".mov", ".m4a", ".aac", ".mp3", ".wav", ".srt")
+
+
+def advertiser(w, origin, service, name, how, file):
+    name = (name or "").strip()
+    key = rid(origin, how, name)
+    if name and not w.has(key):
+        w.add(id=key, kind="advertiser", author=name, is_me=False, title=name[:300],
+              text=f"{service}: {name} {ADVERTISER_HOW[how]}.", meta={"file": file, "how": how, "service": service})
+
+
+def inference(w, origin, service, value, what, file, text=None, ts=None, extra=None):
+    value = (value or "").strip()
+    key = rid(origin, what, value)
+    if value and not w.has(key):
+        w.add(id=key, kind="inference", ts=ts, author=service, is_me=False, title=value[:300],
+              text=text or f"{service} decided this about you ({what}): {value}",
+              meta={"file": file, "what": what, "service": service, **(extra or {})})
+
+
+def meta_ads(e, d, w, site):
+    """The ads files of a Meta export: who has you on a list, the categories you're reached under, the companies
+    that send Meta what you do elsewhere, and the ads you were shown."""
+    service = "Facebook" if site == "facebook" else "Instagram"
+    stem = PurePosixPath(e.path).stem
+    if stem.startswith("advertisers_using"):
+        for group in d.get("label_values") or [] if isinstance(d, dict) else []:
+            label = fix_meta(group.get("label") or "").lower()
+            how = "store" if "store you visited" in label else "activity" if "interaction" in label else "list"
+            for v in group.get("vec") or []:
+                advertiser(w, e.path, service, fix_meta(str(v.get("value") or "")), how, stem)
+    elif stem.startswith("other_categories"):
+        for group in d.get("label_values") or [] if isinstance(d, dict) else []:
+            for v in group.get("vec") or []:
+                name = fix_meta(str(v.get("value") or ""))
+                inference(w, e.path, service, name, "category", stem, f"{service} reaches you with ads under the category “{name}”.")
+    elif stem.startswith("your_activity_off_meta"):
+        for it in d if isinstance(d, list) else []:
+            company = fix_meta(it.get("title") or "").strip()
+            events = []
+            for x in it.get("label_values") or []:
+                if x.get("label") != "Events":
+                    continue
+                for ev in x.get("vec") or []:
+                    f = {y.get("label"): y.get("value") if y.get("value") is not None else y.get("timestamp_value") for y in ev.get("dict") or []}
+                    events.append({"type": fix_meta(str(f.get("Event") or "")) or None, "ts": from_unix(f.get("Received on"))})
+            events.sort(key=lambda x: x["ts"] or "")
+            key = rid(e.path, company)
+            if not company or w.has(key):
+                continue
+            types = collections.Counter(x["type"] for x in events if x["type"])
+            n = len(events)
+            what = ", ".join(f"{t.lower().replace('_', ' ')} ×{c}" for t, c in types.most_common())
+            w.add(id=key, kind="off_platform", ts=events[-1]["ts"] if events else None, author=company, is_me=False, title=company[:300],
+                  text=f"{company} told {service} what you did in its app or on its website: {n} time{'s' if n != 1 else ''}"
+                       + (f" ({what})" if what else "") + ".",
+                  meta={"file": stem, "service": service, "events": events})
+    elif stem == "ads_viewed":
+        for it in d if isinstance(d, list) else []:
+            owner = None
+            for x in it.get("label_values") or []:
+                if x.get("title") == "Owner":
+                    inner = next((y for y in x.get("dict") or [] if isinstance(y, dict)), {})
+                    owner = inner.get("title") or next((z.get("value") for z in inner.get("dict") or [] if z.get("label") in ("Name", "Username")), None)
+            pairs, _uris, times = meta_item(it)
+            d2 = dict(pairs)
+            owner = fix_meta(owner or d2.get("Brand partner") or "") or None
+            ts = from_unix(next((t for t in times if t), None))
+            key = rid(e.path, ts, owner, d2.get("URL"))
+            if w.has(key):
+                continue
+            caption = (d2.get("Caption") or "").strip()
+            w.add(id=key, kind="ad", ts=ts, author=owner or service, is_me=False, title=(owner or "An ad")[:300],
+                  text=f"{service} showed you an ad{f' from {owner}' if owner else ''}" + (f": {caption[:2000]}" if caption else "."),
+                  url=d2.get("Ad library public URL") or d2.get("URL"), meta={"file": stem, "service": service})
 
 
 def meta_item(item):
@@ -664,6 +753,16 @@ def meta(es, W, used):
             w.add(id=key, kind="message", ts=ts, author="me" if me else sender, is_me=me, thread=thread,
                   thread_name=title, participants=people or None, text=text.strip(), meta={"files": files or None})
 
+    for e in es:  # the ads files, a record per item
+        low = f"{e.origin}/{e.path}".lower()
+        if e.path in used or not low.endswith(".json") or not ("instagram" in low or "facebook" in low) or not re.search(META_ADS, e.path.lower()):
+            continue
+        used.add(e.path)
+        try:
+            meta_ads(e, e.json(), W(f"{site_of(e)}_activity"), site_of(e))
+        except ValueError:
+            continue
+
     for e in es:
         low = f"{e.origin}/{e.path}".lower()
         if e.path in used or not low.endswith(".json") or not ("instagram" in low or "facebook" in low):
@@ -696,7 +795,8 @@ def meta(es, W, used):
             w.add(id=key, kind=kind, ts=ts, author=(pairs[0][1] if them and pairs else "me"), is_me=not them,
                   title=(head or label.replace("_", " "))[:300], text=text[:20000],
                   url=next((v for _, v in pairs if v.startswith("http")), None),
-                  meta={"file": label, "files": keep_media(e, uris, ts) or None})
+                  meta={"file": label, "files": keep_media(e, uris, ts) or None,
+                        **({"what": "see less" if "see_less" in label else "interest", "service": site.title()} if kind == "inference" else {})})
 
 
 def ytd(e):
@@ -751,6 +851,15 @@ def x_archive(es, W, used):
                           author="me" if me else mc.get("senderId"), is_me=me, thread=c.get("conversationId"),
                           thread_name=c.get("conversationId"), text=mc.get("text"),
                           meta={"files": files_for(mc.get("id"), ts)})
+        elif p.endswith("data/personalization.js"):
+            used.add(p)
+            x_personalization(e, W("x"))
+        elif re.search(r"data/ad-(impressions|engagements)\.js$", p):
+            used.add(p)
+            x_ads_seen(e, W("x"))
+        elif re.search(r"data/ad-(online|mobile)-conversions-(attributed|unattributed)\.js$", p):
+            used.add(p)
+            x_conversions(e, W("x"))
         elif p.endswith("data/like.js"):
             used.add(p)
             w = W("x")
@@ -760,6 +869,84 @@ def x_archive(es, W, used):
                 if l.get("fullText") and not w.has(key):
                     w.add(id=key, kind="reaction", author="me", is_me=True, text=l.get("fullText"), url=l.get("expandedUrl"),
                           meta={"reaction": "liked"})
+
+
+def x_personalization(e, w):
+    """What X decided about you (data/personalization.js): interests, gender and age, languages, shows, where you
+    are, and the advertisers that have you in their audiences."""
+    for item in ytd(e):
+        p = item.get("p13nData") or {}
+        demo = p.get("demographics") or {}
+        g = (demo.get("genderInfo") or {}).get("gender")
+        inference(w, e.path, "X", g, "gender", "personalization", f"X guessed your gender: {g}")
+        age = p.get("inferredAgeInfo") or {}
+        for a in age.get("age") or []:
+            inference(w, e.path, "X", a, "age", "personalization", f"X guessed your age: {a}")
+        for lang in demo.get("languages") or []:
+            inference(w, e.path, "X", lang.get("language"), "language", "personalization", f"X thinks you speak {lang.get('language')}",
+                      extra={"turned_off": True} if lang.get("isDisabled") else None)
+        ints = p.get("interests") or {}
+        for i in ints.get("interests") or []:
+            inference(w, e.path, "X", i.get("name"), "interest", "personalization", f"X thinks you're interested in {i.get('name')}",
+                      extra={"turned_off": True} if i.get("isDisabled") else None)
+        for i in ints.get("partnerInterests") or []:
+            name = i.get("name") if isinstance(i, dict) else str(i)
+            inference(w, e.path, "X", name, "partner interest", "personalization", f"X's partners think you're interested in {name}")
+        aud = ints.get("audienceAndAdvertisers") or {}
+        for how, k in (("list", "advertisers"), ("lookalike", "lookalikeAdvertisers"), ("catalog", "catalogAudienceAdvertisers"),
+                       ("excluded", "doNotReachAdvertisers")):
+            for a in aud.get(k) or []:
+                advertiser(w, e.path, "X", a if isinstance(a, str) else (a or {}).get("name"), how, "personalization")
+        if str(aud.get("numAudiences") or "0").isdigit() and int(aud.get("numAudiences") or 0):
+            n = int(aud["numAudiences"])
+            inference(w, e.path, "X", f"{n:,} audiences", "audiences", "personalization", f"Advertisers have put you in {n:,} audiences on X.")
+        for show in ints.get("shows") or []:
+            inference(w, e.path, "X", show, "show", "personalization", f"X thinks you watch {show}")
+        for loc in p.get("locationHistory") or []:
+            inference(w, e.path, "X", loc, "location", "personalization", f"X thinks you've been in {loc}")
+
+
+def x_ads_seen(e, w):
+    """Ads X showed you (data/ad-impressions.js) or you engaged with (ad-engagements.js), with why: the targeting
+    that matched you."""
+    for item in ytd(e):
+        u = (item.get("ad") or {}).get("adsUserData") or {}
+        shown = [(x, None) for x in (u.get("adImpressions") or {}).get("impressions") or []]
+        shown += [(x.get("impressionAttributes") or {}, x.get("engagementAttributes")) for x in (u.get("adEngagements") or {}).get("engagements") or []]
+        for imp, engaged in shown:
+            who = (imp.get("advertiserInfo") or {}).get("advertiserName")
+            why = [f"{c.get('targetingType')}: {c.get('targetingValue')}" if c.get("targetingValue") else str(c.get("targetingType"))
+                   for c in imp.get("matchedTargetingCriteria") or [] if c.get("targetingType")]
+            ts = parse_time(imp.get("impressionTime"))
+            key = rid(e.path, ts, who, imp.get("displayLocation"))
+            if w.has(key):
+                continue
+            text = f"X showed you an ad{f' from {who}' if who else ''}" + (f", because of {'; '.join(why)}" if why else "") + "."
+            tweet = (imp.get("promotedTweetInfo") or {}).get("tweetText")
+            w.add(id=key, kind="ad", ts=ts, author=who or "X", is_me=False, title=(who or "An ad")[:300],
+                  text=text + (f"\n{tweet}" if tweet else ""),
+                  meta={"file": PurePosixPath(e.path).stem, "service": "X", "why": why or None,
+                        "engaged": [x.get("engagementType") for x in engaged or []] or None})
+
+
+def x_conversions(e, w):
+    """Advertisers that told X you visited their site or used their app after seeing (or not) their ad."""
+    for item in ytd(e):
+        u = (item.get("ad") or {}).get("adsUserData") or {}
+        for group in u.values():
+            for c in (group or {}).get("conversions") or [] if isinstance(group, dict) else []:
+                who = (c.get("advertiserInfo") or {}).get("advertiserName") or "An advertiser"
+                ts = parse_time(c.get("conversionTime"))
+                kind_ = c.get("attributedConversionType") or c.get("eventType") or "visit"
+                key = rid(e.path, ts, who, kind_)
+                if w.has(key):
+                    continue
+                url = c.get("conversionUrl") or None
+                w.add(id=key, kind="off_platform", ts=ts, author=who, is_me=False, title=who[:300],
+                      text=f"{who} told X you {'visited its site' if 'site' in kind_.lower() else 'used its app' if 'session' in kind_.lower() else kind_.lower()}"
+                           + (f" ({c.get('conversionPlatform')})" if c.get("conversionPlatform") else "") + ".",
+                      url=url if url and url.startswith("http") else None,
+                      meta={"file": PurePosixPath(e.path).stem, "service": "X", "events": [{"type": kind_, "ts": ts}]})
 
 
 # ---------------------------------------------------------------- CSV exports (LinkedIn, Reddit)
@@ -792,8 +979,23 @@ LINKEDIN_FILES = {
 LINKEDIN_TIME = ("%b %Y", "%Y/%m/%d %H:%M:%S UTC", "%m/%d/%y, %I:%M %p", "%a %b %d %H:%M:%S UTC %Y", "%Y")
 
 
+def linkedin_targeting(e, w):
+    """What LinkedIn lets advertisers reach you by (Ad_Targeting.csv): one row, each column a list ("Member
+    Interests", "Buyer Groups", "High Value Audience Segments", ...) of values separated by ";"."""
+    rows = list(csv.reader(io.StringIO(e.text().lstrip("\ufeff"))))
+    for row in rows[1:2]:
+        for col, cell in zip(rows[0], row):
+            col = col.strip()
+            for v in (cell or "").split(";"):
+                v = v.strip()
+                if v and v != "N/A":
+                    inference(w, e.path, "LinkedIn", v, col, "ad_targeting.csv", f"LinkedIn lets advertisers reach you by {col}: {v}")
+
+
 def linkedin_rows(e, n, w):
     """One record per row, keeping every non-empty column (csv.reader, since some files repeat column names)."""
+    if n == "ad_targeting.csv":
+        return linkedin_targeting(e, w)
     kind, title_cols, time_col = LINKEDIN_FILES[n]
     text = e.text().lstrip("﻿")
     rows = list(csv.reader(io.StringIO(text)))
@@ -813,6 +1015,12 @@ def linkedin_rows(e, n, w):
             author, me = "me", True
         key = rid("li", n, *(v for _, v in pairs))
         if w.has(key):
+            continue
+        if n == "inferences_about_you.csv":  # "Inferred gender: Female", "Career inferences: Human resources professional"
+            typ, value = d.get("Type of inference") or "", d.get("Inference") or ""
+            title = typ if value.lower() in ("", "yes", "true") else f"{typ}: {value}"
+            inference(w, e.path, "LinkedIn", title, d.get("Category") or "inference", n,
+                      f"LinkedIn inferred this about you: {typ}: {value or 'yes'}." + (f" {d['Description']}" if d.get("Description") else ""))
             continue
         w.add(id=key, kind=kind, ts=parse_time(d.get(time_col), *LINKEDIN_TIME) if time_col else None, author=author,
               is_me=me, title=" · ".join(d[c] for c in title_cols if d.get(c))[:300] or None,

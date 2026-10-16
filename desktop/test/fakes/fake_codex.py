@@ -2,7 +2,8 @@
 """A stand-in for `codex exec --json`: runs the lookups in its plan with the ./ask command in its working folder (as
 Codex's shell would) and prints Codex's JSON events. The plan is JSON {"steps": [...], "answer"} from the file
 $FAKE_CODEX_PLAN (or $FAKE_CODEX_SCRIPT and $FAKE_CODEX_ANSWER). A step is {"tool", "input"}, {"shell": command} or
-{"sleep": seconds}. Its own permission profile isn't applied here. $FAKE_CODEX_LOG gets the arguments, the prompt, the
+{"sleep": seconds}. {"fail": message, "reconnects": n} fails as Codex does when its sign-in has expired (reconnecting
+first, then a failed turn). Its own permission profile isn't applied here. $FAKE_CODEX_LOG gets the arguments, the prompt, the
 working folder and which sign-in variables it was given (never their values)."""
 
 import json
@@ -12,6 +13,11 @@ import sys
 import time
 
 args = sys.argv[1:]
+# `codex login status`: signed in with ChatGPT, or not ($FAKE_CODEX_AUTH=out).
+if args[:2] == ["login", "status"]:
+    signed_in = os.environ.get("FAKE_CODEX_AUTH") != "out"
+    print("Logged in using ChatGPT" if signed_in else "Not logged in", file=sys.stderr)
+    sys.exit(0 if signed_in else 1)
 prompt = sys.stdin.read()
 if os.environ.get("FAKE_CODEX_PLAN"):
     plan = json.load(open(os.environ["FAKE_CODEX_PLAN"]))
@@ -31,6 +37,12 @@ def out(o):
 
 out({"type": "thread.started", "thread_id": "t1"})
 out({"type": "turn.started"})
+if plan.get("fail"):
+    for i in range(1, plan.get("reconnects", 0) + 1):
+        out({"type": "error", "message": f"Reconnecting... {i}/5 ({plan['fail']})"})
+    out({"type": "turn.failed", "error": {"message": plan["fail"]}})
+    print(f"ERROR codex_exec: Turn failed: {plan['fail']}", file=sys.stderr)
+    sys.exit(1)
 out({"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "Looking."}})
 lines = []
 for n, step in enumerate(plan.get("steps", [])):
