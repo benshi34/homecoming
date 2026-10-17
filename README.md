@@ -69,7 +69,7 @@ Under Settings in the sidebar, Your Setup shows what Homecoming found on your Ma
 
 ### Build it on your Mac
 
-Homecoming builds itself into an app in your Applications folder, in about five minutes. Built on your own Mac, it opens like any other app. An app downloaded from a website is different: unless it's signed by a paid Apple developer account, macOS warns that it can't check it, and Homecoming isn't signed (yet).
+Homecoming builds itself into an app in your Applications folder, in about five minutes. Built on your own Mac, it opens like any other app. It isn't offered as a download: macOS warns about any app from a website that isn't signed by a paid Apple developer account, and Homecoming isn't.
 
 You need:
 
@@ -103,17 +103,6 @@ cd desktop
 npm ci
 npm run install-app
 ```
-
-### Or download the app
-
-If you'd rather not build it, download it ready-made. macOS warns about it the first time you open it, as above.
-
-1. **Download** the `.dmg` (`Homecoming-<version>-arm64.dmg`) from the [latest release](https://github.com/benshi34/homecoming/releases/latest).
-2. **Open it** and drag Homecoming into Applications.
-3. **Open Homecoming** from Applications. macOS says it can't check the app for malicious software, because it isn't signed with an Apple Developer ID. Click **Done**. Then open System Settings → Privacy & Security, scroll down to "Homecoming was blocked", click **Open Anyway**, and confirm. You only do this once.
-4. **Turn on Full Disk Access** when the app asks: System Settings → Privacy & Security → Full Disk Access → Homecoming. Then quit and reopen it.
-
-To update, download the new `.dmg` and drag Homecoming into Applications again, replacing the old one.
 
 ### Claude Code or Codex
 
@@ -202,9 +191,9 @@ Each source's detail pane has a **Progress** log, and when you run from source, 
 
 ## Known limits
 
-- **Not signed with an Apple Developer ID yet.** Built on your Mac, it opens like any other app; the downloaded `.dmg` asks you to allow it the first time (Open Anyway, above).
+- **Not signed with an Apple Developer ID**, so it isn't offered as a download. Built on your Mac (above), it opens like any other app.
 - **Apple silicon only**, and when run from source, Python 3.14 only, for the iPhone step.
-- **Running from source, it works only while it's open.** The app (built on your Mac, or from the .dmg) keeps working in the menu bar when you close its window, and opens at login (Settings → Keep working when the window is closed).
+- **Running from source, it works only while it's open.** The app built with `npm run install-app` keeps working in the menu bar when you close its window, and opens at login (Settings → Keep working when the window is closed).
 - **Do It for Me needs Claude Code, signed in with a claude.ai account on Pro, Max, Team or Enterprise, and the Claude in Chrome extension in Chrome, Edge, Brave, Arc, Vivaldi or Opera.** Claude Code turns the browser off when it's signed in with an API key, and Safari and Firefox can't run the extension; Your Setup says which of these is missing. It's Claude even if you pick Codex for the rest: Codex can drive a browser only inside its own app, not when another app runs it. It stops when a service wants you to sign in, enter a code or prove you're not a robot. Without it, export pages open in your browser and the steps are in the app.
 - **English-language accounts and a Mac with an iPhone** (see [What it works with](#what-it-works-with)).
 
