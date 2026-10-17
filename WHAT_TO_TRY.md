@@ -4,7 +4,7 @@ Thanks for trying Homecoming. This is the order that finds the most problems. Wh
 
 ## Day 1: set up (about an hour, most of it waiting)
 
-1. **Install it** from the [README](README.md#download-the-app): the app from the latest release (or from source, if you'd rather). If any step fails or isn't clear, that's the first thing to report.
+1. **Install it** as the [README](README.md#build-it-on-your-mac) says: build it on your Mac (or download the app, if you'd rather). If any step fails or isn't clear, that's the first thing to report.
 2. **Go through the Setup Assistant** from the welcome page to the end. Turn on Full Disk Access when it asks.
 3. **Request at least three exports:** Google, plus the two services you use most. Try **Do It for Me** on at least one (it needs Claude Code signed in with a paid claude.ai plan, and the Claude in Chrome extension in Chrome, Edge, Brave, Arc, Vivaldi or Opera): say where it got stuck, or picked the wrong options. For the others, the app opens each download page in your browser and shows the steps beside it. Note any step that didn't match what you saw.
 4. **Your iPhone**, if you have one: make the encrypted backup when the app asks. Say how long it took.
@@ -41,9 +41,9 @@ Thanks for trying Homecoming. This is the order that finds the most problems. Wh
 For whoever makes a release. Do this before each one. This Mac already has everything installed, so it can't show what a new person's Mac is missing.
 
 1. Make a fresh macOS user: System Settings → Users & Groups → Add User. Log in as them. Skip setting up iCloud, and use your own test accounts.
-2. Follow the README's [Download the app](README.md#download-the-app) steps exactly, with nothing installed beforehand, including Open Anyway the first time. If you're also offering the source version, try [Run from source](README.md#run-from-source) too. Write down:
+2. Follow the README's [Build it on your Mac](README.md#build-it-on-your-mac) steps exactly, with nothing installed beforehand. Then try [Or download the app](README.md#or-download-the-app) too, including Open Anyway the first time. Write down:
    - every step that failed or needed something the README didn't mention;
-   - how long each step took (downloading and opening the app; for source, the Python install, `npm ci`, the first `npm start`);
+   - how long each step took (installing Node and git, `npm ci`, `npm run install-app`; downloading and opening the .dmg);
    - what macOS asked along the way, such as installing developer tools or allowing Full Disk Access.
 3. Check that it opens on the welcome page, and that a Mac source (Notes or Safari works on a new account) reads after you turn on Full Disk Access for Homecoming (or Terminal, from source).
 4. Remove everything as the README's [Removing everything](README.md#removing-everything) says, then delete the test user.

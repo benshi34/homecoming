@@ -1,4 +1,5 @@
 // Builds Homecoming.app, and a .dmg holding it, for Macs with Apple silicon:  npm run package  ->  release/
+// With --app, the app alone (npm run install-app puts it in Applications).
 //
 // The app carries everything it needs, so nothing is installed or downloaded when it runs:
 //   Resources/app/         the built interface (dist/), py/ and data/
@@ -100,6 +101,9 @@ for (const d of [path.join(python, 'lib'), connectors, path.join(appDir, 'py')])
 }
 
 step(`Electron ${ELECTRON}, from node_modules`);
+// npm ci leaves Electron itself to be downloaded the first time it's used (its own install.js, checked against the
+// checksums it comes with): on a new checkout, that's now.
+if (!fs.existsSync(path.join(DESKTOP, 'node_modules/electron/dist/Electron.app'))) run(process.execPath, [path.join(DESKTOP, 'node_modules/electron/install.js')]);
 const zips = path.join(STAGE, 'electron-zip');
 fs.mkdirSync(zips);
 // No resource forks or extended attributes: unzipped, they'd be ._ files, which code signing refuses.
@@ -121,6 +125,14 @@ run('find', [appPath, '-name', '._*', '-delete']);
 run('codesign', ['--force', '--deep', '--sign', '-', appPath]);
 run('codesign', ['--verify', '--deep', '--strict', appPath]);
 
+const mb = (f) => `${(fs.statSync(f).size / 1e6).toFixed(0)} MB`;
+const du = (d) => execFileSync('du', ['-sh', d]).toString().split('\t')[0];
+if (process.argv.includes('--app')) {
+  fs.rmSync(STAGE, { recursive: true, force: true });
+  console.log(`\n${appPath} (${du(appPath)})`);
+  process.exit(0);
+}
+
 step('The disk image');
 const dmgDir = path.join(STAGE, 'dmg');
 fs.mkdirSync(dmgDir);
@@ -130,6 +142,4 @@ const dmg = path.join(OUT, `${PKG.productName}-${PKG.version}-arm64.dmg`);
 run('hdiutil', ['create', '-quiet', '-volname', PKG.productName, '-srcfolder', dmgDir, '-ov', '-format', 'UDZO', dmg]);
 fs.rmSync(STAGE, { recursive: true, force: true });
 
-const mb = (f) => `${(fs.statSync(f).size / 1e6).toFixed(0)} MB`;
-const du = (d) => execFileSync('du', ['-sh', d]).toString().split('\t')[0];
 console.log(`\n${appPath} (${du(appPath)})\n${dmg} (${mb(dmg)})\nSHA-256 ${sha256(dmg)}`);

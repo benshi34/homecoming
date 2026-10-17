@@ -11,6 +11,7 @@
     "start": "node build.mjs && node scripts/dev_app.mjs .",
     "fresh": "node build.mjs && node scripts/fresh.mjs",
     "package": "node scripts/package_mac.mjs",
+    "install-app": "node scripts/install_app.mjs",
     "icon": "electron scripts/app_icon.cjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:py && npm run test:e2e",

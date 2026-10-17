@@ -67,22 +67,61 @@ Under Settings in the sidebar, Your Setup shows what Homecoming found on your Ma
 
 ## Install and run
 
-### Download the app
+### Build it on your Mac
 
-You need a Mac with Apple silicon (M1 or later). Everything else comes inside the app.
+Homecoming builds itself into an app in your Applications folder, in about five minutes. Built on your own Mac, it opens like any other app. An app downloaded from a website is different: unless it's signed by a paid Apple developer account, macOS warns that it can't check it, and Homecoming isn't signed (yet).
+
+You need:
+
+- **A Mac with Apple silicon** (M1 or later).
+- **Node.js** from [nodejs.org](https://nodejs.org/) (the LTS installer). Homecoming was built and tested with Node 24.
+- **git.** The first time you type `git` in Terminal, macOS offers to install Apple's command line tools, which include it. Say yes, then run the command again.
+
+Then, in Terminal:
+
+```bash
+git clone https://github.com/benshi34/homecoming.git ~/Developer/homecoming
+cd ~/Developer/homecoming/desktop
+npm ci
+npm run install-app
+```
+
+- `npm ci` installs exactly the versions listed in `desktop/package-lock.json`, and checks each download against its recorded hash.
+- `npm run install-app` builds Homecoming.app, with its own Python inside, and puts it in Applications. If an earlier Homecoming is there, it quits it and replaces it. It downloads two things, each checked against a pinned SHA-256: a standalone Python, and one Python package.
+
+Then:
+
+1. **Open Homecoming** from Applications.
+2. **Turn on Full Disk Access** when the app asks: System Settings → Privacy & Security → Full Disk Access → Homecoming. Then quit and reopen it.
+
+**Updating:** run the same commands, starting with `git pull`. Your library and progress stay where they are.
+
+```bash
+cd ~/Developer/homecoming
+git pull
+cd desktop
+npm ci
+npm run install-app
+```
+
+### Or download the app
+
+If you'd rather not build it, download it ready-made. macOS warns about it the first time you open it, as above.
 
 1. **Download** the `.dmg` (`Homecoming-<version>-arm64.dmg`) from the [latest release](https://github.com/benshi34/homecoming/releases/latest).
 2. **Open it** and drag Homecoming into Applications.
-3. **Open Homecoming** from Applications. macOS says it can't check the app for malicious software, because it isn't signed with an Apple Developer ID yet. Click **Done**. Then open System Settings → Privacy & Security, scroll down to "Homecoming was blocked", click **Open Anyway**, and confirm. You only do this once.
+3. **Open Homecoming** from Applications. macOS says it can't check the app for malicious software, because it isn't signed with an Apple Developer ID. Click **Done**. Then open System Settings → Privacy & Security, scroll down to "Homecoming was blocked", click **Open Anyway**, and confirm. You only do this once.
 4. **Turn on Full Disk Access** when the app asks: System Settings → Privacy & Security → Full Disk Access → Homecoming. Then quit and reopen it.
+
+To update, download the new `.dmg` and drag Homecoming into Applications again, replacing the old one.
+
+### Claude Code or Codex
 
 To ask questions about your data, you'll also want the Claude Code or Codex CLI. If it isn't signed in, **Sign In…** in AI Settings opens its sign-in in your browser (no Terminal needed): sign in there, and Homecoming comes back by itself. Should the page say it can't connect, **Use a Code Instead** opens one that ends with a code to paste into Homecoming. Installed with npm, nvm, Volta, Bun or Homebrew, it's found even when Homecoming is opened from Finder.
 
-**Updating:** download the new `.dmg` and drag Homecoming into Applications again, replacing the old one. Your library and progress stay where they are.
-
 ### Run from source
 
-For developers, or if you'd rather build it yourself.
+For developers working on Homecoming: it runs from Terminal, without building the app.
 
 #### What you need
 
@@ -163,9 +202,9 @@ Each source's detail pane has a **Progress** log, and when you run from source, 
 
 ## Known limits
 
-- **Not signed with an Apple Developer ID yet**, so macOS asks you to allow it the first time (Open Anyway, above).
+- **Not signed with an Apple Developer ID yet.** Built on your Mac, it opens like any other app; the downloaded `.dmg` asks you to allow it the first time (Open Anyway, above).
 - **Apple silicon only**, and when run from source, Python 3.14 only, for the iPhone step.
-- **Running from source, it works only while it's open.** The app from the .dmg keeps working in the menu bar when you close its window, and opens at login (Settings → Keep working when the window is closed).
+- **Running from source, it works only while it's open.** The app (built on your Mac, or from the .dmg) keeps working in the menu bar when you close its window, and opens at login (Settings → Keep working when the window is closed).
 - **Do It for Me needs Claude Code, signed in with a claude.ai account on Pro, Max, Team or Enterprise, and the Claude in Chrome extension in Chrome, Edge, Brave, Arc, Vivaldi or Opera.** Claude Code turns the browser off when it's signed in with an API key, and Safari and Firefox can't run the extension; Your Setup says which of these is missing. It's Claude even if you pick Codex for the rest: Codex can drive a browser only inside its own app, not when another app runs it. It stops when a service wants you to sign in, enter a code or prove you're not a robot. Without it, export pages open in your browser and the steps are in the app.
 - **English-language accounts and a Mac with an iPhone** (see [What it works with](#what-it-works-with)).
 
