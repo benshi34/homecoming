@@ -13,9 +13,16 @@ import sys
 import time
 
 args = sys.argv[1:]
-# `codex login status`: signed in with ChatGPT, or not ($FAKE_CODEX_AUTH=out).
+# `codex login`: the sign-in, as if done in the browser ($FAKE_SIGN_IN_FILE says it's done, a moment later).
+if args == ["login"]:
+    print("Starting local login server on http://localhost:1455. If your browser did not open: https://auth.openai.com/oauth/authorize?fake=1", file=sys.stderr, flush=True)
+    time.sleep(float(os.environ.get("FAKE_SIGN_IN_SECONDS", "1")))
+    if os.environ.get("FAKE_SIGN_IN_FILE"):
+        open(os.environ["FAKE_SIGN_IN_FILE"], "w").write("in")
+    sys.exit(0)
+# `codex login status`: signed in with ChatGPT, or not ($FAKE_CODEX_AUTH=out, until a sign-in).
 if args[:2] == ["login", "status"]:
-    signed_in = os.environ.get("FAKE_CODEX_AUTH") != "out"
+    signed_in = os.environ.get("FAKE_CODEX_AUTH") != "out" or os.path.exists(os.environ.get("FAKE_SIGN_IN_FILE") or "/nonexistent")
     print("Logged in using ChatGPT" if signed_in else "Not logged in", file=sys.stderr)
     sys.exit(0 if signed_in else 1)
 prompt = sys.stdin.read()

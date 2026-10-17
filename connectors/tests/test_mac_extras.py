@@ -159,3 +159,162 @@ class ClaudeCodeTests(Base):
         run(self.home, self.corpus, "ai_coding")
         turned_down = [r for r in records(self.corpus, "ai_coding") if r["meta"].get("decision") == "rejected_tool"]
         self.assertEqual([r["text"] for r in turned_down], ["[rejected Bash call] not now"])
+
+
+class NoDeveloperToolsTests(Base):
+    """On a Mac without the Command Line Tools, /usr/bin/git is a stub that asks to install them: nothing may run it."""
+
+    def env(self, xcode_ok):
+        bin_ = Path(self.home.parent, "bin")
+        bin_.mkdir(exist_ok=True)
+        (bin_ / "git").unlink(missing_ok=True)
+        (bin_ / "git").symlink_to("/usr/bin/git")
+        xs = bin_ / "xcode-select"
+        xs.write_text(f"#!/bin/sh\nexit {0 if xcode_ok else 2}\n")
+        xs.chmod(0o755)
+        return {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "PATH": str(bin_)}
+
+    def python(self, code, env):
+        r = subprocess.run([sys.executable, "-c", code], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_the_stub_counts_only_with_the_developer_tools(self):
+        found = self.python("import common; print(common.git_bin())", self.env(xcode_ok=True))
+        self.assertTrue(found.endswith("/git"))
+        if not os.path.exists("/Applications/GitHub Desktop.app"):
+            self.assertEqual(self.python("import common; print(common.git_bin())", self.env(xcode_ok=False)), "None")
+
+    @unittest.skipIf(os.path.exists("/Applications/GitHub Desktop.app"), "GitHub Desktop's own git would be used")
+    def test_commits_and_the_manifest_without_git(self):
+        repo = self.home / "Developer/app"
+        (repo / ".git").mkdir(parents=True)
+        self.python("import git_commits; git_commits.main()", self.env(xcode_ok=False))
+        self.assertEqual(records(self.corpus, "git_commits"), [])
+        manifest = json.loads((self.corpus / "manifest.json").read_text())["git_commits"]
+        self.assertEqual(manifest["notes"], {"no_git": 1})
+
+
+class BrowserTests(Base):
+    """Every browser's history, not just Safari and Chrome; and the ones turned off in Your Setup aren't read."""
+
+    def chromium(self, folder, url, term=None):
+        db = self.home / "Library/Application Support" / folder / "Default/History"
+        db.parent.mkdir(parents=True)
+        con = sqlite3.connect(db)
+        con.executescript("""create table urls (id integer primary key, url text, title text, visit_count int);
+            create table visits (id integer primary key, url int, visit_time int, transition int, visit_duration int);
+            create table keyword_search_terms (url_id int, term text);""")
+        con.execute("insert into urls values (1, ?, 'A page', 3)", (url,))
+        con.execute("insert into visits values (7, 1, 13370000000000000, 1, 5000000)")
+        if term:
+            con.execute("insert into keyword_search_terms values (1, ?)", (term,))
+        con.commit()
+        con.close()
+
+    def firefox(self, url):
+        db = self.home / "Library/Application Support/Firefox/Profiles/ab12.default-release/places.sqlite"
+        db.parent.mkdir(parents=True)
+        con = sqlite3.connect(db)
+        con.executescript("""create table moz_places (id integer primary key, url text, title text, visit_count int);
+            create table moz_historyvisits (id integer primary key, place_id int, visit_date int, visit_type int);""")
+        con.execute("insert into moz_places values (1, ?, 'Fox page', 2)", (url,))
+        con.execute("insert into moz_places values (2, 'https://ads.example/frame', 'frame', 1)")
+        con.execute("insert into moz_historyvisits values (1, 1, 1700000000000000, 1)")
+        con.execute("insert into moz_historyvisits values (2, 2, 1700000000000000, 4)")  # an embedded frame
+        con.commit()
+        con.close()
+
+    def run_with(self, skip=""):
+        env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_BROWSERS_SKIP": skip}
+        r = subprocess.run([sys.executable, "-c", "import browser_history; browser_history.main()"], cwd=CONNECTORS, env=env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return {r["id"]: r for r in records(self.corpus, "browser_history")}
+
+    def test_arc_brave_and_firefox(self):
+        self.chromium("Arc/User Data", "https://example.com/arc")
+        self.chromium("BraveSoftware/Brave-Browser", "https://tides.example/harbour", term="tide tables")
+        self.firefox("https://www.google.co.uk/search?q=kettle+descaling")
+        recs = self.run_with()
+        self.assertEqual(recs["arc:Default:7"]["url"], "https://example.com/arc")
+        self.assertEqual(recs["arc:Default:7"]["thread_name"], "Arc (Default)")
+        self.assertEqual(recs["brave:Default:7:q"]["title"], "tide tables")
+        fox = [r for r in recs.values() if r["id"].startswith("firefox:")]
+        self.assertEqual(len(fox), 1, "the embedded frame isn't a page you went to")
+        self.assertEqual(fox[0]["thread_name"], "Firefox (default-release)")
+        self.assertEqual(fox[0]["ts"][:10], "2023-11-14")
+        self.assertEqual((fox[0]["kind"], fox[0]["title"]), ("search", "kettle descaling"), "Google in the UK is a search too")
+
+    def test_a_browser_turned_off_isnt_read(self):
+        self.chromium("Arc/User Data", "https://example.com/arc")
+        self.firefox("https://example.com/fox")
+        recs = self.run_with(skip="arc")
+        self.assertFalse(any(k.startswith("arc:") for k in recs))
+        self.assertTrue(any(k.startswith("firefox:") for k in recs))
+        manifest = json.loads((self.corpus / "manifest.json").read_text())["browser_history"]
+        self.assertEqual(manifest["notes"]["not_read"], ["arc"])
+
+    def test_found_needs_the_app_or_history(self):
+        # Claude Code writes into every Chromium browser's folder: a folder alone isn't a browser.
+        (self.home / "Library/Application Support/Vivaldi/NativeMessagingHosts").mkdir(parents=True)
+        self.chromium("Arc/User Data", "https://example.com/arc")
+        (self.home / "Applications/Brave Browser.app").mkdir(parents=True)
+        env = {**os.environ, "HOME": str(self.home), "UMP_BROWSERS_SKIP": "arc"}
+        out = subprocess.run([sys.executable, "-c", "import browsers, json; print(json.dumps(browsers.found()))"], cwd=CONNECTORS,
+                             env=env, capture_output=True, text=True, timeout=60)
+        found = {b["id"]: b for b in json.loads(out.stdout)}
+        self.assertNotIn("vivaldi", found)
+        self.assertEqual((found["arc"]["history"], found["arc"]["read"], found["arc"]["claude"]), (True, False, False), "no Arc app here")
+        self.assertEqual((found["brave"]["history"], found["brave"]["claude"]), (False, True))
+
+
+class ICloudOnlyTests(Base):
+    """With Optimize Mac Storage, a file only in iCloud keeps its name; opening it would download it. Documents lists
+    it without reading it (one read before keeps its text), and Git commits leaves a repository like that alone."""
+
+    def run_patched(self, module, cloud):
+        code = (f"import common, pathlib; common.cloud_only = lambda p: any(x in {cloud!r} for x in pathlib.Path(p).parts); "
+                f"import {module}; {module}.main()")
+        env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus)}
+        r = subprocess.run([sys.executable, "-c", code], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_documents(self):
+        docs = self.home / "Documents"
+        docs.mkdir()
+        (docs / "here.md").write_text("Notes kept on this Mac")
+        (docs / "away.md").write_text("Only in iCloud")
+        (docs / "away.md").chmod(0)  # opening it would fail: proof it isn't opened
+        (docs / "read_before.md").write_text("Now only in iCloud")
+        (self.corpus / "normalized").mkdir()
+        old = {"id": str(docs / "read_before.md"), "source": "documents", "kind": "document", "ts": "2025-01-01T00:00:00Z",
+               "title": "read_before.md", "text": "What it said when it was on this Mac"}
+        (self.corpus / "normalized/documents.jsonl").write_text(json.dumps(old) + "\n")
+        try:
+            self.run_patched("documents", ("away.md", "read_before.md"))
+        finally:
+            (docs / "away.md").chmod(0o644)
+        recs = {Path(r["id"]).name: r for r in records(self.corpus, "documents")}
+        self.assertEqual(recs["here.md"]["text"], "Notes kept on this Mac")
+        self.assertEqual(recs["away.md"]["text"], "away.md (in iCloud, not downloaded)")
+        self.assertEqual(recs["away.md"]["meta"]["downloaded"], False)
+        self.assertNotIn("error", recs["away.md"]["meta"])
+        self.assertEqual(recs["read_before.md"]["text"], "What it said when it was on this Mac")
+        self.assertEqual(json.loads((self.corpus / "manifest.json").read_text())["documents"]["notes"], {"in_icloud_only": 2})
+
+    def test_git_history_only_in_icloud(self):
+        env = {**os.environ, "HOME": str(self.home), "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "Ada", "GIT_AUTHOR_EMAIL": "ada@example.com",
+               "GIT_COMMITTER_NAME": "Ada", "GIT_COMMITTER_EMAIL": "ada@example.com"}
+        for name in ("here", "away", "branchy"):
+            repo = self.home / "Developer" / name
+            repo.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+            (repo / "a.txt").write_text(name)
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True, env=env)
+            subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-q", "-m", f"Start {name}"], check=True, env=env)
+        subprocess.run(["git", "-C", str(self.home / "Developer/branchy"), "branch", "side-branch"], check=True, env=env)
+        # All of "away" is in iCloud; of "branchy", one branch's file is (HEAD and the rest are here).
+        self.run_patched("git_commits", ("away", "side-branch"))
+        self.assertEqual([r["title"] for r in records(self.corpus, "git_commits")], ["Start here"])
+        self.assertEqual(json.loads((self.corpus / "manifest.json").read_text())["git_commits"]["notes"], {"in_icloud_only": 2})

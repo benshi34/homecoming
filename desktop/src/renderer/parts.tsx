@@ -476,6 +476,7 @@ export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: (
   const [checks, setChecks] = useState(snap.settings.agentChecks !== false);
   const [chrome, setChrome] = useState<string | null>(null);
   const installed = snap.agentInstalled ?? snap.ask.installed['claude-code'];
+  const B = snap.setup?.agentBrowser?.name ?? 'Chrome';
   const locked = snap.readOnly && !snap.demo;
   useEffect(() => {
     if (!installed || snap.demo) return;
@@ -490,8 +491,8 @@ export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: (
   return (
     <Sheet onClose={onClose} testId="agent-opt-in" width={480}>
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 7 }}><AiMark size={16} />Let Claude request and download your exports?</h2>
-      <p>Claude Code opens each service's export page in your Chrome, where you're signed in, picks the right options and requests your data. When the service says it's ready, Claude downloads it, and the app reads it from Downloads.</p>
-      <p>It stops and tells you when it needs you to sign in, enter a code, or prove you're not a robot. It uses the Claude in Chrome extension and your Claude account.</p>
+      <p>Claude Code opens each service's export page in your {B}, where you're signed in, picks the right options and requests your data. When the service says it's ready, Claude downloads it, and the app reads it from Downloads.</p>
+      <p>When it needs you to sign in, confirm it's you, or prove you're not a robot, it waits a few minutes and tells you in a notification: macOS may ask you to allow Homecoming's. It uses the Claude in Chrome extension and your Claude account.</p>
       {snap.settings.aiOn !== true && <p data-testid="agent-ai-note">This turns on AI in Homecoming, so Ask can use it too. You can turn it off in AI Settings.</p>}
       {snap.demo && <div style={{ marginTop: 10 }} data-testid="agent-demo-note"><Banner kind="info">In the demo, a stand-in plays Claude: nothing opens.</Banner></div>}
       {!installed ? (
@@ -502,7 +503,7 @@ export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: (
       ) : chrome === 'not connected' ? (
         <div style={{ marginTop: 10 }} data-testid="agent-chrome"><Banner kind="warning">
           The Claude in Chrome extension isn't connected. Open Chrome, turn the extension on and sign in to it with your Claude account, then Turn On.
-          <div style={{ marginTop: 6 }}><Button size="small" onClick={() => void api.action('*', 'open-chrome')} testAction="open-chrome">Open Chrome</Button></div>
+          <div style={{ marginTop: 6 }}><Button size="small" onClick={() => void api.action('*', 'open-chrome')} testAction="open-chrome">Open {B}</Button></div>
         </Banner></div>
       ) : !snap.demo && (
         <div className="note" data-testid="agent-chrome">
@@ -515,7 +516,7 @@ export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: (
       </label>
       <label className="check" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, marginTop: 6, paddingLeft: 22, opacity: downloads ? 1 : 0.5 }}>
         <input type="checkbox" checked={checks && downloads} disabled={!downloads} onChange={(e) => setChecks(e.target.checked)} data-testid="agent-checks" style={{ marginTop: 2 }} />
-        <span>And look for them every few hours: while one is on its way, Claude opens Chrome to check the service's page, or your webmail for the email saying it's ready</span>
+        <span>And look for them every few hours: while one is on its way, Claude opens {B} to check the service's page, or your webmail for the email saying it's ready</span>
       </label>
       {locked && <p style={{ marginTop: 10 }}>{READ_ONLY_NOTE}</p>}
       <div className="sheet-actions">
@@ -641,7 +642,7 @@ export function Detail({ snap, view, onActed, onExplore }: { snap: Snapshot; vie
             or turning on the Chrome extension, has nothing to answer. */}
         {answer && (
           <div className="agent-reply">
-            <input type="text" value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Answer Claude here, or leave it empty once you've done it in Chrome"
+            <input type="text" value={reply} onChange={(e) => setReply(e.target.value)} placeholder={`Answer Claude here, or leave it empty once you've done it in ${snap.setup?.agentBrowser?.name ?? 'Chrome'}`}
               onKeyDown={(e) => e.key === 'Enter' && void run(answer, { reply }).then(() => setReply(''))} data-testid="agent-reply" disabled={off(answer.id)} />
           </div>
         )}

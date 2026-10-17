@@ -55,6 +55,7 @@ export function normalize(raw: unknown): AppState {
       // Before 2026-10-09 an entry kept JustDeleteMe's link for the account, often the page that deletes it.
       .map(({ account: _, ...x }: ServiceEntry & { account?: unknown }) => ({ ...x, domains: Array.isArray(x.domains) ? x.domains : [] })) : [],
     ask: normalizeAsk(r.ask),
+    notifyCheck: r.notifyCheck && typeof r.notifyCheck === 'object' && typeof r.notifyCheck.state === 'string' ? r.notifyCheck : undefined,
   };
 }
 

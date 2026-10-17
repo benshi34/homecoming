@@ -1,7 +1,7 @@
 // The Setup Assistant: one thing per page, like setting up a new Mac. Every page shows live status from the
 // same snapshot as the main window, so a step that finishes in the background turns green in place.
 
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { BY_ID } from '../shared/catalog.ts';
 import { READ_ONLY_NOTE, READ_ONLY_OK } from '../shared/status.ts';
 import { count, waitRange } from '../shared/format.ts';
@@ -12,9 +12,12 @@ import { Glyph, GlyphTile, SourceIcon } from './icons.tsx';
 import { AiAgreement, AiSettings } from './ai.tsx';
 import { Hub, type HubFilter } from './hub.tsx';
 import { Timeline } from './main_window.tsx';
-import { AccountForm, AddServiceSheet, AgentButton, InboxButton, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, SkipForm, Steps, vt } from './parts.tsx';
+import { AccountForm, AddServiceSheet, AgentButton, AgentOptIn, InboxButton, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, SkipForm, Steps, vt } from './parts.tsx';
 import { AiMark, animate, Banner, Button, Checkmark, Group, GroupRow, ProgressBar, reducedMotion, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
 import { Tick, WaitClock } from './moments.tsx';
+import { NotificationsBox } from './notifications.tsx';
+import { RequestAllSheet } from './request_all.tsx';
+import { requestPlan } from '../shared/request_all.ts';
 import { Welcome } from './welcome.tsx';
 
 interface PageSpec {
@@ -36,6 +39,16 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
   const i = stepIndex(steps, at);
   const step = steps[i];
   const v = (id: string) => views.find((x) => x.id === id)!;
+  // The export pages shown so far: Continue doesn't send you back to one you've been past.
+  const seen = useRef(new Set<string>());
+  if (step.kind === 'export') seen.current.add(step.sourceId!);
+  // Do It for Me from the footer, the first time: its one-time choice, then it carries on.
+  const [optIn, setOptIn] = useState<(() => void) | null>(null);
+  const doIt = (id: string, then: () => void) => {
+    const go = () => void api.action(id, 'agent-request').then((r) => r.ok && then());
+    if (snap.settings.agentExports && snap.settings.aiOn === true) go();
+    else setOptIn(() => go);
+  };
 
   const goTo = (n: number, dir: 'forward' | 'back') => {
     if (n < 0 || n >= steps.length) return;
@@ -58,7 +71,7 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
       then();
     }, reducedMotion() ? 150 : 750);
   };
-  const page = renderStep(step, { snap, v, next, jump, onFinish, steps, index: i, draft, setDraft, justAsked, confirmed });
+  const page = renderStep(step, { snap, v, next, jump, onFinish, steps, index: i, draft, setDraft, justAsked, confirmed, seen: seen.current, doIt });
   return (
     <div className="assistant" data-testid="assistant" data-step={step.id}>
       <StepsBar steps={steps} index={i} />
@@ -76,6 +89,7 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
         {page.primary && <Button kind={page.primary.quiet ? 'default' : 'primary'} size="large" onClick={page.primary.onClick} disabled={page.primary.disabled || page.primary.done} testAction="assistant-continue" ai={page.primary.ai}
           className={page.primary.done ? 'is-done' : ''}>{page.primary.done && <Tick size={13} />}{page.primary.label}</Button>}
       </div>
+      {optIn && <AgentOptIn snap={snap} onClose={() => setOptIn(null)} onOn={() => { optIn(); setOptIn(null); }} />}
     </div>
   );
 }
@@ -128,6 +142,8 @@ interface Ctx {
   setDraft: (s: Set<string>) => void;
   justAsked: string | null; // the export just marked requested: its button shows a checkmark for a beat
   confirmed: (id: string, then: () => void) => void;
+  seen: ReadonlySet<string>; // the export pages shown so far
+  doIt: (id: string, then: () => void) => void; // Do It for Me for this one (asking the first time), then on
 }
 
 function renderStep(step: Step, ctx: Ctx): PageSpec {
@@ -157,6 +173,7 @@ function renderStep(step: Step, ctx: Ctx): PageSpec {
       const n = listedChoices(ctx).length;
       return { body: <AccountsPage ctx={ctx} />, primary: { label: n ? `Continue with ${n}` : 'Continue', onClick: apply } };
     }
+    case 'notifications': return notifications(ctx);
     case 'ai': return ai(ctx);
     case 'exports': return exportsList(ctx);
     case 'export': return exportPage(ctx, step.sourceId!);
@@ -517,8 +534,12 @@ function AccountsPage({ ctx }: { ctx: Ctx }) {
 function exportsList(ctx: Ctx): PageSpec {
   const ids = ctx.steps.filter((s) => s.kind === 'export').map((s) => s.sourceId!);
   const left = ids.filter((x) => !exportHandled(ctx.v(x)));
+  // The ones Claude can ask for (shared/request_all.ts): with any, that's the way in, and one by one the other.
+  const plan = requestPlan(ctx.snap.sources);
+  const claude = [...plan.claude, ...plan.signIn].filter((v) => ids.includes(v.id));
+  const after = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, ids[ids.length - 1], new Set(ids)));
   return {
-    primary: left.length ? { label: `Start with ${ctx.v(left[0]).name}`, onClick: () => ctx.jump(`export:${left[0]}`) }
+    primary: left.length ? { label: `${claude.length ? 'One by One: ' : 'Start with '}${ctx.v(left[0]).name}`, onClick: () => ctx.jump(`export:${left[0]}`), quiet: claude.length > 0 }
       : { label: 'Continue', onClick: () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources)) },
     body: (
       <>
@@ -526,6 +547,7 @@ function exportsList(ctx: Ctx): PageSpec {
           Each service lets you know when your copy is ready, by email or in its app, an hour to 30 days after you ask. Start with the ones you care about most: pick any of
           them to open its page. The longest waits are at the top, so their clocks start soonest.
         </Hero>
+        {claude.length > 0 && <AskAllBox ctx={ctx} n={claude.length} onAsked={after} />}
         <div className="group-box" style={{ marginTop: 22 }} data-testid="exports-list">
           {ids.map((x) => {
             const v = ctx.v(x);
@@ -545,6 +567,24 @@ function exportsList(ctx: Ctx): PageSpec {
       </>
     ),
   };
+}
+
+// Claude asks for all of them, one after another (Ask for Everything), while you go on with the rest of the setup.
+function AskAllBox({ ctx, n, onAsked }: { ctx: Ctx; n: number; onAsked: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="group-box ask-all-box" style={{ marginTop: 22 }} data-testid="ask-all-box">
+      <div className="status-box">
+        <div style={{ marginTop: 1 }}><AiMark size={20} /></div>
+        <div style={{ flex: 1 }}>
+          <div className="big">Claude can ask for {n === 1 ? 'it' : `${n} of these`} for you</div>
+          <div className="pre">One after another in your {ctx.snap.setup?.agentBrowser?.name ?? 'Chrome'}, while you go on. It tells you if it needs you to sign in or confirm it's you.</div>
+        </div>
+      </div>
+      <div className="actions"><Button kind="primary" ai onClick={() => setOpen(true)} testAction="ask-all">Ask Claude for All…</Button></div>
+      {open && <RequestAllSheet snap={ctx.snap} onClose={() => setOpen(false)} onJump={(id) => ctx.jump(`export:${id}`)} onAsked={() => { setOpen(false); onAsked(); }} />}
+    </div>
+  );
 }
 
 // How the app hears that an export is ready, and the one setting that helps: the iPhone's notifications on this Mac.
@@ -574,16 +614,19 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
   if (src.group === 'guided') return guidedPage(ctx, id);
   const asked = !!view.requestedAt || view.section === 'done' || view.section === 'working';
   // This one is passed over even before the snapshot shows it asked for.
-  const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id));
+  const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id, ctx.seen));
   const markAndNext = () => void api.action(id, 'mark-requested').then(() => ctx.confirmed(id, onward));
+  // Claude can ask for it: that's the footer's button (it works on while you go on), and saying you did is in the page.
+  const agent = !asked && view.actions.find((a) => a.id === 'agent-request');
   // Saying you asked for it is the footer's button while that's the next thing to say (not yet asked, or asked for a
   // new one after the link ran out); otherwise the footer just moves on, quietly when the page has its own next step.
   const mark = view.actions.find((a) => a.id === 'mark-requested');
   const sayAsked = mark && (!asked || view.onTheWay === 'expired');
   const pageHasStep = view.section === 'needs' && view.actions.some((a) => a.primary && a.id !== 'mark-requested');
-  const primary = sayAsked && ctx.justAsked !== id
-    ? { label: mark.label, onClick: markAndNext, quiet: pageHasStep }
-    : { label: ctx.justAsked === id ? 'Requested' : 'Continue', onClick: onward, done: ctx.justAsked === id, quiet: pageHasStep };
+  const primary = agent && ctx.justAsked !== id ? { label: agent.label, onClick: () => ctx.doIt(id, onward), ai: true }
+    : sayAsked && ctx.justAsked !== id
+      ? { label: mark.label, onClick: markAndNext, quiet: pageHasStep }
+      : { label: ctx.justAsked === id ? 'Requested' : 'Continue', onClick: onward, done: ctx.justAsked === id, quiet: pageHasStep };
   const skips = view.actions.some((a) => a.id === 'skip');
   const secondary = (
     <>
@@ -601,7 +644,7 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
           {view.section === 'working' && !view.waiting && <ProgressBar value={view.progress} small />}
         </div>
       </div>
-      {view.section !== 'done' && <ExportActions ctx={ctx} view={view} skip={['skip', ...(sayAsked ? ['mark-requested'] : [])]} />}
+      {view.section !== 'done' && <ExportActions ctx={ctx} view={view} skip={['skip', ...(agent ? ['agent-request'] : sayAsked ? ['mark-requested'] : [])]} />}
     </div>
   );
   return {
@@ -643,7 +686,7 @@ function ExportActions({ ctx, view, skip }: { ctx: Ctx; view: SourceView; skip: 
     <>
       {answering && (
         <div className="agent-reply">
-          <input type="text" value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Answer Claude here, or leave it empty once you've done it in Chrome"
+          <input type="text" value={reply} onChange={(e) => setReply(e.target.value)} placeholder={`Answer Claude here, or leave it empty once you've done it in ${ctx.snap.setup?.agentBrowser?.name ?? 'Chrome'}`}
             onKeyDown={(e) => e.key === 'Enter' && (void api.action(id, 'agent-continue', { reply }), setReply(''))} data-testid="agent-reply" disabled={off('agent-continue')} />
         </div>
       )}
@@ -673,7 +716,7 @@ function ExportActions({ ctx, view, skip }: { ctx: Ctx; view: SourceView; skip: 
 // Slack, Zoom): its own buttons and steps, and the file it leaves you with, dropped on the window or in Downloads.
 function guidedPage(ctx: Ctx, id: string): PageSpec {
   const view = ctx.v(id);
-  const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id));
+  const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id, ctx.seen));
   const done = view.section === 'done';
   const mail = id === 'other_mail';
   const acts = view.actions.filter((a) => !['skip', 'mark-done', 'unmark-done'].includes(a.id));
@@ -717,6 +760,24 @@ function guidedPage(ctx: Ctx, id: string): PageSpec {
 }
 
 // Use AI or not, said once, and which agent: Ask, Do It for Me and making sense of new downloads all use it.
+// How Homecoming tells you an export is ready, one landed in Downloads, or Claude needs you. macOS asks once, when the
+// first notification comes: it's sent here, while you're looking, and macOS's record says whether it was shown.
+function notifications(ctx: Ctx): PageSpec {
+  const c = ctx.snap.notifyCheck;
+  return {
+    primary: { label: 'Continue', onClick: ctx.next, quiet: !c || c.state !== 'shown' },
+    body: (
+      <>
+        <Hero icon={<GlyphTile glyph="bell" color="red" size={64} />} title="Notifications">
+          Homecoming tells you when an export is ready, when one lands in Downloads, and when Claude needs you to sign in or confirm it's you. macOS asks once whether to allow them.
+        </Hero>
+        <NotificationsBox snap={ctx.snap} />
+        <div className="note"><Glyph name="info" size={13} /><span>Alerts stay on screen until you look; banners go after a few seconds. Settings → Notifications in Homecoming checks them again any time.</span></div>
+      </>
+    ),
+  };
+}
+
 function ai(ctx: Ctx): PageSpec {
   const s = ctx.snap.settings;
   const decided = s.aiOn !== undefined && !!s.aiAgreedAt;

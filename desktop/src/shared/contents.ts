@@ -7,11 +7,13 @@ import type { ContentGroup, Stats } from './types.ts';
 const KINDS: Record<string, Record<string, string>> = {
   imessage: { message: 'Messages', reaction: 'Reactions', event: 'Group chat changes: renames, people added or removed' },
   browser_history: { visit: 'Pages visited', search: 'Searches on Google, YouTube, Bing and others' },
+  mail: { email: 'Emails' },
   app_usage: { app_usage: 'Which app was open, and for how long', app_usage_day: 'Days with a daily total', media: 'Songs, podcasts and videos played' },
   ai_coding: { ai_turn: 'Your prompts and the replies' },
   editor_history: { file_edit: 'Saved versions of files' },
   podcasts: { listen: 'Episodes played', subscription: 'Shows you follow' },
   photos: { photo: 'Photos and videos' },
+  shared_photos: { photo: 'Photos and videos others shared with you, and copies of yours in shared albums' },
   calendar: { event: 'Events' },
   notion: { note: 'Pages' },
 };
@@ -25,16 +27,22 @@ const KIND_WORDS: Record<string, string> = {
 const FACETS: Record<string, { title: string; label: (v: string) => string }> = {
   imessage: { title: 'Sent over', label: (v) => ({ iMessageLite: 'iMessage by satellite' }[v] ?? v) },
   calls: { title: 'Kind of call', label: (v) => ({ phone: 'Phone', 'facetime audio': 'FaceTime audio', 'facetime video': 'FaceTime video' }[v] ?? cap(v)) },
-  browser_history: { title: 'Browser', label: (v) => ({ safari: 'Safari', chrome: 'Chrome' }[v] ?? cap(v)) },
+  browser_history: { title: 'Browser', label: (v) => BROWSER_NAMES[v] ?? cap(v) },
+  mail: { title: 'Account', label: (v) => v },
   // Screen Time syncs every device on the Apple ID; app_usage.py names them "this Mac", "iPhone (23G83)"...
   app_usage: { title: 'Device', label: (v) => (v === 'this Mac' ? 'This Mac' : /^Mac\b/.test(v) ? 'Another Mac' : v.replace(/\s*\(.*\)$/, '')) },
   ai_coding: { title: 'Assistant', label: (v) => ({ 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', ...EDITORS }[v] ?? cap(v)) },
   editor_history: { title: 'Editor', label: (v) => EDITORS[v] ?? cap(v) },
   shell_history: { title: 'Shell', label: (v) => v },
   photos: { title: 'Kind', label: (v) => ({ photo: 'Photos', video: 'Videos' }[v] ?? cap(v)) },
+  shared_photos: { title: 'Shared through', label: (v) => ({ shared_album: 'Shared albums', shared_with_you: 'Shared with You in Messages', icloud_link: 'iCloud links',
+    shared_library: 'Your Shared Library, added by others' }[v] ?? cap(v)) },
   documents: { title: 'Folder', label: (v) => ({ iCloud: 'iCloud Drive' }[v] ?? v) },
 };
 
+// The ids browsers.py gives them.
+export const BROWSER_NAMES: Record<string, string> = { safari: 'Safari', chrome: 'Chrome', arc: 'Arc', edge: 'Edge', brave: 'Brave', vivaldi: 'Vivaldi',
+  opera: 'Opera', dia: 'Dia', chromium: 'Chromium', chrome_beta: 'Chrome Beta', chrome_canary: 'Chrome Canary', firefox: 'Firefox', zen: 'Zen' };
 const EDITORS: Record<string, string> = { vscode: 'VS Code', 'vscode-insiders': 'VS Code Insiders', vscodium: 'VSCodium', cursor: 'Cursor', windsurf: 'Windsurf' };
 const cap = (s: string) => s.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 

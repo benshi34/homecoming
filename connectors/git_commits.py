@@ -6,13 +6,13 @@ import os
 import subprocess
 from pathlib import Path
 
-from common import HOME, Writer
+from common import HOME, Writer, cloud_only, git_bin
 from identity import ME, is_me_email, is_me_name
 
 AVENUE = ("Local: find .git dirs under ~/Documents, ~/Desktop, iCloud Drive and code folders (~/Developer, ~/Code, "
           "~/Projects, ~/src...); `git log --all`. Every commit is kept; "
-          "is_me from corpus/identity.json (emails, names, usernames as substrings). Slow the first time if "
-          "Documents is iCloud-synced (git objects get downloaded).")
+          "is_me from corpus/identity.json (emails, names, usernames as substrings). A repository whose history is "
+          "only in iCloud (Optimize Mac Storage) is skipped rather than downloaded; what an earlier run read of it stays.")
 
 # Code folders outside iCloud are where repos belong (an iCloud-synced repo gets conflict copies inside .git).
 CODE_DIRS = ("Developer", "Code", "code", "Projects", "projects", "src", "dev", "git", "repos", "workspace")
@@ -35,16 +35,32 @@ def repos():
             dns[:] = [d for d in dns if d not in SKIP and not d.startswith(".") and len(Path(dp, d).relative_to(root).parts) <= 4]
 
 
+def history_in_icloud_only(repo):
+    """Whether any of a repository's history is only in iCloud: git would download it (and, offline, hang). Every
+    file in .git is looked at, without opening any: a branch or a loose object can be in iCloud while HEAD isn't."""
+    for dp, _, fns in os.walk(repo / ".git"):
+        if any(cloud_only(os.path.join(dp, f)) for f in fns):
+            return True
+    return False
+
+
 def main():
+    git = git_bin()
     with Writer("git_commits", AVENUE) as w:
+        if not git:  # no git to read them with (and the stub would ask to install the developer tools)
+            w.notes["no_git"] = 1
+            return
         for repo in sorted(set(repos())):
+            if history_in_icloud_only(repo):  # its commits from an earlier run carry over
+                w.notes["in_icloud_only"] = w.notes.get("in_icloud_only", 0) + 1
+                continue
             fmt = SEP.join(["%H", "%aI", "%an", "%ae", "%s", "%b"]) + "\x1e"
             try:
-                out = subprocess.run(["git", "-C", str(repo), "log", "--all", f"--format={fmt}"],
+                out = subprocess.run([git, "-C", str(repo), "log", "--all", f"--format={fmt}"],
                                      capture_output=True, text=True, timeout=120).stdout
             except subprocess.TimeoutExpired:
                 continue
-            remote = subprocess.run(["git", "-C", str(repo), "config", "--get", "remote.origin.url"],
+            remote = subprocess.run([git, "-C", str(repo), "config", "--get", "remote.origin.url"],
                                     capture_output=True, text=True).stdout.strip() or None
             for chunk in out.split("\x1e"):
                 chunk = chunk.strip("\n")

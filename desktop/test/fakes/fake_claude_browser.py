@@ -29,10 +29,13 @@ if "--resume" in args:
     mode, n = before[0]["mode"], len(before)
 else:
     # A new run: the next one in its list after the new runs of that kind so far.
-    mode = "request" if "Request a full export" in prompt else "download"
+    mode = "request" if "Request a full export" in prompt else "visit" if "Open each of these pages in turn" in prompt else "download"
     session, n = f"fake-session-{len(runs) + 1}", sum(1 for r in runs if r["mode"] == mode and not r["resume"])
-run = plan[mode][min(n, len(plan[mode]) - 1)]
+runs_for = plan.get(mode) or [{"steps": [], "result": "requested", "sleep": 0.1}]  # a visit, when the plan has none: done
+run = runs_for[min(n, len(runs_for) - 1)]
 if log:
+    with open(log + ".pid", "w") as f:  # the run now, for a test that checks it's gone
+        f.write(str(os.getpid()))
     with open(log, "a") as f:
         f.write(json.dumps({"args": args, "prompt": prompt, "mode": mode, "session": session, "resume": "--resume" in args}) + "\n")
 

@@ -4,6 +4,7 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { ago, count } from '../shared/format.ts';
 import { type Phase, progress, readyIn, wayTag } from '../shared/progress.ts';
+import { requestPlan } from '../shared/request_all.ts';
 import { READ_ONLY_NOTE } from '../shared/status.ts';
 import { countFor, listFor, listSummary, type Nav, navOf } from '../shared/lists.ts';
 import type { Snapshot, SourceView } from '../shared/types.ts';
@@ -15,6 +16,9 @@ import { ExplorePage, exploreHome, exploreOpen, Num } from './explore.tsx';
 import { Hub, type HubFilter } from './hub.tsx';
 import { ArrivalBanners, RowCount, useArrivals, WaitClock } from './moments.tsx';
 import { AddServiceSheet, Detail, vt } from './parts.tsx';
+import { NotificationsRow } from './notifications.tsx';
+import { RequestAllSheet } from './request_all.tsx';
+import { YourSetupPage } from './your_setup.tsx';
 import { AiMark, animate, Button, Checkmark, Group, GroupRow, ProgressBar, ProgressRing, Sheet, Spinner, Toggle } from './ui.tsx';
 
 export type { Nav } from '../shared/lists.ts';
@@ -26,8 +30,8 @@ const NAV: { id: Nav; label: string; glyph: string }[] = [
   { id: 'unavailable', label: 'Not Collecting', glyph: 'minusCircle' },
 ];
 
-export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, nav, setNav, adding, setAdding, focus }: {
-  snap: Snapshot; settingsOpen: boolean; setSettingsOpen: (v: boolean) => void; onAssistant: () => void; nav: Nav; setNav: (n: Nav) => void;
+export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, onExport, nav, setNav, adding, setAdding, focus }: {
+  snap: Snapshot; settingsOpen: boolean; setSettingsOpen: (v: boolean) => void; onAssistant: () => void; onExport: () => void; nav: Nav; setNav: (n: Nav) => void;
   adding: boolean; setAdding: (v: boolean) => void; focus?: { id: string; n: number } | null;
 }) {
   const [selected, setSelected] = useState<Partial<Record<Nav, string>>>({});
@@ -98,7 +102,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
   };
 
   const counts: Record<Nav, number> = {
-    overview: 0, ask: 0, ai: 0, explore: 0, needs: countFor('needs', all), working: countFor('working', all),
+    overview: 0, ask: 0, ai: 0, yoursetup: 0, explore: 0, needs: countFor('needs', all), working: countFor('working', all),
     done: countFor('done', all), unavailable: countFor('unavailable', all),
     setup: countFor('setup', all),
     found: snap.discovery?.found.length ?? 0,
@@ -133,7 +137,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
   };
 
   return (
-    <div className={`window ${nav === 'overview' || nav === 'found' || nav === 'hub' || nav === 'explore' || nav === 'ai' || (nav === 'ask' && snap.settings.aiOn !== true) ? 'wide' : ''}`}>
+    <div className={`window ${nav === 'overview' || nav === 'found' || nav === 'hub' || nav === 'explore' || nav === 'ai' || nav === 'yoursetup' || (nav === 'ask' && snap.settings.aiOn !== true) ? 'wide' : ''}`}>
       <nav className="sidebar drag" data-testid="sidebar">
         <div className="no-drag">
           <SideItem id="overview" label="Overview" glyph="gauge" nav={nav} onClick={() => go('overview')} />
@@ -148,6 +152,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
           <div className="sidebar-section">This Mac</div>
           <SideItem id="setup" label="Setup Checks" glyph="gear" nav={nav} count={counts.setup || undefined} alert onClick={() => go('setup')} />
           <div className="sidebar-section">Settings</div>
+          <SideItem id="yoursetup" label="Your Setup" glyph="laptop" nav={nav} onClick={() => go('yoursetup')} />
           <SideItem id="ai" label="AI Settings" glyph="sparkle" icon={<AiMark size={16} />} nav={nav} onClick={() => go('ai')} />
         </div>
         <div className="sidebar-foot no-drag" data-testid="sidebar-progress">
@@ -168,6 +173,8 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
         </div>
       ) : nav === 'ask' ? (
         <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
+      ) : nav === 'yoursetup' ? (
+        <YourSetupPage snap={snap} onSource={jump} onAi={() => go('ai')} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
       ) : nav === 'ai' ? (
         <AiPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
       ) : nav === 'explore' ? (
@@ -211,7 +218,8 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, n
       )}
       <ArrivalBanners banners={banners} onOpen={jump} onDismiss={dismiss} />
       {adding && <AddServiceSheet initialName={addName} onClose={() => setAdding(false)} onAdded={added} />}
-      {settingsOpen && <SettingsSheet snap={snap} onClose={() => setSettingsOpen(false)} onAssistant={() => { setSettingsOpen(false); onAssistant(); }} />}
+      {settingsOpen && <SettingsSheet snap={snap} onClose={() => setSettingsOpen(false)} onAssistant={() => { setSettingsOpen(false); onAssistant(); }}
+        onExport={() => { setSettingsOpen(false); onExport(); }} />}
     </div>
   );
 }
@@ -311,6 +319,15 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
   const now = new Date();
   const prog = progress(snap.sources, now);
   const next = snap.sources.find((v) => v.id === snap.next);
+  // The exports still to ask for, all at once (shared/request_all.ts).
+  const plan = requestPlan(snap.sources);
+  const [askAll, setAskAll] = useState(false);
+  const toAsk = plan.claude.length + plan.signIn.length + plan.yourself.length + plan.email.length;
+  const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+  const askSay = [plan.claude.length ? `Claude can ask for ${plan.claude.length === toAsk ? (toAsk === 1 ? 'it' : 'them all') : plan.claude.length} on its own` : '',
+    plan.signIn.length ? `sign in to ${plan.signIn.length === 1 ? plan.signIn[0].name : plural(plan.signIn.length, 'service')} first` : '',
+    plan.email.length ? `${plural(plan.email.length, 'request')} by email` : '', plan.yourself.length ? `${plan.yourself.length} for you to do` : '']
+    .filter(Boolean).join(' · ');
   return (
     <div className="overview" data-testid="overview">
       <div className="group-box" style={{ marginTop: 6 }}>
@@ -357,6 +374,20 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
         )}
       </Group>
 
+      {plan.claude.length + plan.signIn.length + plan.email.length > 0 && (
+        <Group title="Ask for everything">
+          <div className="next-card" data-testid="ask-everything">
+            <div className="ask-all-mark"><AiMark size={18} /></div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="title">{plural(toAsk, 'export')} still to ask for</div>
+              <div className="status">{askSay.charAt(0).toUpperCase() + askSay.slice(1)}.</div>
+            </div>
+            <Button onClick={() => setAskAll(true)} testAction="ask-everything">Ask for All…</Button>
+          </div>
+        </Group>
+      )}
+      {askAll && <RequestAllSheet snap={snap} onClose={() => setAskAll(false)} onJump={onJump} />}
+
       <Group title="Timeline" footer="Phases run side by side: the Mac keeps reading while exports are on their way.">
         <Timeline phases={prog.phases} onPhase={(p) => onJump(p.sourceIds[0])} />
       </Group>
@@ -382,7 +413,7 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
 
 // ---------------------------------------------------------------- settings
 
-function SettingsSheet({ snap, onClose, onAssistant }: { snap: Snapshot; onClose: () => void; onAssistant: () => void }) {
+function SettingsSheet({ snap, onClose, onAssistant, onExport }: { snap: Snapshot; onClose: () => void; onAssistant: () => void; onExport: () => void }) {
   const s = snap.settings;
   // Read-only mode: settings that would change what's kept are shown, not changed.
   const locked = snap.readOnly && !snap.demo;
@@ -405,18 +436,25 @@ function SettingsSheet({ snap, onClose, onAssistant }: { snap: Snapshot; onClose
           trailing={<Toggle checked={!!s.openAtLogin} onChange={(v) => void api.settings({ openAtLogin: v })} label="Open at login" testId="toggle-login" />} />
       </div>
 
+      <div className="group-box" style={{ marginTop: 12 }} data-testid="settings-notifications">
+        <NotificationsRow snap={snap} />
+      </div>
+
       <div className="group-box" style={{ marginTop: 12 }}>
         <GroupRow title="Look for exports every few hours" testId="settings-checks"
-          subtitle={agent ? 'While an export is on its way, Claude opens Chrome now and then to check the service\'s page, or your webmail for the email saying it\'s ready, and downloads it.'
+          subtitle={agent ? `While an export is on its way, Claude opens ${snap.setup.agentBrowser?.name ?? 'Chrome'} now and then to check the service's page, or your webmail for the email saying it's ready, and downloads it.`
             : 'Needs Do It for Me, with downloads on, in AI Settings.'}
           trailing={agent ? lock(<Toggle checked={s.agentChecks !== false} onChange={(v) => void api.settings({ agentChecks: v })} label="Look for exports every few hours" testId="toggle-checks" />)
             : <span className="tag">Off</span>} />
         <GroupRow title="AI and Do It for Me…" subtitle="Which agent does the work, and what uses it." testId="settings-ai"
           onClick={() => { onClose(); void api.action('*', 'show-ai'); }} />
+        <GroupRow title="Your Setup…" subtitle="Who you are, your browsers, Mail and the inboxes Claude may look in." testId="settings-setup"
+          onClick={() => { onClose(); void api.action('*', 'show-setup'); }} />
       </div>
 
       <div className="group-box" style={{ marginTop: 12 }}>
-        <GroupRow title="Your library" subtitle={<code className="selectable">{snap.corpusPath}</code>} />
+        <GroupRow title="Your library" subtitle={<code className="selectable">{snap.corpusPath}</code>}
+          trailing={<Button size="small" onClick={onExport} testAction="settings-export">Export…</Button>} />
       </div>
       <div className="sheet-actions" style={{ justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', gap: 8 }}>

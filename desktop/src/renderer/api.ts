@@ -1,6 +1,6 @@
 import type { AskConversation, AskEvent, AskProvider, AskSettings, AskSummary } from '../shared/ask.ts';
 import type { ExploreProgress } from '../shared/explore.ts';
-import type { AskView, DirectoryEntry, Onboarding, Settings, Snapshot } from '../shared/types.ts';
+import type { AskView, DirectoryEntry, ExportPart, LibrarySizes, Onboarding, Settings, Snapshot } from '../shared/types.ts';
 
 export interface Api {
   snapshot(): Promise<Snapshot>;
@@ -18,7 +18,15 @@ export interface Api {
   ask: AskApi;
   explore<T = unknown>(op: string, args?: unknown[]): Promise<T | { error: string }>; // shared/explore.ts has the shapes
   onExploreProgress(cb: (p: ExploreProgress) => void): () => void;
+  libraryExport: LibraryExportApi;
   onAsk(cb: (channel: 'ask-event' | 'ask-done', payload: AskPush) => void): () => void;
+}
+
+// Export Your Library (main.ts "library-export").
+export interface LibraryExportApi {
+  (op: 'sizes'): Promise<LibrarySizes | { error: string }>;
+  (op: 'start', parts: ExportPart[]): Promise<{ ok?: boolean; canceled?: boolean; error?: string }>; // the save dialog first
+  (op: 'stop' | 'clear' | 'reveal'): Promise<{ ok: boolean }>;
 }
 
 export type AskPush = { id: string; turn: number; event?: AskEvent; conversation?: AskConversation };
@@ -30,6 +38,9 @@ export interface AskApi {
   (op: { op: 'ask'; id: string | null; question: string } | { op: 'retry'; id: string }): Promise<{ id: string; error?: undefined } | { error: string; provider?: AskProvider; id?: undefined }>;
   (op: { op: 'check' }): Promise<AskView>; // look again for the agents, and the local model's server
   (op: { op: 'open-terminal' }): Promise<null>;
+  (op: { op: 'sign-in'; harness: 'claude-code' | 'codex' }): Promise<{ ok: boolean; error?: string }>;
+  (op: { op: 'open-sign-in-page'; harness: 'claude-code' | 'codex'; code?: boolean }): Promise<null>;
+  (op: { op: 'sign-in-code'; harness: 'claude-code' | 'codex'; code: string }): Promise<{ ok: boolean; error?: string }>;
   (op: { op: 'stop' | 'remove'; id: string }): Promise<unknown>;
   (op: { op: 'settings'; patch: Partial<AskSettings> }): Promise<AskSettings>;
   (op: { op: 'confirm-retention'; provider: AskProvider }): Promise<AskSettings>;

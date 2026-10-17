@@ -10,6 +10,14 @@ import re
 
 from identity import is_me_email
 
+# Mail folders, by name (Mail.app's own and a mailbox export's): mail in these is the user's own...
+SENT_FOLDERS = {"sent", "sent items", "sent messages", "sent mail"}
+# ...and mail in these is kept, but tagged meta.tier so searches can leave it out: junk can hide real mail, and
+# deleted mail is mail the user received or wrote.
+SKIP_FOLDERS = {"junk", "junk email", "spam", "trash", "deleted items", "deleted messages", "outbox"}
+TIER_OF_FOLDER = {"junk": "spam", "junk email": "spam", "spam": "spam", "trash": "deleted", "deleted items": "deleted",
+                  "deleted messages": "deleted", "outbox": "unsent"}
+
 QUOTE_START = re.compile(r"^(On .{5,200} wrote:|-----Original Message-----|From: .+\nSent: |_{20,})", re.M)
 
 

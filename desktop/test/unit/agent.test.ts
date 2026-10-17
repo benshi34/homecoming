@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { agentPrompt, outcomeOf, runAgent } from '../../src/main/export_agent.ts';
+import { agentPrompt, outcomeOf, runAgent, visitPrompt } from '../../src/main/export_agent.ts';
 
 const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fakes/fake_claude_browser.py');
 
@@ -15,7 +15,7 @@ test('the request prompt: the export page, the service\'s own steps, everything 
   assert.match(p, /Open https:\/\/accountscenter\.instagram\.com\/info_and_permissions\/dyi\/ in a new tab/);
   assert.match(p, /Format: JSON/, 'its steps, as written for a person');
   assert.match(p, /all time, JSON/);
-  assert.match(p, /Never type a password or a code and never answer a CAPTCHA/);
+  assert.match(p, /Never type a password or a code, never confirm with a passkey, and never answer a CAPTCHA/);
   assert.match(p, /Stay on Instagram's own sites \(.*accountscenter\.instagram\.com/);
   assert.match(p, /happy for you to click through to the end without checking with them/, 'no asking before the last click');
   assert.match(p, /RESULT: needs_you/);
@@ -67,10 +67,12 @@ async function fakeRun(plan: object, chrome = 'connected') {
   Object.assign(process.env, env);
   const logged: string[] = [];
   const steps: string[] = [];
+  const waited: string[] = [];
   try {
     const started = Date.now();
-    const out = await runAgent({ bin: FAKE, prompt: 'Request a full export of their Instagram data.', onStep: (l) => steps.push(l), log: (l) => logged.push(l) }).done;
-    return { out, steps, logged, ms: Date.now() - started };
+    const out = await runAgent({ bin: FAKE, prompt: 'Request a full export of their Instagram data.', onStep: (l) => steps.push(l), log: (l) => logged.push(l),
+      onWaiting: (w) => waited.push(w) }).done;
+    return { out, steps, logged, waited, ms: Date.now() - started };
   } finally {
     process.env = saved;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -91,4 +93,46 @@ test('a run that ends without a RESULT line says so in plain words, the details 
   assert.equal(r.out.status, 'failed');
   assert.equal(r.out.note, 'It stopped partway, without saying how far it got.');
   assert.doesNotMatch(r.out.note, /Claude Code|exit/);
+});
+
+test('in the browser picked in Your Setup, looking only in the inboxes allowed there', () => {
+  const mine = ['ada@gmail.com', 'ada@work.example'];
+  const look = agentPrompt(BY_ID.discord, 'download', undefined, '2026-10-01T00:00:00Z', { mine, inboxes: ['ada@gmail.com'] }, 'Arc');
+  assert.match(look, /^You're doing this for the person whose Arc this is\./);
+  assert.match(look, /in their email in Arc:/);
+  assert.match(look, /Their addresses: ada@gmail\.com \(/);
+  assert.doesNotMatch(look, /ada@work\.example/);
+  assert.match(look, /Look only in the inboxes of the addresses above/);
+  assert.doesNotMatch(look, /\bChrome\b(?! extension)/);
+  // Requesting, every address still says which account is theirs.
+  const ask = agentPrompt(BY_ID.instagram, 'request', undefined, undefined, { mine, inboxes: ['ada@gmail.com'] }, 'Arc');
+  assert.match(ask, /Theirs, as far as this Mac knows: ada@gmail\.com, ada@work\.example/);
+  assert.match(ask, /Arc may be signed in to an old or secondary one/);
+  assert.match(ask, /"Allow Claude on <site> in Arc\." when Arc asks them to let Claude work on a site/, 'waiting, in its words too');
+  // All allowed (nothing turned off): no limit is said.
+  assert.doesNotMatch(agentPrompt(BY_ID.discord, 'download', undefined, undefined, { mine }), /Look only in/);
+});
+
+test('Claude waiting in Chrome for the person says so on a line of its own: the app hears it as waiting, not as a step', async () => {
+  const r = await fakeRun({ request: [{ steps: ['Opening GitHub', 'WAITING: Confirm it\'s you with your passkey in Chrome.', 'Confirmed: starting the export'], result: 'requested', sleep: 0.1 }] });
+  assert.equal(r.out.status, 'requested');
+  assert.deepEqual(r.waited, ['Confirm it\'s you with your passkey in Chrome.']);
+  assert.deepEqual(r.steps, ['Opening GitHub', 'Confirmed: starting the export', 'Done.']);
+});
+
+test('the instructions say to wait for the person a few minutes, not stop, and how to say what they need to do', () => {
+  const p = agentPrompt(BY_ID.x, 'request');
+  assert.match(p, /wait for them, don't stop: first write one line, WAITING: <what they need to do/);
+  assert.match(p, /for up to 5 minutes, and carry on as soon as it's done\. Only if it still isn't done after that, stop with needs_you/);
+  assert.match(p, /"Allow Claude on <site> in Chrome\." when Chrome asks them to let Claude work on a site/);
+  assert.match(p, /never confirm with a passkey/);
+});
+
+test('a visit before Ask for Everything: only opening each page, waiting for Allow, and saying which it got onto', () => {
+  const p = visitPrompt([{ name: 'Spotify', url: 'https://www.spotify.com/account/privacy/' }], 'Brave');
+  assert.match(p, /whose Brave this is/);
+  assert.match(p, /only open it: don't click, type or sign in to anything on it/);
+  assert.match(p, /WAITING: Allow Claude on <site> in Brave\./);
+  const out = outcomeOf('OPENED: https://www.spotify.com/account/privacy/\nOPENED: https://x.com/settings\nRESULT: requested');
+  assert.deepEqual(out?.opened, ['https://www.spotify.com/account/privacy/', 'https://x.com/settings']);
 });

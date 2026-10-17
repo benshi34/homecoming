@@ -77,7 +77,8 @@ describe('progress', () => {
 describe('Setup Assistant steps', () => {
   test('one page per step, in the order of a first setup', () => {
     const steps = assistantSteps(views());
-    assert.deepEqual(steps.slice(0, 6).map((s) => s.id), ['welcome', 'access', 'library', 'mac', 'iphone', 'accounts']);
+    assert.deepEqual(steps.slice(0, 8).map((s) => s.id), ['welcome', 'access', 'library', 'mac', 'iphone', 'accounts', 'notifications', 'ai'],
+      'notifications asked for before anything waits on them, and before AI turns on Do It for Me');
     assert.deepEqual(steps.slice(-3).map((s) => s.id), ['identity', 'keep', 'done'], 'who you are once there is data; keeping history going last');
     assert.ok(!steps.some((s) => s.id === 'mail' || s.id === 'extras'), 'no Extras section');
     const ids = steps.map((s) => s.id);
@@ -134,7 +135,7 @@ describe('Setup Assistant steps', () => {
     const steps = assistantSteps(vs, ['instagram', 'discord', 'reddit']);
     const ids = steps.map((s) => s.id);
     assert.equal(ids[ids.indexOf('export:discord') - 1], 'exports', 'the list comes right before the pages');
-    assert.deepEqual(ids.slice(ids.indexOf('accounts'), ids.indexOf('accounts') + 3), ['accounts', 'ai', 'exports'], 'AI is decided before the export pages, which offer Do It for Me');
+    assert.deepEqual(ids.slice(ids.indexOf('accounts'), ids.indexOf('accounts') + 4), ['accounts', 'notifications', 'ai', 'exports'], 'AI is decided before the export pages, which offer Do It for Me');
     assert.ok(!assistantSteps(vs, []).some((s) => s.kind === 'exports'), 'no accounts, no list');
     const order = steps.filter((s) => s.kind === 'export').map((s) => s.sourceId);
     // From the list: the first not yet asked for. Jumping to the last and asking: back round to the first.
@@ -149,6 +150,13 @@ describe('Setup Assistant steps', () => {
     assert.equal(nextExportStep(steps, asked, order[2]), ids[ids.indexOf(`export:${order[2]}`) + 1]);
     const none = assistantSteps(vs, []);
     assert.equal(none[stepIndex(none, 'exports')].id, 'identity', 'all turned off: on past the exports, not back to the start');
+    // Two left undone: Continue goes on to the other, then on past the exports, not back and forth between them.
+    const after = ids[ids.indexOf(`export:${order[2]}`) + 1];
+    assert.equal(nextExportStep(steps, vs, order[1], new Set([order[0]!, order[1]!])), `export:${order[2]}`);
+    assert.equal(nextExportStep(steps, vs, order[2], new Set([order[0]!, order[1]!, order[2]!])), after, 'all seen: on, not round again');
+    // Started in the middle (from the list): round to the ones before it not seen yet, then on.
+    assert.equal(nextExportStep(steps, vs, order[2], new Set([order[1]!, order[2]!])), `export:${order[0]}`);
+    assert.equal(nextExportStep(steps, vs, order[0], new Set([order[0]!, order[1]!, order[2]!])), `export:${order[1]}`, 'down the list from there: one passed over is still offered once');
   });
 
   test('the export pages keep their order as imports finish', () => {

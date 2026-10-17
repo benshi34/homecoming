@@ -3,6 +3,7 @@
 // it was never agreed to), and the export pages have no Do It for Me. Claude Code and Codex are stand-ins (test/fakes).
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
@@ -18,6 +19,7 @@ let run: Running;
 
 before(async () => {
   sb = sandbox({ identity: true });
+  fs.mkdirSync(path.join(sb.home, 'Applications/Google Chrome.app'), { recursive: true }); // a browser Claude in Chrome runs in
   run = await launch(sandboxEnv(sb, {
     UMP_NO_AUTORUN: '1',
     UMP_CLAUDE_CMD: path.join(DESKTOP, 'test/fakes/fake_claude.py'), UMP_CODEX_CMD: path.join(DESKTOP, 'test/fakes/fake_codex.py'),
@@ -47,8 +49,8 @@ test('Not Now on Ask\'s first page: AI is off, and turning it on there goes thro
 
 test('AI is agreed to once, its agent picked, and turned off and on', async () => {
   const p = run.page;
-  // AI Settings, so it isn't taken for a place to talk to an AI: in a Settings section of its own, last.
-  assert.match(await p.locator('[data-testid=sidebar]').innerText(), /Setup Checks[\s\S]*\bSettings\s+AI Settings\s+[\d,]+ of [\d,]+ sources collected/);
+  // AI Settings, so it isn't taken for a place to talk to an AI: in a Settings section of its own (after Your Setup), last.
+  assert.match(await p.locator('[data-testid=sidebar]').innerText(), /Setup Checks[\s\S]*\bSettings\s+Your Setup\s+AI Settings\s+[\d,]+ of [\d,]+ sources collected/);
   await p.locator('[data-testid=nav-ai]').click();
   const page = p.locator('[data-testid=ai-page]');
   await page.waitFor();

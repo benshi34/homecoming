@@ -8,6 +8,7 @@ import re
 import zipfile
 
 from common import CORPUS, LIB, Writer, connect, from_apple, phone, snapshot_sqlite
+from phones import e164
 
 AB = LIB / "Application Support/AddressBook"
 IMPORTS = CORPUS / "imports"
@@ -20,8 +21,8 @@ PHONE_PROPS = {3: "phones", 4: "emails", 5: "addresses", 13: "social", 22: "urls
 
 
 def norm_phone(s):
-    d = re.sub(r"\D", "", s or "")
-    return d[-10:] if len(d) >= 10 else d or None
+    """+<country code><number>, a number without its country code read in this Mac's region (phones.py)."""
+    return e164(s) or (re.sub(r"\D", "", s or "") or None)
 
 
 def norm_handle(s):
@@ -29,6 +30,13 @@ def norm_handle(s):
     if "@" in s:
         return s.lower()
     return norm_phone(s)
+
+
+def tail(s):
+    """A number's last nine digits: matches a friend abroad saved without their country code, when the full number
+    doesn't."""
+    d = re.sub(r"\D", "", s or "")
+    return d[-9:] if "@" not in (s or "") and len(d) >= 9 else None
 
 
 def _db_paths():
@@ -163,27 +171,28 @@ class Resolver:
     imported vCards, then the Mac's AddressBook."""
 
     def __init__(self):
-        self.by_handle = {}
+        self.by_handle, self.by_tail = {}, {}
         for c in load_phone_contacts():
             for _, v in c["phones"] + c["emails"]:
-                key = norm_handle(v)
-                if key and c["name"]:
-                    self.by_handle.setdefault(key, c["name"])
+                self.add(v, c["name"])
         for text in imported_vcards():
             for d in parse_vcards(text):
                 name = vcard_name(d)
                 for v in d.get("TEL", []) + d.get("EMAIL", []):
-                    key = norm_handle(v)
-                    if key and name:
-                        self.by_handle.setdefault(key, name)
+                    self.add(v, name)
         for c in load_contacts():
             for _, v in c["phones"] + c["emails"]:
-                key = norm_handle(v)
-                if key and c["name"]:
-                    self.by_handle.setdefault(key, c["name"])
+                self.add(v, c["name"])
+
+    def add(self, handle, name):
+        key = norm_handle(handle)
+        if key and name:
+            self.by_handle.setdefault(key, name)
+            if tail(handle):
+                self.by_tail.setdefault(tail(handle), name)
 
     def name(self, handle):
-        return self.by_handle.get(norm_handle(handle))
+        return self.by_handle.get(norm_handle(handle)) or (self.by_tail.get(tail(handle)) if tail(handle) else None)
 
     def label(self, handle):
         """Contact name if known, else the raw handle."""

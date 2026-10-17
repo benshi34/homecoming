@@ -40,6 +40,28 @@ test('runs one job at a time, in order', async () => {
   assert.deepEqual(finished.map((f) => f.job.label), ['a', 'b']);
 });
 
+test("held: what's queued waits, the running job carries on, and they start once it's let go", async () => {
+  const { q, started } = harness();
+  q.add({ kind: 'connectors', label: 'a', sourceIds: ['imessage'], connectors: ['imessage'] });
+  const release = q.hold();
+  assert.equal(q.runningNow(), true);
+  q.add({ kind: 'import', label: 'b', sourceIds: ['x'], connectors: ['imports'] });
+  started[0].finish();
+  await tick();
+  assert.equal(q.runningNow(), false);
+  assert.equal(started.length, 1, 'nothing new starts while held');
+  assert.deepEqual(q.list().map((j) => j.state), ['queued']);
+  const second = q.hold();
+  release();
+  release(); // twice is once
+  await tick();
+  assert.equal(started.length, 1, 'still held by the other');
+  second();
+  await tick();
+  assert.equal(started.length, 2);
+  assert.equal(started[1].job.label, 'b');
+});
+
 test('queued connector jobs merge; a duplicate of the running job is dropped', async () => {
   const { q, started } = harness();
   const first = q.add({ kind: 'connectors', label: 'x', sourceIds: ['imessage'], connectors: ['imessage'] });

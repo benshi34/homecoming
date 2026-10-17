@@ -9,6 +9,7 @@ import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { AgentChoices, RetentionSheet } from './ask.tsx';
 import { Glyph, GlyphTile } from './icons.tsx';
+import { NotificationsRow } from './notifications.tsx';
 import { AiMark, Button, Group, GroupRow, Toggle } from './ui.tsx';
 
 // Turning AI on (agreed to then, the first time) or not.
@@ -24,7 +25,7 @@ export function AiAgreement({ snap, onDecided, actions = true }: { snap: Snapsho
       <div className="ai-agree-head"><AiMark size={22} /><b>Use AI in Homecoming?</b></div>
       <ul>
         <li><b>Ask</b> answers questions about your data. The agent you pick sees only what it looks up to answer you, with passwords and keys blanked.</li>
-        <li><b>Do It for Me</b> requests and downloads your exports in your Chrome, on each service's own sites, and asks you when it needs you.</li>
+        <li><b>Do It for Me</b> requests and downloads your exports in your {snap.setup?.agentBrowser?.name ?? 'Chrome'}, on each service's own sites, and asks you when it needs you.</li>
         <li><b>Make sense of a download</b> the app doesn't know: the agent sees a sample of how the files are laid out, not their contents.</li>
         <li>Your library stays on this Mac. Nothing goes to an AI until you turn this on, and you can turn it off here any time.</li>
       </ul>
@@ -60,9 +61,13 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
   };
   // Codex works in a browser only inside its own app (the ChatGPT app's in-app browser, or Chrome through its
   // extension), not when another app runs it from the command line, as Homecoming does: so this one is Claude's.
+  // Where Do It for Me works (Your Setup), and whether it can: Claude Code, a browser the extension works in, a claude.ai sign-in.
+  const ready = snap.setup.agent;
+  const B = snap.setup.agentBrowser?.name ?? 'Chrome';
   const doIt = !claudeCode ? 'Needs Claude Code and the Claude in Chrome extension. Codex can use a browser only inside its own app, not when Homecoming runs it.'
-    : `Claude Code works in your Chrome, where you're signed in, through the Claude in Chrome extension.${p.harness === 'codex' ? ' It\'s Claude even with Codex picked above: Codex can use a browser only inside its own app.' : ''}${
-      chrome === 'connected' ? ' The extension is connected.' : chrome === 'not connected' ? ' The extension isn\'t connected: open Chrome and turn it on.' : ''}`;
+    : !ready.ok ? ready.why
+      : `Claude Code works in your ${B}, where you're signed in, through the Claude in Chrome extension (pick the browser in Your Setup).${p.harness === 'codex' ? ' It\'s Claude even with Codex picked above: Codex can use a browser only inside its own app.' : ''}${
+        chrome === 'connected' ? ' The extension is connected.' : chrome === 'not connected' ? ` The extension isn't connected: open ${B} and turn it on.` : ''}`;
   const off = <span className="tag">Off</span>;
   // Ask and making sense of a download only ever run when you ask: no switch, just who answers.
   const who = on ? <span className="tag">{p.name}</span> : off;
@@ -89,15 +94,16 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
         <GroupRow icon={<GlyphTile glyph="bubble" color="blue" />} title="Ask" chevron={false}
           subtitle={`Answers questions about your data when you ask, and cites the records it used. ${p.name} sees only what it looks up.`} trailing={who} />
         <GroupRow icon={<GlyphTile glyph="sparkle" color="purple" />} title="Do It for Me" chevron={false} subtitle={doIt}
-          trailing={on && claudeCode ? (
+          trailing={on && claudeCode && ready.ok ? (
             <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Button size="small" onClick={check} disabled={checking} testAction="ai-check-chrome">{checking ? 'Checking…' : 'Check Chrome'}</Button>
+              <Button size="small" onClick={check} disabled={checking} testAction="ai-check-chrome">{checking ? 'Checking…' : `Check ${B}`}</Button>
               <Toggle checked={!!s.agentExports} onChange={(v) => void api.settings({ agentExports: v })} label="Do It for Me" testId="toggle-agent" />
             </span>
           ) : off} />
+        {on && s.agentExports && <NotificationsRow snap={snap} />}
         <GroupRow icon={<GlyphTile glyph="tray" color="indigo" />} title="Download exports when they're ready" chevron={false}
           subtitle="When a service says your data is ready, or Claude finds it on a check, Claude downloads it and the app reads it."
-          trailing={on && claudeCode && s.agentExports ? <Toggle checked={s.agentDownloads !== false} onChange={(v) => void api.settings({ agentDownloads: v })} label="Download when ready" testId="toggle-agent-downloads" /> : off} />
+          trailing={on && claudeCode && ready.ok && s.agentExports ? <Toggle checked={s.agentDownloads !== false} onChange={(v) => void api.settings({ agentDownloads: v })} label="Download when ready" testId="toggle-agent-downloads" /> : off} />
         <GroupRow icon={<GlyphTile glyph="layers" color="teal" />} title="Make sense of new downloads" chevron={false}
           subtitle="For a download in a format the app doesn't know, when you ask: the agent writes a mapping from a sample of its layout." trailing={who} />
       </Group>}

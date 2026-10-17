@@ -61,7 +61,7 @@ ONE_SIDED = {"discord"}  # exports that keep only your own messages
 SEARCHES = (("google_activity", "search"), ("browser_history", "search"), ("chrome_synced", "search"))
 VISITS = (("browser_history", "visit"), ("chrome_synced", "visit"), ("google_activity", "visit"))
 APP_NAMES = {"imessage": "Messages", "instagram": "Instagram", "messenger": "Messenger", "discord": "Discord",
-             "phone_whatsapp": "WhatsApp", "calls": "Calls", "gmail": "Gmail", "hotmail": "Outlook", "x": "X",
+             "phone_whatsapp": "WhatsApp", "calls": "Calls", "gmail": "Gmail", "hotmail": "Outlook", "mail": "Mail", "x": "X",
              "reddit": "Reddit", "linkedin": "LinkedIn", "tiktok": "TikTok", "spotify": "Spotify", "chatgpt": "ChatGPT",
              "claude_ai": "Claude", "google_chat": "Google Chat", "notion": "Notion", "photos": "Photos",
              "git_commits": "Git", "phone_venmo": "Venmo", "phone_splitwise": "Splitwise", "phone_uberclient": "Uber",
@@ -1964,7 +1964,9 @@ def located(con, pg=None, step=0):
     """(local time, lat, lon, place, country, rowid) for every record that says where you were, by time. A point far
     from the ones either side of it that nothing could have reached in time (a picture saved with someone else's
     location, a wrong clock) is left out."""
-    where = f"kind in ({','.join(repr(k) for k in WHERE_YOU_WERE)}) and ts is not null and json_extract(meta, '$.lat') is not null"
+    # Not photos others shared with you (photos.py's shared_photos): where they were, not you.
+    where = (f"kind in ({','.join(repr(k) for k in WHERE_YOU_WERE)}) and source != 'shared_photos' and ts is not null "
+             "and json_extract(meta, '$.lat') is not null")
     if pg:
         pg.step(step, count_where(con, where))
     pts = []
@@ -2066,7 +2068,7 @@ def _year(con, y, P, PL, J, R, F, M, media, pg):
     photos_by_day = collections.defaultdict(list)
     for i, (rowid, source, kind, ts, is_me, meta) in enumerate(con.execute(
             f"select rowid, source, kind, ts, is_me, case when kind in ('photo', 'video') then meta end from records "
-            f"where ts >= ? and ts < ? and kind not in ({','.join(repr(k) for k in NOT_YOURS)})", rng)):
+            f"where ts >= ? and ts < ? and kind not in ({','.join(repr(k) for k in NOT_YOURS)}) and source != 'shared_photos'", rng)):
         pg.tick(i)
         t = parse(ts, meta_of(meta).get("timezone") if meta else None)
         if not t or t.year != int(y):

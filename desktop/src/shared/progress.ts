@@ -91,7 +91,7 @@ export function progress(views: SourceView[], now: Date): Progress {
 
 // ---------------------------------------------------------------- Setup Assistant
 
-export type StepKind = 'welcome' | 'identity' | 'access' | 'library' | 'keep' | 'mac' | 'iphone' | 'accounts' | 'ai' | 'exports' | 'export' | 'done';
+export type StepKind = 'welcome' | 'identity' | 'access' | 'library' | 'keep' | 'mac' | 'iphone' | 'accounts' | 'notifications' | 'ai' | 'exports' | 'export' | 'done';
 
 export interface Step {
   id: string;
@@ -100,7 +100,7 @@ export interface Step {
   sourceId?: string;
 }
 
-export const STEP_GROUPS = ['Welcome', 'Access', 'Library', 'Mac', 'iPhone', 'Accounts', 'AI', 'Exports', 'You', 'Keep History', 'Done'];
+export const STEP_GROUPS = ['Welcome', 'Access', 'Library', 'Mac', 'iPhone', 'Accounts', 'Notifications', 'AI', 'Exports', 'You', 'Keep History', 'Done'];
 
 // Where the library lives and whether it fits; and the settings that decide how much future history survives.
 export const LIBRARY_SOURCES = ['corpus_location', 'disk_space', 'python_env'];
@@ -155,11 +155,13 @@ export function exportHandled(v: SourceView): boolean {
 
 // Where the Setup Assistant goes when an export is handled (or from the list, with no `from`): the next one not yet
 // handled, wrapping round to ones skipped over by jumping ahead, else the step after the exports.
-export function nextExportStep(steps: Step[], views: SourceView[], from?: string): string {
+// seen: the export pages shown so far. Going on, it's the next one still to do further down the list, then round to the
+// ones before it (you can start anywhere) that you haven't seen yet: two left undone don't send you back and forth.
+export function nextExportStep(steps: Step[], views: SourceView[], from?: string, seen: ReadonlySet<string> = new Set()): string {
   const ids = steps.filter((s) => s.kind === 'export').map((s) => s.sourceId!);
   const at = from ? ids.indexOf(from) : -1;
-  const todo = [...ids.slice(at + 1), ...ids.slice(0, Math.max(at, 0))]
-    .find((x) => x !== from && !exportHandled(views.find((v) => v.id === x)!));
+  const undone = (x: string) => x !== from && !exportHandled(views.find((v) => v.id === x)!);
+  const todo = ids.slice(at + 1).find(undone) ?? ids.slice(0, Math.max(at, 0)).find((x) => undone(x) && !seen.has(x));
   if (todo) return `export:${todo}`;
   const last = steps.findIndex((s) => s.id === `export:${ids[ids.length - 1]}`);
   return steps[last + 1]?.id ?? 'done';
@@ -174,6 +176,8 @@ export function assistantSteps(views: SourceView[], chosen?: string[]): Step[] {
     { id: 'mac', kind: 'mac', group: 'Mac' },
     { id: 'iphone', kind: 'iphone', group: 'iPhone', sourceId: 'iphone_backup' },
     { id: 'accounts', kind: 'accounts', group: 'Accounts' },
+    // How it tells you an export is ready, or Claude needs you: macOS asks once, so it's asked here, before anything waits.
+    { id: 'notifications', kind: 'notifications', group: 'Notifications' },
     // Before the exports, whose pages offer Do It for Me once it's on.
     { id: 'ai', kind: 'ai', group: 'AI' },
   ];

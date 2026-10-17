@@ -300,7 +300,7 @@ function TurnError({ turn, onRetry, onSettings }: { turn: AskTurn; onRetry?: () 
       <Banner kind="error">
         <div data-testid="ask-error-text">{x.text}</div>
         <div className="turn-error-actions">
-          {x.fix === 'sign-in' && <Button size="small" onClick={() => void api.ask({ op: 'open-terminal' })} testAction="ask-open-terminal">Open Terminal</Button>}
+          {x.fix === 'sign-in' && <SignInButton harness={harness} />}
           {(x.fix === 'key' || x.fix === 'model') && onSettings && <Button size="small" onClick={onSettings} testAction="ask-fix-settings">{x.fix === 'key' ? 'Check the Key…' : 'Choose a Model…'}</Button>}
           {x.fix === 'install' && <Button size="small" onClick={() => openLink(LINKS[harness].url)}>{LINKS[harness].label}…</Button>}
           {onRetry && <Button size="small" onClick={onRetry} testAction="ask-retry">Try Again</Button>}
@@ -429,17 +429,18 @@ function PrivacyLine({ snap, onOpen, testId }: { snap: Snapshot; onOpen: () => v
 // look at the local model's server again.
 export function AgentNeedNote({ snap, need, onChoose }: { snap: Snapshot; need: AgentNeed; onChoose?: () => void }) {
   const [checking, setChecking] = useState(false);
+  const signing = need.kind === 'sign-in' ? snap.ask.signingIn?.[need.harness] : undefined;
   const check = () => {
     setChecking(true);
     void api.ask({ op: 'check' }).finally(() => setChecking(false));
   };
   return (
     <div className="agent-need" data-testid="agent-need">
-      <div className="agent-need-head"><Glyph name="warning" size={13} /><span data-testid="agent-need-text">{needText(need)}</span></div>
+      <div className="agent-need-head"><Glyph name="warning" size={13} /><span data-testid="agent-need-text">{signing ? signingText(signing) : needText(need)}</span></div>
       {need.kind === 'key' && <KeyField snap={snap} kind={need.key} />}
       <div className="agent-need-actions">
         {need.kind === 'install' && <Button size="small" onClick={() => openLink(LINKS[need.harness].url)} testAction="agent-get">{LINKS[need.harness].label}…</Button>}
-        {need.kind === 'sign-in' && <Button size="small" onClick={() => void api.ask({ op: 'open-terminal' })} testAction="agent-open-terminal">Open Terminal</Button>}
+        {need.kind === 'sign-in' && <SignInButton harness={need.harness} signing={signing} />}
         {(need.kind === 'install' || need.kind === 'local' || need.kind === 'sign-in') && <Button size="small" onClick={check} disabled={checking} testAction="agent-check">{checking ? 'Checking…' : 'Check Again'}</Button>}
         {onChoose && <Button size="small" kind="plain" onClick={onChoose} testAction="agent-choose">{need.kind === 'local-address' ? 'Change the Address…' : 'Choose Another…'}</Button>}
       </div>
@@ -575,18 +576,17 @@ function ChoiceStatus({ snap, p }: { snap: Snapshot; p: AskProvider }) {
     if (st === false) return warn(`Nothing is answering at ${hostOf(url)}: open ${name}`);
     return <>{name} at {hostOf(url)}</>;
   }
-  // Signed in with your account: whether it is, as Claude Code or Codex says, and as whom.
+  // Signed in with your account: whether it is, as Claude Code or Codex says, and as whom. A sign-in under way first.
   const si = a.signIn?.[x.harness];
+  const under = a.signingIn?.[x.harness];
+  if (under) {
+    return <>{warn(signingText(under))} · <SignInButton harness={x.harness} signing={under} link /></>;
+  }
   if (si?.state === 'in') {
     const who = si.who ? `Signed in as ${si.who}` : `Signed in${si.how ? ` with ${si.how}` : ''}`;
     return <span className="ok-text" data-testid={`signed-in-${x.harness}`}><Glyph name="checkCircle" size={11} strokeWidth={2.2} />{who}{si.plan ? ` · ${si.plan}` : ''}</span>;
   }
-  if (si?.state === 'out') {
-    return <>{warn(x.harness === 'codex' ? 'Not signed in: in Terminal, type codex login' : 'Not signed in: in Terminal, type claude, then sign in')} · <button className="link" onClick={(e) => {
-      e.stopPropagation();
-      void api.ask({ op: 'open-terminal' });
-    }}>Open Terminal</button></>;
-  }
+  if (si?.state === 'out') return <>{warn('Not signed in')} · <SignInButton harness={x.harness} link /></>;
   return x.harness === 'codex' ? <>Uses the sign-in in Codex on this Mac</> : <>Uses the sign-in in Claude Code on this Mac</>;
 }
 
@@ -870,5 +870,60 @@ export function RecordSheet({ rowid, onClose }: { rowid: number; onClose: () => 
       )}
       <div className="sheet-actions"><Button kind="primary" onClick={onClose}>Done</Button></div>
     </Sheet>
+  );
+}
+
+// Signs you in to Claude Code or Codex with their own sign-in: Anthropic's or OpenAI's page opens in your browser, and
+// nothing you type there comes to this app. While it's open: the page again, for when no browser opened.
+type Signing = { url?: string; code?: boolean; paste?: boolean };
+const signingText = (x: Signing) => x.paste ? 'Sign in on the page in your browser, then paste the code it shows here.'
+  : 'Sign in on the page in your browser. It comes back here by itself.';
+export function SignInButton({ harness, signing, link }: { harness: 'claude-code' | 'codex'; signing?: Signing; link?: boolean }) {
+  const [started, setStarted] = useState(false);
+  const on = !!signing || started;
+  // The page that ends with a code, opened (asked for, or the only one): the code goes here, to Claude Code.
+  if (signing?.paste) return <PasteCode harness={harness} url={signing.url} />;
+  const start = (e?: { stopPropagation(): void }) => {
+    e?.stopPropagation();
+    setStarted(true);
+    void api.ask({ op: 'sign-in', harness }).then((r) => (r as { ok?: boolean } | null)?.ok === false && setStarted(false));
+  };
+  const reopen = (code?: boolean) => (e?: { stopPropagation(): void }) => {
+    e?.stopPropagation();
+    void api.ask({ op: 'open-sign-in-page', harness, code });
+  };
+  // Should the page not get back (it says it can't connect), the one that ends with a code instead.
+  const withCode = signing?.code && <button className="link" onClick={reopen(true)} data-action={`sign-in-code-page-${harness}`}>Use a Code Instead</button>;
+  if (link) {
+    return on ? (signing?.url ? <><button className="link" onClick={reopen()} data-action={`reopen-sign-in-${harness}`}>Open the Page Again</button>{withCode && <> · {withCode}</>}</> : <Spinner size={11} />)
+      : <button className="link" onClick={start} data-action={`sign-in-${harness}`}>Sign In…</button>;
+  }
+  return on
+    ? <><Button size="small" onClick={reopen()} disabled={!signing?.url} testAction={`reopen-sign-in-${harness}`}>{signing?.url ? 'Open the Page Again' : 'Signing In…'}</Button>{withCode}</>
+    : <Button size="small" onClick={start} testAction={`sign-in-${harness}`}>Sign In…</Button>;
+}
+
+// The page that ends with a code: once you've signed in there, the code is pasted here, and goes to Claude Code's
+// sign-in as you'd type it in Terminal (the app keeps nothing of it).
+function PasteCode({ harness, url }: { harness: 'claude-code' | 'codex'; url?: string }) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const send = () => {
+    setSending(true);
+    setError(null);
+    void api.ask({ op: 'sign-in-code', harness, code }).then((r) => {
+      setSending(false);
+      if (!r.ok) setError(r.error ?? 'That didn\'t work.');
+    });
+  };
+  return (
+    <span className="paste-code" data-testid={`paste-code-${harness}`} onClick={(e) => e.stopPropagation()}>
+      <input type="text" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Paste the code the page shows" spellCheck={false} autoComplete="off"
+        onKeyDown={(e) => e.key === 'Enter' && code.trim() && send()} data-testid={`sign-in-code-${harness}`} />
+      <Button size="small" kind="primary" disabled={!code.trim() || sending} onClick={send} testAction={`send-sign-in-code-${harness}`}>{sending ? 'Signing In…' : 'Sign In'}</Button>
+      {url && <button className="link" onClick={() => void api.ask({ op: 'open-sign-in-page', harness })} data-action={`reopen-sign-in-${harness}`}>Open the Page Again</button>}
+      {error && <span className="warn-text">{error}</span>}
+    </span>
   );
 }

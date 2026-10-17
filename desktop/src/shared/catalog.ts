@@ -9,6 +9,7 @@ export type Group = 'setup' | 'mac' | 'iphone' | 'web' | 'guided';
 export interface Step {
   text: string;
   detail?: string;
+  app?: boolean; // about this app (drop the download here), not the service: Do It for Me isn't told it
 }
 
 export interface Source {
@@ -48,6 +49,13 @@ export interface Source {
   manualDone?: boolean;
   // Guided sources that take a mailbox name from the user.
   asksAccountName?: boolean;
+  // Web exports: the cookie that means you're signed in (py/signins.py reads its name and expiry, never its value),
+  // so the app can tell whether Claude can do it in Chrome without you. A name ending in * matches by prefix.
+  signIn?: { domains: string[]; cookies: string[] };
+  // Why Do It for Me can't do it (the Claude in Chrome extension isn't allowed on the site): it's yours to do.
+  agentBlocked?: string;
+  // A service you added whose export page is known (data/services.json): Claude can request it there.
+  exportPage?: boolean;
 }
 
 const GOOGLE_CORE = ['gmail', 'google_activity', 'google_calendar', 'google_contacts', 'chrome_synced', 'google_keep',
@@ -141,6 +149,8 @@ export const CATALOG: Source[] = [
     blurb: 'The address book. It turns phone numbers and emails into names everywhere else.' },
   { id: 'imessage', name: 'Messages', group: 'mac', connector: 'imessage', produces: ['imessage'], gapKeys: ['imessage'],
     blurb: 'iMessage, SMS and RCS from this Mac, merged with the iPhone backup by message ID.' },
+  { id: 'apple_mail', name: 'Mail', group: 'mac', connector: 'mail_app', produces: ['mail'],
+    blurb: 'Every account in Mail on this Mac: Gmail, Outlook and Exchange, iCloud, school and work mail. Mail you also exported is kept once.' },
   { id: 'apple_notes', name: 'Notes', group: 'mac', connector: 'apple_notes', produces: ['apple_notes'],
     blurb: 'Apple Notes. Locked notes are skipped.' },
   { id: 'calendar', name: 'Calendar', group: 'mac', connector: 'calendar_events', produces: ['calendar'],
@@ -150,8 +160,8 @@ export const CATALOG: Source[] = [
   { id: 'calls', name: 'Phone and FaceTime calls', group: 'mac', connector: 'calls', produces: ['calls'],
     blurb: 'Call history. The Mac keeps about 6 months, so the app reads it daily.',
     knownGaps: ['The Mac keeps about 6 months of calls and the phone about 9. Older calls are gone unless an earlier run saved them.'] },
-  { id: 'browser_history', name: 'Safari and Chrome', group: 'mac', connector: 'browser_history', produces: ['browser_history'],
-    blurb: 'Pages visited and searches made. Chrome keeps 90 days locally; Google Takeout has a year more.' },
+  { id: 'browser_history', name: 'Browsing history', group: 'mac', connector: 'browser_history', produces: ['browser_history'],
+    blurb: 'Pages visited and searches made, in Safari, Chrome, Arc, Edge, Brave, Firefox and the other browsers on this Mac (pick which in Your Setup). Chrome keeps 90 days; Google Takeout has more.' },
   { id: 'app_usage', name: 'Screen Time', group: 'mac', connector: 'app_usage', produces: ['app_usage'],
     blurb: 'Which apps you used and what was playing, on every device on your Apple ID. Kept for about 4 weeks.',
     knownGaps: ['Screen Time keeps about 4 weeks. Daily runs keep the rest.'] },
@@ -163,8 +173,8 @@ export const CATALOG: Source[] = [
     blurb: 'The commands you typed in Terminal. Passwords, tokens and keys in them are replaced with [redacted].' },
   { id: 'podcasts', name: 'Podcasts', group: 'mac', connector: 'podcasts', produces: ['podcasts'],
     blurb: 'The shows you follow and the episodes you played in Apple Podcasts.' },
-  { id: 'photos', name: 'Photos', group: 'mac', connector: 'photos', produces: ['photos'],
-    blurb: 'Dates, places, people and on-device labels for every photo. No pixels are copied.' },
+  { id: 'photos', name: 'Photos', group: 'mac', connector: 'photos', produces: ['photos', 'shared_photos'],
+    blurb: 'Dates, places, people and on-device labels for every photo. No pixels are copied. Photos others shared with you (shared albums, Shared with You, a Shared Library) are kept apart, so their places aren\'t taken for yours.' },
   { id: 'voice_memos', name: 'Voice Memos', group: 'mac', connector: 'voice_memos', produces: ['voice_memos'],
     blurb: 'Recordings synced to this Mac.' },
 
@@ -192,6 +202,7 @@ export const CATALOG: Source[] = [
   // ---------------------------------------------------------------- web exports
   {
     id: 'google_takeout', name: 'Google', group: 'web', produces: GOOGLE_CORE, gapKeys: ['gmail'],
+    signIn: { domains: ['google.com'], cookies: ['SID', '__Secure-1PSID'] },
     blurb: 'Gmail, search and YouTube history, Chrome, Calendar, Contacts, Keep, Google Chat and Maps.',
     url: 'https://takeout.google.com/', downloadUrl: 'https://takeout.google.com/manage',
     waitHours: [8, 48], expiresDays: 7, importDir: 'takeout', fileHint: 'takeout-<date>-<n>-001.zip, often several parts',
@@ -200,12 +211,13 @@ export const CATALOG: Source[] = [
       { text: 'Click "Deselect all", then tick Calendar, Chrome, Contacts, Gemini, Google Chat, Keep, Mail, Maps, Maps (your places), My Activity, Tasks, and YouTube and YouTube Music.', detail: 'The counter at the top should go up with each tick. Leave Google Photos and Drive for their own export.' },
       { text: 'My Activity → Multiple formats → Activity records: choose JSON.' },
       { text: 'YouTube and YouTube Music → Multiple formats → history: choose JSON. Under "All YouTube data included", untick videos.' },
-      { text: 'Next step: send download link via email, export once, .zip, 10 GB parts. Create export.' },
+      { text: 'Next step: send download link via email, export once, .zip, 50 GB parts (one download, not several). Create export.' },
     ],
     knownGaps: ['Work and school Google accounts need their own export.'],
   },
   {
     id: 'google_photos_drive', name: 'Google Photos and Drive', group: 'web', produces: ['google_photos'],
+    signIn: { domains: ['google.com'], cookies: ['SID', '__Secure-1PSID'] },
     blurb: 'Photo times, places and people from Google Photos, and the text of your Drive files (imported as documents). Can be very large.',
     url: 'https://takeout.google.com/', downloadUrl: 'https://takeout.google.com/manage',
     waitHours: [24, 72], expiresDays: 7, importDir: 'takeout', optional: true,
@@ -218,6 +230,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'instagram', name: 'Instagram', group: 'web', produces: ['instagram', 'instagram_activity'], gapKeys: ['instagram'],
+    signIn: { domains: ['instagram.com'], cookies: ['sessionid'] },
     blurb: 'Direct messages (both sides), likes, saves, follows, comments and searches.',
     url: 'https://accountscenter.instagram.com/info_and_permissions/dyi/',
     downloadUrl: 'https://accountscenter.instagram.com/info_and_permissions/dyi/',
@@ -232,6 +245,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'facebook', name: 'Facebook and Messenger', group: 'web', produces: ['messenger', 'facebook_activity'], gapKeys: ['messenger'],
+    signIn: { domains: ['facebook.com'], cookies: ['c_user'] },
     blurb: 'Messenger conversations (both sides), friends, posts, groups, events and searches.',
     url: 'https://accountscenter.facebook.com/info_and_permissions/dyi/',
     downloadUrl: 'https://accountscenter.facebook.com/info_and_permissions/dyi/',
@@ -260,6 +274,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'linkedin', name: 'LinkedIn', group: 'web', produces: ['linkedin'],
+    signIn: { domains: ['linkedin.com'], cookies: ['li_at'] },
     blurb: 'Connections, positions, searches, reactions, invitations and LinkedIn\'s inferences about you.',
     url: 'https://www.linkedin.com/mypreferences/d/download-my-data', waitHours: [12, 48], importDir: 'linkedin',
     fileHint: 'Complete_LinkedInDataExport_<date>.zip (sometimes .zip.zip)',
@@ -271,6 +286,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'notion', name: 'Notion', group: 'web', produces: ['notion_export'],
+    signIn: { domains: ['notion.so', 'notion.com'], cookies: ['token_v2'] },
     blurb: 'Every page and database in your workspace.',
     url: 'https://app.notion.com/', waitHours: [1, 24], importDir: 'notion', fileHint: 'Export-<id>.zip',
     steps: [
@@ -282,6 +298,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'chatgpt', name: 'ChatGPT', group: 'web', produces: ['chatgpt'],
+    signIn: { domains: ['chatgpt.com'], cookies: ['__Secure-next-auth.session-token*'] },
     blurb: 'Every ChatGPT conversation.',
     url: 'https://chatgpt.com/settings/data-controls', waitHours: [1, 24], expiresDays: 1, importDir: 'chatgpt',
     fileHint: '<id>-<date>.zip with conversations.json',
@@ -294,6 +311,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'claude_ai', name: 'Claude.ai', group: 'web', produces: ['claude_ai'],
+    signIn: { domains: ['claude.ai'], cookies: ['sessionKey'] },
     blurb: 'Every Claude.ai conversation and project.',
     url: 'https://claude.ai/settings/privacy', waitHours: [1, 24], importDir: 'claude', fileHint: 'data-<date>.zip with conversations.json',
     steps: [
@@ -305,6 +323,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'x', name: 'X (Twitter)', group: 'web', produces: ['x'],
+    signIn: { domains: ['x.com', 'twitter.com'], cookies: ['auth_token'] },
     blurb: 'Your posts, likes and direct messages.',
     url: 'https://x.com/settings/download_your_data', waitHours: [24, 96], importDir: 'x', fileHint: 'twitter-<date>-<id>.zip',
     steps: [
@@ -315,6 +334,8 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'reddit', name: 'Reddit', group: 'web', produces: ['reddit'],
+    signIn: { domains: ['reddit.com'], cookies: ['reddit_session'] },
+    agentBlocked: 'The Claude in Chrome extension isn\'t allowed on reddit.com, so this one is yours to do: the steps below take a couple of minutes.',
     blurb: 'Your posts, comments, votes, saved items and messages.',
     url: 'https://www.reddit.com/settings/data-request', waitHours: [24, 720], importDir: 'reddit', fileHint: 'export_<username>_<date>.zip',
     steps: [
@@ -327,6 +348,7 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'spotify', name: 'Spotify', group: 'web', produces: ['spotify'],
+    signIn: { domains: ['spotify.com'], cookies: ['sp_dc'] },
     blurb: 'Every song and podcast you ever played (extended streaming history).',
     url: 'https://www.spotify.com/account/privacy/', waitHours: [72, 720], importDir: 'spotify', fileHint: 'my_spotify_data.zip',
     steps: [
@@ -340,13 +362,12 @@ export const CATALOG: Source[] = [
   // ---------------------------------------------------------------- guided (the user does it, the app watches)
   {
     id: 'other_mail', name: 'Outlook and other email', group: 'guided', asksAccountName: true, gapKeys: ['*'],
-    blurb: 'Outlook.com, Hotmail, school and work mail. Outlook.com has no web export, so this goes through Mail.',
+    blurb: 'Outlook.com, Hotmail, school and work mail. Outlook.com has no web export, so it comes through Mail on this Mac.',
     importDir: 'other_mail',
     steps: [
       { text: 'System Settings → Internet Accounts → add the account with Mail turned on.', detail: 'Outlook.com and Hotmail: choose Microsoft Exchange.' },
-      { text: 'Open Mail and leave it open until the mailbox finishes downloading.', detail: 'A large mailbox can take 10 hours or more. The count keeps rising until it is done.' },
-      { text: 'In Mail, select the mailbox → Mailbox → Export Mailbox. Repeat for Sent and Archive.' },
-      { text: 'Give the account a name above, then drop the exported .mbox folders on this page, or choose Add the Download….' },
+      { text: 'Open Mail and leave it open until the mailbox finishes downloading.', detail: 'A large mailbox can take 10 hours or more. The count keeps rising until it is done. Homecoming reads Mail as it goes (Mail, under On This Mac), so there\'s nothing to export.' },
+      { text: 'Mail kept somewhere else, like an old .mbox file or another mail app\'s export: give it a name above, then drop it on this page, or choose Add the Download….' },
     ],
   },
   {
@@ -428,18 +449,32 @@ const BUILTIN_COUNT = CATALOG.length;
 // imports.py names a catch-all source after the export's folder: <folder>_other (records), <folder>_files (media).
 export const serviceKey = (folder: string) => folder.toLowerCase().replace(/\W+/g, '_');
 
+// Services people add that Claude in Chrome isn't allowed on (it refuses the site), by their slug in data/services.json.
+const AGENT_BLOCKED: Record<string, string> = {
+  patreon: 'The Claude in Chrome extension isn\'t allowed on patreon.com, so this one is yours to do: its steps take a couple of minutes.',
+};
+// The sign-in cookie of some services people add, like the built-in ones' (py/signins.py reads its name and expiry).
+const SERVICE_SIGN_INS: Record<string, { domains: string[]; cookies: string[] }> = {
+  github: { domains: ['github.com'], cookies: ['user_session'] },
+  tiktok: { domains: ['tiktok.com'], cookies: ['sessionid'] },
+  netflix: { domains: ['netflix.com'], cookies: ['NetflixId'] },
+  steam: { domains: ['steampowered.com', 'steamcommunity.com'], cookies: ['steamLoginSecure'] },
+  duolingo: { domains: ['duolingo.com'], cookies: ['jwt_token'] },
+};
+
 export function serviceSource(e: ServiceEntry): Source {
   const steps: Step[] = e.notes ? [{ text: e.notes }] : [
     { text: `Sign in to ${e.name} and look in Settings or Privacy for "Download your data". It may be called Export, Request your data or Your information.` },
     { text: 'No download? Ask for one: services have to send a copy of your data within about 30 days of an access request (GDPR in Europe, CCPA in California, and similar laws elsewhere).',
       detail: e.email ? `Draft a request writes the email to ${e.email} for you to send.` : 'Draft a request writes the email for you to send.' },
   ];
-  steps.push({ text: 'When it arrives, drop it on this page or choose Add the Download….',
+  steps.push({ text: 'When it arrives, drop it on this page or choose Add the Download….', app: true,
     detail: `Once you've said you requested it, a download in Downloads with "${e.name}" in its name is picked up by itself.` });
   const key = serviceKey(e.folder);
   return {
     id: e.id, name: e.name, group: 'web', custom: e.from, slug: e.slug, domains: e.domains, steps, waitHours: SERVICE_WAIT, importDir: e.folder,
     url: e.url ?? e.site ?? (e.domains[0] ? `https://${e.domains[0]}` : undefined),
+    exportPage: !!e.url, agentBlocked: AGENT_BLOCKED[e.slug], signIn: SERVICE_SIGN_INS[e.slug],
     blurb: `Your ${e.name} account. Everything in its download is kept, whatever the format.`,
     produces: [key, `${key}_other`, `${key}_files`], // read with a mapping (mapped_exports.py), else the catch-alls
   };

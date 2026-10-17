@@ -11,6 +11,7 @@ free text it didn't write.
     bridge.py index                     rebuild corpus/corpus.db only
     bridge.py write-identity            JSON on stdin -> corpus/identity.json
     bridge.py exclude-icloud            move the corpus to <name>.nosync and leave a symlink, so iCloud stops syncing it
+    bridge.py forget-phone              take what was read from the iPhone backup out of the library (not your phone)
 
 Paths: UMP_REPO (default: two levels up) holds connectors/; CORPUS_DIR overrides the corpus folder, as it
 does for the connectors themselves; HOME decides whose Library is read. Tests add fake connector modules
@@ -54,11 +55,12 @@ SF_DATALESS = 0x40000000  # st_flags bit for iCloud files that are only in the c
 MAC_PATHS = {
     "contacts": [LIB / "Application Support/AddressBook"],
     "imessage": [LIB / "Messages/chat.db"],
+    "mail_app": [LIB / "Mail"],
     "apple_notes": [LIB / "Group Containers/group.com.apple.notes/NoteStore.sqlite"],
     "calendar_events": [LIB / "Group Containers/group.com.apple.calendar/Calendar.sqlitedb"],
     "reminders": [LIB / "Group Containers/group.com.apple.reminders/Container_v1/Stores"],
     "calls": [LIB / "Application Support/CallHistoryDB/CallHistory.storedata"],
-    "browser_history": [LIB / "Safari/History.db", LIB / "Application Support/Google/Chrome"],
+    "browser_history": [LIB / "Safari/History.db"],  # and every other browser's history files (browsers.py), at probe time
     "app_usage": [LIB / "Biome/streams/restricted"],
     "ai_coding": [HOME / ".claude/projects", HOME / ".codex/sessions", LIB / "Application Support/Cursor/User/globalStorage/state.vscdb",
                   LIB / "Application Support/Code/User/workspaceStorage"],
@@ -160,6 +162,8 @@ def backups():
         date = (info or {}).get("Last Backup Date") or (status or {}).get("Date")
         found.append({
             "dir": str(d), "id": d.name,
+            # Which device: the same one's backups (an archived copy is a folder of its own) share it.
+            "udid": (info or {}).get("Target Identifier") or (info or {}).get("Unique Identifier") or d.name,
             "device": (info or {}).get("Device Name"), "product": (info or {}).get("Product Type"),
             "ios": (info or {}).get("Product Version"),
             "date": date.replace(tzinfo=dt.timezone.utc).isoformat() if isinstance(date, dt.datetime) else None,
@@ -221,6 +225,19 @@ def mailbox_sources():
             if d.is_dir() and not d.name.startswith((".", "takeout")) and any(d.glob("*.mbox")):
                 names.append(re.sub(r"\W+", "_", d.name.lower()))
     return names
+
+
+def mail_accounts():
+    """The accounts Mail on this Mac holds mail for (their address or name), or [] without Mail or Full Disk Access."""
+    try:
+        import mail_app
+        root = mail_app.mail_root()
+        if not root:
+            return []
+        names = mail_app.account_names()
+        return sorted({names.get(p.name) or "an account" for p in root.iterdir() if p.is_dir() and p.name != "MailData" and any(p.glob("*.mbox/**/Messages/*.emlx"))})
+    except OSError:
+        return []
 
 
 def claude_retention():
@@ -288,9 +305,16 @@ def fix_shell_retention():
 def probe():
     fda, fda_path = full_disk_access()
     sources = {}
+    import browsers
+    import phones
+    found_browsers = browsers.found()
+    histories = [p for b in found_browsers if b["id"] != "safari" for _, p in browsers.history_files(b["id"])]
     for name, paths in MAC_PATHS.items():
-        states = [access(p) for p in paths]
+        states = [access(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
         sources[name] = "ok" if "ok" in states else "blocked" if "blocked" in states else "absent"
+    from common import git_bin
+    if not git_bin():  # commits can't be read without git
+        sources["git_commits"] = "absent"
     corpus_parent = CORPUS if CORPUS.exists() else CORPUS.parent
     usage = shutil.disk_usage(corpus_parent if corpus_parent.exists() else HOME)
     ident = identity()
@@ -309,6 +333,8 @@ def probe():
         "ileapp_installed": any((HOME / "Library/Application Support/q1_user_model/tools").glob("ileapp-venv-*/bin/python")),
         "mailbox_sources": mailbox_sources(),
         "notifications": notification_access(),
+        # Your Setup: what was found here, for the person to change.
+        "browsers": found_browsers, "phone": phones.info(), "mail_accounts": mail_accounts(),
         "retention": {
             "claude": claude_retention(),
             "shell": shell_retention(),
@@ -335,7 +361,9 @@ FACETS = {
     # Documents in an export land in imported_documents; split them by the export's folder (a service you added).
     "imported_documents": "substr(json_extract(meta, '$.origin'), 1, instr(json_extract(meta, '$.origin') || '/', '/') - 1)",
     "photos": "json_extract(meta, '$.type')",
+    "shared_photos": "json_extract(meta, '$.shared')",
     "documents": "json_extract(meta, '$.root')",
+    "mail": "json_extract(meta, '$.account')",
 }
 
 
@@ -721,6 +749,35 @@ def notifications(since):
     return out
 
 
+def notification_shown(title, since):
+    """Whether a notification with this title, posted since `since` (ISO), reached Notification Center, and whether
+    macOS put it on screen: it can keep one without showing it (the app's notifications allowed, but delivered quietly
+    or set to None). {"readable": False} without Full Disk Access."""
+    db = notification_db()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for suffix in ("", "-wal", "-shm"):
+                if Path(f"{db}{suffix}").exists():
+                    shutil.copy2(f"{db}{suffix}", Path(tmp) / f"db{suffix}")
+            con = sqlite3.connect(f"file:{tmp}/db?mode=ro", uri=True)
+            try:
+                when = (dt.datetime.fromisoformat(since.replace("Z", "+00:00")) - MAC_EPOCH).total_seconds()
+                rows = con.execute("select a.identifier, r.data, r.presented from record r join app a on a.app_id = r.app_id "
+                                   "where r.delivered_date >= ? order by r.delivered_date desc", (when,)).fetchall()
+            finally:
+                con.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return {"readable": False}
+    for ident, data, presented in rows:
+        try:
+            req = plistlib.loads(data).get("req") or {}
+        except Exception:
+            continue
+        if _text(req.get("titl")) == title:
+            return {"readable": True, "found": True, "presented": bool(presented), "app": ident}
+    return {"readable": True, "found": False}
+
+
 def _text(x):
     """A notification field: usually a string, sometimes a list (a localized format and its arguments)."""
     if isinstance(x, list):
@@ -826,8 +883,9 @@ def export_signals(asked):
         return {"readable": True, "mail": False, "matches": []}
     when_of = lambda x: dt.datetime.fromisoformat(x.replace("Z", "+00:00"))
     start = min(when_of(a["since"]) for a in asked)
-    found = notifications(start)
-    mails = mail_messages(start)
+    # Your Setup can turn either off (UMP_READY_NOTIFICATIONS=0, UMP_READY_MAIL=0): then it isn't looked in at all.
+    found = notifications(start) if os.environ.get("UMP_READY_NOTIFICATIONS") != "0" else None
+    mails = mail_messages(start) if os.environ.get("UMP_READY_MAIL") != "0" else None
     best = {}
 
     def named(a, text, sender=""):
@@ -1020,10 +1078,8 @@ class Candidates:
             m = EMAIL_RE.search(v)
             return m.group(0).lower() if m else None
         if kind == "phone":
-            digits = re.sub(r"\D", "", v)
-            if len(digits) < 7:
-                return None
-            return ("+" + digits) if v.startswith("+") else ("+1" + digits if len(digits) == 10 else "+" + digits)
+            from phones import e164
+            return e164(v) if len(re.sub(r"\D", "", v)) >= 7 else None
         if kind == "username":
             v = v.lstrip("@").lower()
             return v if 2 <= len(v) <= 40 and " " not in v else None
@@ -1093,10 +1149,14 @@ def mac_candidates(c):
         con.close()
 
     def chrome():
-        st = json.loads((LIB / "Application Support/Google/Chrome/Local State").read_text())
-        for p in (st.get("profile") or {}).get("info_cache", {}).values():
-            c.add("email", p.get("user_name"), "Chrome profile")
-            c.add("name", p.get("gaia_name"), "Chrome profile")
+        import browsers
+        for bid, bname, _, _, kind, root, _ in browsers.BROWSERS:
+            if kind != "chromium" or not (root / "Local State").exists():
+                continue
+            st = json.loads((root / "Local State").read_text())
+            for p in (st.get("profile") or {}).get("info_cache", {}).values():
+                c.add("email", p.get("user_name"), f"{bname} profile")
+                c.add("name", p.get("gaia_name"), f"{bname} profile")
 
     def claude():
         oa = json.loads((HOME / ".claude.json").read_text()).get("oauthAccount") or {}
@@ -1104,7 +1164,10 @@ def mac_candidates(c):
         c.add("name", oa.get("fullName"), "Claude account")
 
     def git():
-        out = subprocess.run(["git", "config", "--global", "--get-regexp", r"^user\.(name|email)$"], capture_output=True, text=True,
+        from common import git_bin
+        if not git_bin():  # the stub would ask to install the developer tools
+            return
+        out = subprocess.run([git_bin(), "config", "--global", "--get-regexp", r"^user\.(name|email)$"], capture_output=True, text=True,
                              env={**os.environ, "HOME": str(HOME)}).stdout
         for line in out.splitlines():
             k, _, v = line.partition(" ")
@@ -1604,6 +1667,56 @@ def write_identity(data):
     return clean
 
 
+# ---------------------------------------------------------------- a phone that isn't yours
+
+PHONE_ONLY = ("iphone_contacts", "health", "health_samples")  # and every phone_* source (iLEAPP)
+
+
+def forget_phone():
+    """What was read from an iPhone backup, taken out of the library, for one that turned out not to be yours (Your
+    Setup picked another): the phone's own sources, the phone's copies in Messages and calls (what this Mac had stays),
+    and the decrypted copy of the backup. The search index is rebuilt by the app afterwards."""
+    norm = CORPUS / "normalized"
+    try:
+        manifest = json.loads((CORPUS / "manifest.json").read_text())
+    except (OSError, ValueError):
+        manifest = {}
+    removed = {}
+    for src in [k for k in manifest if k.startswith("phone_") or k in PHONE_ONLY]:
+        (norm / f"{src}.jsonl").unlink(missing_ok=True)
+        removed[src] = (manifest.pop(src) or {}).get("count", 0)
+    for src in ("imessage", "calls"):
+        f = norm / f"{src}.jsonl"
+        if not f.exists():
+            continue
+        kept, dropped, kinds, first, last = [], 0, collections.Counter(), None, None
+        for line in f.open():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if (r.get("meta") or {}).get("copy") == "iphone":
+                dropped += 1
+                continue
+            kept.append(line if line.endswith("\n") else line + "\n")
+            kinds[r.get("kind", "?")] += 1
+            ts = r.get("ts")
+            if ts:
+                first, last = min(first or ts, ts), max(last or ts, ts)
+        tmp = f.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(kept))
+        tmp.replace(f)
+        if src in manifest:
+            manifest[src].update(count=len(kept), kinds=dict(kinds), first=first, last=last)
+        removed[src] = dropped
+    (CORPUS / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    raw = CORPUS / "raw/iphone"
+    shutil.rmtree(raw / "files", ignore_errors=True)
+    for name in ("backup.json", "mirror_state.json", "Info.plist", "inventory.json", "extract_failures.json"):
+        (raw / name).unlink(missing_ok=True)
+    return {"ok": True, "removed": removed}
+
+
 def exclude_icloud():
     """corpus -> corpus.nosync plus a corpus symlink. iCloud skips .nosync names; the connectors keep
     using the old path. Refuses if any file is cloud-only (its data would be lost from this Mac)."""
@@ -1654,6 +1767,9 @@ def main(argv):
             out({"error": f"That isn't a usable mapping: {e}"})
     elif cmd == "discover-services":
         out(discover_services())
+    elif cmd == "notification-shown":
+        a = json.loads(sys.stdin.read() or "{}")
+        out(notification_shown(a.get("title", ""), a.get("since", "1970-01-01T00:00:00+00:00")))
     elif cmd == "export-signals":
         out(export_signals(json.loads(sys.stdin.read() or "[]")))
     elif cmd == "fix-shell-retention":
@@ -1675,12 +1791,19 @@ def main(argv):
         out(write_identity(json.loads(sys.stdin.read() or "{}")))
     elif cmd == "exclude-icloud":
         out(exclude_icloud())
+    elif cmd == "forget-phone":
+        out(forget_phone())
     elif cmd == "glance":
         # A collected source at a glance (glance.py): its manifest keys as the arguments.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import glance
         db = CORPUS / "corpus.db"
         out(glance.glance(db, rest) if db.exists() else {"total": 0})
+    elif cmd == "signins":
+        # Which services Chrome and Safari are signed in to (signins.py), from cookie names and dates: never values.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import signins
+        out(signins.signins(json.loads(sys.stdin.read() or "[]")))
     elif cmd == "samples":
         # Records to show as they are (glance.py samples): {"sources", "mode", "limit", "offset", "q"} on stdin.
         sys.path.insert(0, str(Path(__file__).resolve().parent))

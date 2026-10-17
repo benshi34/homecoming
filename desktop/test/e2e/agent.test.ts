@@ -71,7 +71,7 @@ test('Do It for Me asks once, requests in Chrome, stops for a sign-in, and carri
   await clickAction(p, 'agent-request');
   const sheet = p.locator('[data-testid=agent-opt-in]');
   await sheet.waitFor();
-  assert.match(await sheet.innerText(), /stops and tells you when it needs you to sign in/);
+  assert.match(await sheet.innerText(), /When it needs you to sign in, confirm it's you, or prove you're not a robot, it waits a few minutes and tells you in a notification/);
   assert.match(await sheet.innerText(), /This turns on AI in Homecoming/, 'AI isn\'t on yet, and this turns it on');
   assert.equal(await sheet.locator('[data-testid=agent-downloads]').isChecked(), true, 'downloads start by themselves unless you say not');
   await shot(p, 'agent-opt-in');

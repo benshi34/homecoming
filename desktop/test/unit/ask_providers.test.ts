@@ -183,7 +183,7 @@ test('an agent that fails says so in plain words, keeps its own under Details, i
   settings.models = {};
   plan('claude-plan.json', { error: 'Invalid API key · Please run /login', exit: 1 });
   const a = await answer('Who did I text most?');
-  assert.equal(a.turn.error, 'Claude Code isn\'t signed in. Open Terminal, type claude, and sign in.');
+  assert.equal(a.turn.error, 'Claude Code isn\'t signed in. Sign In opens claude.ai\'s sign-in in your browser.');
   assert.equal(a.turn.fix, 'sign-in');
   assert.match(a.turn.errorDetail ?? '', /Invalid API key · Please run \/login/);
   assert.doesNotMatch(a.turn.error, /sandbox-exec/);
@@ -215,7 +215,7 @@ test('an agent that fails says so in plain words, keeps its own under Details, i
   settings.provider = 'codex';
   plan('codex-plan.json', { fail: 'unexpected status 401 Unauthorized: Your authentication token has expired. Please try signing in again.', reconnects: 2 });
   const b = await answer('Hello?');
-  assert.equal(b.turn.error, 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.');
+  assert.equal(b.turn.error, 'Codex\'s sign-in has expired. Sign In opens ChatGPT\'s sign-in in your browser, to sign in again.');
   assert.deepEqual(b.events.filter((e) => e.t === 'notice').map((e) => (e as { text: string }).text), ['Reconnecting… (try 1 of 5)', 'Reconnecting… (try 2 of 5)'],
     'reconnecting, in plain words while it lasts');
   assert.match(b.turn.errorDetail ?? '', /401 Unauthorized/);
@@ -258,7 +258,7 @@ test('making sense of a download: text in, text out, with the agent and sign-in 
   settings.provider = 'codex';
   plan('codex-plan.json', { fail: '401 Unauthorized: token expired' });
   await assert.rejects(ask.complete('Write a mapping'), (e: Error & { detail?: string }) =>
-    e.message === 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.' && /401/.test(e.detail ?? ''));
+    e.message === 'Codex\'s sign-in has expired. Sign In opens ChatGPT\'s sign-in in your browser, to sign in again.' && /401/.test(e.detail ?? ''));
 });
 
 test('the local model\'s server: something answering at its address, checked on this Mac only', async () => {

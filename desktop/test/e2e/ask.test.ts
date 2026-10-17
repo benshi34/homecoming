@@ -280,15 +280,13 @@ test('an agent\'s errors in plain words, its own under Details, with Try Again; 
   const err = p.locator('[data-testid=ask-turn-error]');
   await err.waitFor({ timeout: 30_000 });
   const turn = p.locator('[data-testid=ask-turn]').last();
-  assert.equal(await err.locator('[data-testid=ask-error-text]').innerText(), 'Claude Code isn\'t signed in. Open Terminal, type claude, and sign in.');
+  assert.equal(await err.locator('[data-testid=ask-error-text]').innerText(), 'Claude Code isn\'t signed in. Sign In opens claude.ai\'s sign-in in your browser.');
   assert.doesNotMatch(await turn.innerText(), /sandbox-exec|Please run \/login/, 'not the wrapper, not the raw words');
   assert.equal(await turn.locator('[data-testid=ask-answer]').count(), 0, 'the error isn\'t an answer');
   await err.locator('[data-testid=ask-error-details]').click();
   assert.match(await err.locator('.error-detail').innerText(), /Invalid API key · Please run \/login/);
   await look('ask-error-not-signed-in');
-  await err.locator('button[data-action=ask-open-terminal]').click();
-  for (let i = 0; i < 20 && !opened().includes('app: Terminal'); i++) await new Promise((x) => setTimeout(x, 100));
-  assert.match(opened(), /app: Terminal/);
+  assert.equal(await err.locator('button[data-action=sign-in-claude-code]').count(), 1, 'Sign In, not Terminal');
   assert.match(await p.locator('[data-testid=ask-row]').first().innerText(), /Who did I text most\?\s*just now · Not answered/);
 
   // Signed in now: Try Again asks it again in its place.
@@ -305,7 +303,7 @@ test('an agent\'s errors in plain words, its own under Details, with Try Again; 
   await p.locator('[data-testid=ask-input]').fill('And last year?');
   await p.locator('[data-testid=ask-input]').press('Enter');
   await err.waitFor({ timeout: 30_000 });
-  assert.equal(await err.locator('[data-testid=ask-error-text]').innerText(), 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.');
+  assert.equal(await err.locator('[data-testid=ask-error-text]').innerText(), 'Codex\'s sign-in has expired. Sign In opens ChatGPT\'s sign-in in your browser, to sign in again.');
   assert.doesNotMatch(await p.locator('[data-testid=ask-turn]').last().innerText(), /Reconnecting|401/);
   await look('ask-error-codex-expired');
 

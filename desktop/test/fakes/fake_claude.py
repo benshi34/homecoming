@@ -14,9 +14,34 @@ import sys
 import time
 
 args = sys.argv[1:]
-# `claude auth status --json`: signed in with a made-up claude.ai account, or not ($FAKE_CLAUDE_AUTH=out).
+# `claude auth login`: as Claude Code does, it opens its page with $BROWSER (one that comes back to it on this Mac) and
+# prints one that ends with a code to paste back. Signed in a moment later ($FAKE_SIGN_IN_SECONDS), as if done on the
+# first page; or, with $FAKE_SIGN_IN_PASTE (the first page can't get back), only once the code is pasted.
+if args[:2] == ["auth", "login"]:
+    import select
+    print("Opening browser to sign in…", flush=True)
+    print("If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback", flush=True)
+    if os.environ.get("BROWSER"):
+        subprocess.run([os.environ["BROWSER"], "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback"])
+    print("Paste code here if prompted > ", flush=True)
+    until = time.time() + (600 if os.environ.get("FAKE_SIGN_IN_PASTE") else float(os.environ.get("FAKE_SIGN_IN_SECONDS", "1")))
+    while time.time() < until:
+        ready, _, _ = select.select([sys.stdin], [], [], max(0, until - time.time()))
+        if not ready:
+            break
+        code = sys.stdin.readline().strip()
+        if not code:
+            sys.exit(1)
+        if code == "fake-code#state":
+            break
+        print("Invalid code. Please make sure the full code was copied.", file=sys.stderr, flush=True)
+    if os.environ.get("FAKE_SIGN_IN_FILE"):
+        open(os.environ["FAKE_SIGN_IN_FILE"], "w").write("in")
+    print("Login successful.", flush=True)
+    sys.exit(0)
+# `claude auth status --json`: signed in with a made-up claude.ai account, or not ($FAKE_CLAUDE_AUTH=out, until a sign-in).
 if args[:2] == ["auth", "status"]:
-    signed_in = os.environ.get("FAKE_CLAUDE_AUTH") != "out"
+    signed_in = os.environ.get("FAKE_CLAUDE_AUTH") != "out" or os.path.exists(os.environ.get("FAKE_SIGN_IN_FILE") or "/nonexistent")
     print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "email": "ada@example.com", "subscriptionType": "max"} if signed_in
                      else {"loggedIn": False, "authMethod": "none"}))
     sys.exit(0 if signed_in else 1)

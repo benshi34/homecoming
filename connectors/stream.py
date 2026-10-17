@@ -133,9 +133,9 @@ def duration(seconds):
 
 APPS = {"imessage": "Messages", "instagram": "Instagram", "messenger": "Messenger", "discord": "Discord",
         "phone_whatsapp": "WhatsApp", "whatsapp_export": "WhatsApp", "phone_wechat": "WeChat", "google_chat": "Google Chat",
-        "calls": "Phone", "gmail": "Gmail", "hotmail": "Outlook", "x": "X", "reddit": "Reddit", "linkedin": "LinkedIn",
+        "calls": "Phone", "gmail": "Gmail", "hotmail": "Outlook", "mail": "Mail", "x": "X", "reddit": "Reddit", "linkedin": "LinkedIn",
         "tiktok": "TikTok", "spotify": "Spotify", "chatgpt": "ChatGPT", "claude_ai": "Claude", "notion": "Notion",
-        "notion_export": "Notion", "phone_notion": "Notion", "photos": "Photos", "git_commits": "Git",
+        "notion_export": "Notion", "phone_notion": "Notion", "photos": "Photos", "shared_photos": "Shared Albums", "git_commits": "Git",
         "phone_venmo": "Venmo", "phone_splitwise": "Splitwise", "phone_uberclient": "Uber", "phone_uberplaces": "Uber",
         "phone_airbnb": "Airbnb", "phone_united_airlines": "United", "apple_notes": "Notes", "phone_notes": "Notes",
         "calendar": "Calendar", "google_calendar": "Google Calendar", "phone_calendarall": "Calendar",
@@ -348,9 +348,12 @@ def classify(r, mine, ctx):
         return Item(r, "app", name, ("gapp", name), 10 * 60, device="Phone")
 
     # Things you made, kept or looked at.
-    if s == "photos":
+    if s in ("photos", "shared_photos"):
         place = re.search(r"^Place: ([^,\n]+)", r.text or "", re.M)
         r.meta["_place"] = place.group(1).strip() if place else None
+        if s == "shared_photos":  # someone else's (or a copy you posted to a shared album): a run of its own
+            how = m.get("shared") or "shared"
+            return Item(r, "photos", SHARED_APPS.get(how, "Photos"), ("shared_photos", how, bool(m.get("copy"))), 45 * 60)
         return Item(r, "photos", "Photos", ("photos",), 45 * 60)
     if k == "event" and s in ("calendar", "google_calendar", "phone_calendarall") or s.endswith("calendar") and k == "event":
         return Item(r, "calendar", app, ("cal", r.rowid), 0, same=("cal", norm(r.title)), window=600, rank=_rank(s))
@@ -607,12 +610,23 @@ def sum_maps(e, recs, run):
     e["lines"] = what
 
 
+# Photos others shared with you (photos.py's shared_photos), by how they came.
+SHARED_APPS = {"shared_album": "Shared Albums", "shared_with_you": "Messages", "icloud_link": "iCloud Links", "shared_library": "Shared Library"}
+SHARED_TITLES = {"shared_album": "in a shared album", "shared_with_you": "shared with you in Messages",
+                 "icloud_link": "shared with you as an iCloud link", "shared_library": "added to your Shared Library by someone else"}
+
+
 def sum_photos(e, recs, run):
     videos = sum(1 for r in recs if r.meta.get("type") == "video")
     photos = len(recs) - videos
     what = " and ".join(x for x in (plural(photos, "photo") if photos else "", plural(videos, "video") if videos else "") if x)
     place = next((r.meta.get("_place") for r in recs if r.meta.get("_place")), None)
-    e["title"] = f"Took {what}" + (f" in {place}" if place else "")
+    if recs[0].source == "shared_photos":  # not photos you took
+        how = recs[0].meta.get("shared")
+        e["title"] = (f"Posted {what} to a shared album" if recs[0].meta.get("copy")
+                      else f"{what[0].upper()}{what[1:]} {SHARED_TITLES.get(how, 'shared with you')}")
+    else:
+        e["title"] = f"Took {what}" + (f" in {place}" if place else "")
     people = []
     for r in recs:
         m = re.search(r"^People: (.+)$", r.text or "", re.M)

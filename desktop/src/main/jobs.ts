@@ -39,6 +39,7 @@ export class JobQueue {
   private running: { job: Job; kill(): void } | null = null;
   private seq = 0;
   private cancelled = new Set<string>();
+  private holds = 0; // while something reads the whole library (Export Your Library), nothing new starts
   private changeListeners: (() => void)[] = [];
   private finishListeners: ((f: Finished) => void)[] = [];
   private lineListeners: ((job: Job, line: string) => void)[] = [];
@@ -116,6 +117,23 @@ export class JobQueue {
     return this.jobs.length > 0;
   }
 
+  // Whether a job is running now (queued ones wait for it).
+  runningNow(): boolean {
+    return !!this.running;
+  }
+
+  // Keeps queued jobs from starting until the returned release() is called; one running already carries on.
+  hold(): () => void {
+    this.holds++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.holds--;
+      this.pump();
+    };
+  }
+
   list(): JobView[] {
     return this.jobs.map(({ id, kind, label, sourceIds, connectors, state, current, finished, startedAt, lastLine }) =>
       ({ id, kind, label, sourceIds, connectors, state, current, finished: [...finished], startedAt, lastLine }));
@@ -126,7 +144,7 @@ export class JobQueue {
   }
 
   private pump() {
-    if (this.running) return;
+    if (this.running || this.holds) return;
     const job = this.jobs.find((j) => j.state === 'queued');
     if (!job) return;
     job.state = 'running';

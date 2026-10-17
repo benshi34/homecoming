@@ -7,7 +7,7 @@ import { contents } from './contents.ts';
 import { ago, bytes, count, day, list, range, waitRange } from './format.ts';
 import { describeNew, newCandidates } from './identity.ts';
 import { inboxesFor, inboxLabel } from './inbox.ts';
-import type { Action, AppState, Candidate, Backup, JobView, Probe, SourceState, SourceView, Stats, Summary } from './types.ts';
+import type { Action, AppState, Candidate, Backup, JobView, Probe, SignInCheck, SourceState, SourceView, Stats, Summary } from './types.ts';
 
 export interface StatusInput {
   probe: Probe | null;
@@ -17,17 +17,20 @@ export interface StatusInput {
   now: Date;
   // Things that look like the person (bridge.py identity-candidates); empty until first found.
   candidates?: Candidate[];
-  // Do It for Me can run: Claude Code is on this Mac. Left out (the tests), it's taken to be.
+  // Do It for Me can run: Claude Code is on this Mac, with a browser and a sign-in it works with. Left out (the tests),
+  // it's taken to be.
   claudeCode?: boolean;
+  browser?: string; // the browser Do It for Me works in (Your Setup), by name; Chrome when left out
   demo?: boolean; // the demo, where a stand-in plays Claude
   // Your email addresses and whether Mail is set up on this Mac: where to look for a service's "it's ready" email.
   mail?: { emails: string[]; appleMail: boolean };
+  signIns?: SignInCheck | null; // which services Claude's browser is signed in to (bridge.py signins), once checked
 }
 
 // What read-only mode (UMP_READONLY) still does: show things, and open pages and apps. Every other action is refused
 // (main.ts act), and its button is disabled with this said on it.
 export const READ_ONLY_OK = new Set(['recheck', 'open', 'open-external', 'open-download', 'open-ready', 'open-fda-settings', 'open-internet-accounts',
-  'open-notification-settings', 'open-app', 'open-chrome', 'open-inbox', 'glance', 'samples', 'get-claude-code', 'draft-request', 'describe-export', 'try-mapping', 'ask-claude', 'show-ai', 'cancel-job']);
+  'open-notification-settings', 'open-app', 'open-chrome', 'open-inbox', 'open-sign-ins', 'check-sign-ins', 'check-notifications', 'open-app-notifications', 'glance', 'samples', 'get-claude-code', 'draft-request', 'describe-export', 'try-mapping', 'ask-claude', 'show-ai', 'show-setup', 'cancel-job']);
 export const READ_ONLY_NOTE = 'Read-only mode: nothing can be changed.';
 
 const HOUR = 3600_000;
@@ -393,10 +396,41 @@ function macView(src: Source, inp: StatusInput): SourceView {
 
 // ---------------------------------------------------------------- iPhone
 
-export function latestBackup(probe: Probe | null): Backup | null {
-  const done = (probe?.backups ?? []).filter((b) => b.finished && b.date);
-  done.sort((a, b) => (a.date! < b.date! ? 1 : -1));
-  return done[0] ?? null;
+const udidOf = (b: Backup) => b.udid ?? b.id;
+
+// The device whose backup is read, when several are backed up here (a family's iPhones, an iPad): the one chosen in
+// Your Setup, else the one read before, else the newest iPhone's, else the newest. So someone else's newer backup
+// never takes the place of yours.
+export function phoneDevice(probe: Probe | null, chosen?: string): string | null {
+  const done = (probe?.backups ?? []).filter((b) => b.finished && b.date).sort((a, b) => (a.date! < b.date! ? 1 : -1));
+  const has = (u?: string | null) => !!u && done.some((b) => udidOf(b) === u);
+  if (has(chosen)) return chosen!;
+  const m = probe?.mirror;
+  const read = m?.udid ?? done.find((b) => b.id === m?.backup)?.udid ?? m?.backup;
+  if (has(read)) return read!;
+  const b = done.find((x) => /^iPhone/.test(x.product ?? '')) ?? done[0];
+  return b ? udidOf(b) : null;
+}
+
+// Each device backed up here, with its newest finished backup: for Your Setup's choice.
+export function phoneDevices(probe: Probe | null): Backup[] {
+  const done = (probe?.backups ?? []).filter((b) => b.finished && b.date).sort((a, b) => (a.date! < b.date! ? 1 : -1));
+  return done.filter((b, i) => done.findIndex((x) => udidOf(x) === udidOf(b)) === i);
+}
+
+// The backup to read: the newest finished one of that device.
+export function latestBackup(probe: Probe | null, chosen?: string): Backup | null {
+  const u = phoneDevice(probe, chosen);
+  return phoneDevices(probe).find((b) => udidOf(b) === u) ?? null;
+}
+
+// The device what's in the library came from, when it isn't the one now read (Your Setup picked another).
+export function otherPhoneRead(probe: Probe | null, chosen?: string): { device: string; udid: string } | null {
+  const m = probe?.mirror;
+  if (!m) return null;
+  const read = m.udid ?? probe?.backups.find((b) => b.id === m.backup)?.udid ?? m.backup;
+  const now = phoneDevice(probe, chosen);
+  return read && now && read !== now ? { device: m.device ?? 'another device', udid: read } : null;
 }
 
 // iphone_backup.py writes the backup time as "YYYY-MM-DD HH:MM:SS" (UTC); the probe reports ISO.
@@ -429,7 +463,7 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
     return { ...v, section: 'needs', blockedBy: 'fda', status: 'Needs Full Disk Access to find backups', steps: undefined,
       detail: 'Backups are kept where only apps with Full Disk Access can see them.', actions: [fdaFix, { id: 'recheck', label: 'Check Again' }] };
   }
-  const b = latestBackup(probe);
+  const b = latestBackup(probe, state.settings?.iphoneDevice);
   const inProgress = probe.backups.some((x) => x.in_progress);
   const pw = !!b?.encrypted && !probe.keychain_password;
   const read: Action = { id: 'iphone-run', label: 'Read Backup', primary: true, ...(pw ? { input: 'password' as const } : {}) };
@@ -438,6 +472,8 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
     return { ...v, section: 'needs', priority: 30, status: 'No backup on this Mac yet', actions: [{ id: 'open-app', label: 'Open Finder', primary: true }, { id: 'recheck', label: 'Check Again' }, skip] };
   }
   const desc = `${b.device ?? 'iPhone'}${b.ios ? `, iOS ${b.ios}` : ''}, backed up ${day(b.date)}`;
+  // Several devices backed up here (a family's, an iPad): which one is yours is picked in Your Setup.
+  const another: Action[] = phoneDevices(probe).length > 1 ? [{ id: 'show-setup', label: 'Pick Another Device…' }] : [];
   v.steps = undefined;
   v.detail = desc;
   if (!probe.python.cryptography) {
@@ -451,17 +487,47 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
   }
   const current = mirrorIsCurrent(probe, b);
   if (current && t.records > 0) {
-    return { ...v, status: `${recs(t.records)} from ${t.parts.length} phone source${t.parts.length === 1 ? '' : 's'}`, detail: desc, actions: [{ ...read, primary: false, label: 'Read Again' }] };
+    return { ...v, status: `${recs(t.records)} from ${t.parts.length} phone source${t.parts.length === 1 ? '' : 's'}`, detail: desc, actions: [{ ...read, primary: false, label: 'Read Again' }, ...another] };
   }
   const warnings = b.encrypted ? [] : ['This backup isn\'t encrypted, so it has no call history, Health or Safari. In Finder, turn on "Encrypt local backup" and back up again.'];
   if (inProgress) warnings.push('A newer backup is still in progress.');
   return { ...v, section: 'needs', priority: 14, warnings,
     status: t.records > 0 ? `A newer backup is ready (${day(b.date)})` : `Backup from ${day(b.date)} is ready to read`,
     detail: `${desc}.${pw ? ' Enter the password you set when you turned on "Encrypt local backup".' : ''}`,
-    actions: [read, skip] };
+    actions: [read, ...another, skip] };
 }
 
 // ---------------------------------------------------------------- web exports and guided sources
+
+// Claude in Chrome's own question (may Claude work on this site?) went unanswered: the needs_you note says so.
+export const CHROME_PERMISSION = /\b(permission|allow)\b.*\b(chrome|claude)\b|\b(chrome|claude)\b.*\b(permission|allow)\b/i;
+
+// Claude stopped for a sign-in (its needs_you note): once the session cookie turns up, it can carry on by itself.
+export const SIGN_IN_NOTE = /\b(sign|log)(ged)?[ -]?(in|into|on)\b/i;
+
+// Whether the browser Do It for Me works in (Chrome, or the one picked in Your Setup) is signed in to a web export
+// (py/signins.py): in the profile Claude in Chrome works in (or in any, when none has it), and if not, where it is
+// signed in instead. Unknown with no cookie to go by.
+export function signInFor(src: Source, check: SignInCheck | null | undefined, browser = 'Chrome'): NonNullable<SourceView['signIn']> {
+  const s = check?.sources[src.id];
+  if (!src.signIn || !check?.chrome.installed || !s) return { state: 'unknown' };
+  const all = check.chrome.profiles;
+  const claude = all.filter((p) => p.claude);
+  const mine = new Set((claude.length ? claude : all).map((p) => p.dir));
+  const name = (dir: string) => all.find((p) => p.dir === dir)?.name ?? dir;
+  const hit = s.chrome.find((c) => mine.has(c.profile));
+  if (hit) return { state: 'in', since: hit.since, ...(all.length > 1 ? { profile: name(hit.profile) } : {}) };
+  if (s.unreadable?.some((d) => mine.has(d))) return { state: 'unknown' }; // its cookie file was mid-write: next time
+  const other = s.chrome.find((c) => !mine.has(c.profile));
+  return { state: 'out', ...(other ? { elsewhere: `your ${name(other.profile)} profile in ${browser}` } : s.safari ? { elsewhere: 'Safari' } : {}) };
+}
+
+// What a page says about it, in words.
+export function signInNote(name: string, s: NonNullable<SourceView['signIn']>, browser = 'Chrome'): string | null {
+  if (s.state === 'in') return `${browser} is signed in to ${name}${s.profile ? ` (your ${s.profile} profile)` : ''}, so Claude can ask for it without you.`;
+  if (s.state === 'out') return `${browser} isn't signed in to ${name}${s.elsewhere ? ` (${s.elsewhere} is)` : ''}. Sign in there once, and Claude can do the rest: your saved password or passkey fills it in, and the app never sees it.`;
+  return null;
+}
 
 function foundActions(inp: StatusInput, id: string): { files: string[]; actions: Action[] } | null {
   const found = inp.state.found.filter((f) => f.sourceId === id && !f.ignoredAt);
@@ -489,6 +555,7 @@ function agentRunning(inp: StatusInput): string | null {
 }
 
 function exportView(src: Source, inp: StatusInput): SourceView {
+  const B = inp.browser ?? 'Chrome'; // where Claude works
   const { probe, stats, state, jobs, now } = inp;
   const st = state.sources[src.id];
   const keys = producesFor(src, probe, st);
@@ -521,7 +588,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const job = jobFor(src.id, jobs);
   if (job) return { ...v, section: 'working', ...jobStatus(job, now), actions: [] };
 
-  // Do It for Me: Claude Code in Chrome, requesting or downloading it. With AI or Do It for Me off, what it was doing is set aside.
+  // Do It for Me: Claude Code in the browser, requesting or downloading it. With AI or Do It for Me off, what it was doing is set aside.
   const ag = isWeb && set.aiOn !== false && set.agentExports !== false ? st?.agent : undefined;
   // Claude looks for it by itself every few hours while it's on its way (main.ts maybeCheckExports), unless turned off.
   const checks = set.aiOn === true && !!set.agentExports && set.agentDownloads !== false && set.agentChecks !== false && inp.claudeCode !== false && !!src.waitHours;
@@ -529,43 +596,55 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const doing = !ag ? '' : ag.mode === 'request' ? 'requesting your export' : ag.auto === 'check' ? 'looking for your export' : 'downloading your export';
   const myself: Action = { id: 'agent-dismiss', label: 'I\'ll Do It Myself' };
   const retry = ag?.mode === 'request' ? 'agent-request' : 'agent-download';
+  // Claude is waiting in the browser for you: first of all, until it's done (it carries on by itself) or Claude stops asking.
+  if (ag?.status === 'running' && ag.waiting) {
+    return { ...v, section: 'needs', priority: 2, steps: undefined, status: `Waiting for you: ${ag.waiting}`,
+      detail: `Claude is waiting in ${B}, and carries on as soon as it's done. It waits a few minutes, then stops and asks here.`,
+      actions: [{ id: 'open-chrome', label: `Open ${B}`, primary: true }, { id: 'agent-stop', label: 'Stop' }] };
+  }
   if (ag && (ag.status === 'running' || ag.status === 'queued')) {
     const first = ag.status === 'queued' ? agentRunning(inp) : null;
     // Waiting its turn: the clock, not a busy bar.
     return { ...v, section: 'working', priority: 30, steps: undefined, waiting: ag.status === 'queued' || undefined,
       actions: [{ id: 'agent-stop', label: 'Stop' }, ...(ag.auto === 'check' && checks && !st?.noChecks ? [noChecks] : [])],
-      status: ag.status === 'queued' ? (first ? `Waiting: Claude is doing ${first} first` : 'Waiting for Claude to finish another service')
-        : ag.step ?? `${ag.mode === 'request' ? 'Requesting' : ag.auto === 'check' ? 'Looking for' : 'Downloading'} it in Chrome…`,
-      detail: inp.demo ? 'In the demo, a stand-in plays Claude: nothing opens.' : `Claude is ${doing} in Chrome. It stops if it needs you to sign in or enter a code.` };
+      status: ag.status === 'queued' ? (ag.step ?? (first ? `Waiting: Claude is doing ${first} first` : 'Waiting for Claude to finish another service'))
+        : ag.step ?? `${ag.mode === 'request' ? 'Requesting' : ag.auto === 'check' ? 'Looking for' : 'Downloading'} it in ${B}…`,
+      detail: inp.demo ? 'In the demo, a stand-in plays Claude: nothing opens.' : `Claude is ${doing} in ${B}. It stops if it needs you to sign in or enter a code.` };
   }
   const fresh = (at: string) => now.getTime() - Date.parse(at) < 2 * DAY && later(at, st?.importedAt);
   // It needs Claude Code, and that isn't on this Mac (any more): setting it up is the next step, not trying again.
   if (ag && fresh(ag.at) && (ag.status === 'needs_you' || ag.status === 'failed') && inp.claudeCode === false) {
     const self: Action[] = ag.mode === 'request' ? opens(open) : [{ id: 'open-ready', label: 'Open the Download Page', primary: true }];
     return { ...v, section: 'needs', priority: 12, status: 'Do It for Me needs Claude Code',
-      detail: 'Claude Code isn\'t on this Mac. Install it, sign in, and add the Claude in Chrome extension to Chrome, then Claude can do this for you. Or do it yourself with the steps below.',
+      detail: `Claude Code isn't on this Mac. Install it, sign in, and add the Claude in Chrome extension to ${B}, then Claude can do this for you. Or do it yourself with the steps below.`,
       actions: [...self, { id: 'get-claude-code', label: 'Get Claude Code…' }, ...(ag.mode === 'request' ? [{ id: 'mark-requested', label: 'I\'ve Requested It' }] : []), addFile,
         { id: 'agent-dismiss', label: 'Dismiss' }] };
   }
-  // Claude waiting on you comes first of all: it's stopped in your Chrome until you answer.
+  // Claude waiting on you comes first of all: it's stopped in your browser until you answer.
   if (ag && fresh(ag.at) && ag.status === 'needs_you') {
     // Homecoming quit in the middle: carry on in the same session, or start again.
     if (ag.reason === 'quit') {
       return { ...v, section: 'needs', priority: 3, status: 'Interrupted when Homecoming quit',
-        detail: `Claude was ${doing} in Chrome when Homecoming quit. ${ag.session ? 'Carry On picks up where it stopped; Start Over begins again.' : 'Start it again, or do it yourself with the steps below.'}`,
+        detail: `Claude was ${doing} in ${B} when Homecoming quit. ${ag.session ? 'Carry On picks up where it stopped; Start Over begins again.' : 'Start it again, or do it yourself with the steps below.'}`,
         actions: ag.session
           ? [{ id: 'agent-continue', label: 'Carry On', primary: true, ai: true }, { id: retry, label: 'Start Over', ai: true }, myself]
           : [{ id: retry, label: 'Start Again', primary: true, ai: true }, myself] };
     }
     // The Claude in Chrome extension isn't there: nothing to answer, just that to fix.
     if (ag.reason === 'chrome') {
-      return { ...v, section: 'needs', priority: 3, status: 'Needs you: turn on Claude in Chrome',
-        detail: 'Claude works in your Chrome through the Claude in Chrome extension, and it isn\'t connected. Open Chrome, turn the extension on and sign in to it with your Claude account, then try again.',
-        actions: [{ id: 'open-chrome', label: 'Open Chrome', primary: true }, { id: retry, label: 'Try Again', ai: true }, myself] };
+      return { ...v, section: 'needs', priority: 3, status: `Needs you: turn on Claude in ${B}`,
+        detail: `Claude works in your ${B} through the Claude in Chrome extension, and it isn't connected. Open ${B}, turn the extension on and sign in to it with your Claude account, then try again.`,
+        actions: [{ id: 'open-chrome', label: `Open ${B}`, primary: true }, { id: retry, label: 'Try Again', ai: true }, myself] };
     }
-    return { ...v, section: 'needs', priority: 3, status: `Needs you: ${ag.note || 'have a look in Chrome'}`,
-      detail: 'Do it in Chrome, or answer below, then click Continue: Claude carries on from where it stopped.',
-      actions: [{ id: 'agent-continue', label: 'Continue', primary: true, ai: true, input: 'reply' }, { id: 'open-chrome', label: 'Open Chrome' }, myself,
+    // A sign-in: your password manager or a passkey can fill it, and Claude notices when you're in.
+    const signIn = !!src.signIn && SIGN_IN_NOTE.test(ag.note ?? '');
+    // Claude in Chrome asks before it works on a site for the first time, and nobody was there to say yes.
+    const allow = CHROME_PERMISSION.test(ag.note ?? '');
+    return { ...v, section: 'needs', priority: 3, status: `Needs you: ${ag.note || `have a look in ${B}`}`,
+      detail: allow ? `Claude in Chrome asks before it works on a site for the first time. Click Continue with ${B} in view, and choose Allow in its Claude window when it asks (Always allow, if it offers that): it only asks once for a site.`
+        : signIn ? `Sign in to ${src.name} in ${B}: your saved password or passkey fills it in. Once you're signed in, Claude carries on by itself (or click Continue).`
+        : `Do it in ${B}, or answer below, then click Continue: Claude carries on from where it stopped.`,
+      actions: [{ id: 'agent-continue', label: 'Continue', primary: true, ai: true, input: 'reply' }, { id: 'open-chrome', label: `Open ${B}` }, myself,
         ...(ag.auto === 'check' && checks && !st?.noChecks ? [noChecks] : [])] };
   }
   // A look Claude made by itself that didn't finish isn't news: the page notes it below, and it looks again later.
@@ -576,7 +655,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   }
   const downloading = ag?.status === 'downloading' && !later(st?.lastFileAt, ag.at);
   if (downloading && now.getTime() - Date.parse(ag!.at) < 45 * 60_000) {
-    return { ...v, section: 'working', priority: 30, steps: undefined, status: 'Downloading in Chrome', actions: [addFile],
+    return { ...v, section: 'working', priority: 30, steps: undefined, status: `Downloading in ${B}`, actions: [addFile],
       detail: inp.demo ? 'In the demo, nothing really downloads: a stand-in plays Claude.' : 'The app reads it as soon as it lands in Downloads.' };
   }
 
@@ -585,8 +664,8 @@ function exportView(src: Source, inp: StatusInput): SourceView {
 
   // Claude started the download a while ago and nothing came: say so, rather than quietly going back to waiting.
   if (downloading && fresh(ag!.at) && !later(st?.lastErrorAt, ag!.at)) {
-    return { ...v, section: 'needs', priority: 12, status: 'Nothing arrived from Chrome',
-      detail: `Claude started the download ${ago(ag!.at, now)}, but no file has reached Downloads. Look in Chrome's downloads (Window → Downloads): if it's there, add it here; if it stopped, download it again.`,
+    return { ...v, section: 'needs', priority: 12, status: `Nothing arrived from ${B}`,
+      detail: `Claude started the download ${ago(ag!.at, now)}, but no file has reached Downloads. Look in ${B}'s downloads: if it's there, add it here; if it stopped, download it again.`,
       actions: [{ id: 'agent-download', label: 'Download It Again', primary: true, ai: true }, { id: 'open-ready', label: st?.readySignal?.link ? 'Open the Download Link' : 'Open the Download Page' },
         addFile, { id: 'agent-dismiss', label: 'Dismiss' }] };
   }
@@ -696,6 +775,16 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     v.priority = (src.optional ? 70 : 20) + (1 - Math.min(hi, 720) / 720) * 5;
     v.status = 'Not requested yet';
     v.detail = src.waitHours ? `Takes ${waitRange(src.waitHours)} after you request it.` : undefined;
+    if (!src.optional) v.toRequest = true;
+    if (st?.siteAllowed) v.siteOk = true;
+    // Whether Claude can do it in its browser without you (once that's been checked, and Do It for Me could run).
+    if ((!src.custom || src.exportPage) && !src.agentBlocked && inp.signIns && set.aiOn !== false && inp.claudeCode !== false) {
+      v.signIn = signInFor(src, inp.signIns, B);
+      const note = signInNote(src.name, v.signIn, B);
+      if (note) v.notes!.push(note);
+    }
+    const mail = src.custom ? (state.services ?? []).find((e) => e.id === src.id)?.email : undefined;
+    if (mail) v.requestEmail = mail;
     // Asking a service for your data can mean a form about which law you're asking under: said before you ask.
     if (!(src.steps ?? []).some((x) => /privacy law/i.test(x.text))) v.notes!.push(LAW_HINT);
     // Claude was asking for it and you stopped it, or took over: it may have got as far as asking.
@@ -708,8 +797,11 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     v.actions = [{ id: 'agent-request', label: 'Do It for Me', primary: true, ai: true }, ...opens(open, { primary: false }), requested, addFile, skip];
     if (src.custom) {
       v.detail = 'Most services answer in a day or two; by law they have about 30 days.';
-      v.actions = open ? [open, requested, addFile, { id: 'draft-request', label: 'Draft a Request' }, skip, removeIt]
-        : [{ id: 'draft-request', label: 'Draft a Request', primary: true }, requested, addFile, skip, removeIt];
+      const draft: Action = { id: 'draft-request', label: 'Draft a Request' };
+      // Its export page is known: Claude can request it there, as it does the built-in ones.
+      v.actions = src.exportPage && !src.agentBlocked
+        ? [{ id: 'agent-request', label: 'Do It for Me', primary: true, ai: true }, ...opens(open, { primary: false }), requested, addFile, draft, skip, removeIt]
+        : open ? [open, requested, addFile, draft, skip, removeIt] : [{ ...draft, primary: true }, requested, addFile, skip, removeIt];
     }
     if (src.cantExport) v.actions.push({ id: 'cant-export', label: 'My Account Can\'t Export', input: 'skip-reason' });
     return v;
@@ -739,7 +831,7 @@ export function computeSources(inp: StatusInput): SourceView[] {
   const noAi = inp.state.settings?.aiOn === false;
   const noAgent = inp.claudeCode === false;
   const views = CATALOG.map((src) => {
-    const v = src.group === 'setup' ? setupView(src, inp)
+    const v: SourceView = src.group === 'setup' ? setupView(src, inp)
       : src.group === 'mac' ? withContents(macView(src, inp), src, inp.stats)
         : src.group === 'iphone' ? iphoneView(src, inp)
           : withContents(exportView(src, inp), src, inp.stats);
@@ -750,6 +842,12 @@ export function computeSources(inp: StatusInput): SourceView[] {
     if (noAgent && v.actions.some((a) => AGENT_RUNS.has(a.id))) {
       v.actions = v.actions.filter((a) => !AGENT_RUNS.has(a.id));
       if (v.actions.length && !v.actions.some((a) => a.primary)) v.actions[0] = { ...v.actions[0], primary: true };
+    }
+    // Claude in Chrome isn't allowed there: no Do It for Me, and the page says why.
+    if (src.agentBlocked && v.section !== 'done' && v.section !== 'unavailable') {
+      v.actions = v.actions.filter((a) => !AGENT_RUNS.has(a.id));
+      if (v.actions.length && !v.actions.some((a) => a.primary)) v.actions[0] = { ...v.actions[0], primary: true };
+      if (!v.notes?.includes(src.agentBlocked)) v.notes = [src.agentBlocked, ...(v.notes ?? [])];
     }
     return v;
   });

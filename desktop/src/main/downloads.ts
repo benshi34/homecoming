@@ -12,13 +12,16 @@ const PARTIAL = /\.(crdownload|download|part|partial|tmp|opdownload)$|\.partial\
 const FILE_EXT = /\.(zip|vcf|mbox|vtt)$/i;
 const EXPORT_NAMES = /^(takeout-|instagram-|facebook-|export-|twitter-|discord|package|my_spotify_data|complete_linkedindataexport|basic_linkedindataexport|export_|whatsapp chat)/i;
 
+// What Export Your Library writes ("Homecoming Library 2026-10-15.zip"): yours, not an export to import, if it's saved here.
+const OUR_EXPORT = /^Homecoming Library\b.*\.zip$/i;
+
 export function isPartial(name: string): boolean {
   return name.startsWith('.') || PARTIAL.test(name);
 }
 
 // Worth asking bridge.py about. Safari unzips "safe" downloads, so export-named folders count too.
 export function isCandidate(name: string, isDir: boolean): boolean {
-  if (isPartial(name)) return false;
+  if (isPartial(name) || OUR_EXPORT.test(name)) return false;
   if (isDir) return /\.mbox$/i.test(name) || EXPORT_NAMES.test(name);
   return FILE_EXT.test(name) || /^(timeline|location-history)\.json$/i.test(name);
 }

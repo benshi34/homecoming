@@ -3,7 +3,11 @@ faces), and Apple's on-device labels (scenes, places, businesses, events, text i
 Each record links the best image of it already on disk in meta.files (no copies): the library's own previews
 (resources/derivatives/<X>/<UUID>_1_105_c.jpeg ~1-2k px, else masters/<X>/<UUID>_4_5005_c.jpeg thumbnails, else
 the original when it's downloaded), so a model can look at the photo; with iCloud "Optimize Mac Storage" most
-originals live only in iCloud."""
+originals live only in iCloud.
+
+Photos other people shared with you are kept, as their own source (shared_photos), so nothing counts them as yours:
+shared albums (yours there are copies of photos already in your library), photos sent as an iCloud link, Shared with
+You from Messages, and what others added to an iCloud Shared Library. What you added to a Shared Library is yours."""
 
 import collections
 import uuid
@@ -18,7 +22,13 @@ AVENUE = ("Local SQLite, read in place (Photos.sqlite is multi-GB, so no snapsho
           "on-device labels (groups.category codes: 1-14 place hierarchy, 1500s scenes, 1700 businesses, "
           "1203 OCR text, 1600/1800 events and concerts, 2300 camera model; ga maps group -> asset; asset "
           "uuid_0/uuid_1 are the UUID's two little-endian int64 halves). Needs Full Disk Access. "
-          "Hidden and trashed items are skipped.")
+          "Hidden and trashed items are skipped. ZASSET.ZBUNDLESCOPE says where an asset came from (0 your library, 1 an "
+          "iCloud link, 2 a shared album, with ZCLOUDISMYASSET for the ones you posted, 3 Shared with You); in an iCloud "
+          "Shared Library (ZLIBRARYSCOPE) who added it is ZASSETCONTRIBUTOR -> ZSHAREPARTICIPANT.ZISCURRENTUSER. Those "
+          "that aren't your own go to shared_photos.")
+
+# ZBUNDLESCOPE: where an asset came from, when not your own library.
+SHARED_SCOPES = {1: "icloud_link", 2: "shared_album", 3: "shared_with_you"}
 
 PLACE_ORDER = (1700, 1520, 6, 5, 10, 12, 14)
 BUCKETS = {"scenes": {1500, 1510}, "events": {1600, 1601, 1611, 1800, 1402}, "text": {1203},
@@ -66,6 +76,21 @@ def previews():
     return best
 
 
+SHARED_WORDS = {"icloud_link": "Shared with you as an iCloud link", "shared_album": "In a shared album",
+                "shared_with_you": "Shared with you in Messages", "shared_library": "Added to your Shared Library by someone else",
+                "shared": "Shared with you"}
+
+
+def shared_library_mine(con):
+    """Asset -> whether you added it to the iCloud Shared Library, for the assets whose contributor is known."""
+    try:
+        rows = con.execute("""select c.Z3LIBRARYSCOPEASSETCONTRIBUTORS a, max(p.ZISCURRENTUSER) me from ZASSETCONTRIBUTOR c
+                              join ZSHAREPARTICIPANT p on p.Z_PK = c.ZPARTICIPANT group by 1""").fetchall()
+    except Exception:  # a library from before Shared Libraries
+        return {}
+    return {r["a"]: bool(r["me"]) for r in rows if r["a"] is not None}
+
+
 def main():
     images = previews()
     con = connect(DB / "Photos.sqlite")
@@ -81,7 +106,8 @@ def main():
         """select a.ZASSET, a.ZORIGINALFILENAME, a.ZTITLE, a.ZTIMEZONENAME, a.ZIMPORTEDBYDISPLAYNAME, d.ZLONGDESCRIPTION
            from ZADDITIONALASSETATTRIBUTES a left join ZASSETDESCRIPTION d on d.Z_PK = a.ZASSETDESCRIPTION""")}
     albums = collections.defaultdict(list)
-    names = {r["Z_PK"]: r["ZTITLE"] for r in con.execute("select Z_PK, ZTITLE from ZGENERICALBUM where ZKIND = 2 and ZTITLE is not null")}
+    # Albums, and shared albums (kind 1505), by name.
+    names = {r["Z_PK"]: r["ZTITLE"] for r in con.execute("select Z_PK, ZTITLE from ZGENERICALBUM where ZKIND in (2, 1505) and ZTITLE is not null")}
     for (table,) in con.execute("select name from sqlite_master where type='table' and name like 'Z\\_%ASSETS' escape '\\'"):
         cols = [r[1] for r in con.execute(f"pragma table_info({table})")]
         acol = next((c for c in cols if c.endswith("ALBUMS")), None)
@@ -91,11 +117,21 @@ def main():
                 if r["al"] in names:
                     albums[r["asid"]].append(names[r["al"]])
     labels = index_labels()
+    added_by_me = shared_library_mine(con)
+    cols = {r[1] for r in con.execute("pragma table_info(ZASSET)")}
+    opt = lambda c: c if c in cols else f"null as {c}"  # older libraries have no sharing columns
 
-    with Writer("photos", AVENUE) as w:
-        for r in con.execute("""select Z_PK, ZUUID, ZDATECREATED, ZLATITUDE, ZLONGITUDE, ZFILENAME, ZKIND, ZFAVORITE,
-                                       ZHIDDEN, ZTRASHEDSTATE, ZDURATION, ZMOMENT
+    with Writer("photos", AVENUE) as w, Writer("shared_photos", AVENUE, parser="connectors/photos.py:main") as ws:
+        for r in con.execute(f"""select Z_PK, ZUUID, ZDATECREATED, ZLATITUDE, ZLONGITUDE, ZFILENAME, ZKIND, ZFAVORITE,
+                                       ZHIDDEN, ZTRASHEDSTATE, ZDURATION, ZMOMENT, {opt("ZBUNDLESCOPE")}, {opt("ZCLOUDISMYASSET")},
+                                       {opt("ZLIBRARYSCOPE")}
                                 from ZASSET where ZTRASHEDSTATE = 0 and ZHIDDEN = 0"""):
+            shared = SHARED_SCOPES.get(r["ZBUNDLESCOPE"]) or ("shared_library" if r["ZLIBRARYSCOPE"] else None)
+            if r["ZBUNDLESCOPE"] and not shared:
+                shared = "shared"  # a kind of sharing Photos has added since: not your own library either way
+            # Yours: your own library, and what you added to a Shared Library (who added it unknown counts as you).
+            others = shared and not (shared == "shared_library" and added_by_me.get(r["Z_PK"], True))
+            mine = not others or (shared == "shared_album" and r["ZCLOUDISMYASSET"] == 1)
             lab = labels.get(r["ZUUID"], {})
             place = [next(iter(lab[("place", c)])) for c in PLACE_ORDER if lab.get(("place", c))]
             place = list(dict.fromkeys(place)) or ([moments[r["ZMOMENT"]]] if moments.get(r["ZMOMENT"]) else [])
@@ -129,10 +165,19 @@ def main():
                     "moment": moments.get(r["ZMOMENT"]), "camera": camera}
             if r["ZUUID"] in images:
                 meta["files"] = [images[r["ZUUID"]]]
-            w.add(id=r["ZUUID"], kind="photo", ts=from_apple(r["ZDATECREATED"]), author="me", is_me=True,
-                  thread=moments.get(r["ZMOMENT"]), thread_name=moments.get(r["ZMOMENT"]),
-                  participants=who or None, title=place[0] if place else meta["filename"], text="\n".join(lines),
-                  meta={k: v for k, v in meta.items() if v is not None})
+            if shared:
+                meta["shared"] = shared
+            if others and mine:
+                meta["copy"] = True  # one you posted to a shared album: the original is in your library
+            if others:
+                lines.insert(1, SHARED_WORDS[shared] + (" (one you posted)" if mine else ""))
+                w.skip(r["ZUUID"])  # an earlier run may have kept it with your own photos
+            (ws if others else w).add(
+                id=r["ZUUID"], kind="photo", ts=from_apple(r["ZDATECREATED"]),
+                author="me" if mine else "someone else", is_me=bool(mine),
+                thread=moments.get(r["ZMOMENT"]), thread_name=moments.get(r["ZMOMENT"]),
+                participants=who or None, title=place[0] if place else meta["filename"], text="\n".join(lines),
+                meta={k: v for k, v in meta.items() if v is not None})
 
 
 if __name__ == "__main__":

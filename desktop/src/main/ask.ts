@@ -4,7 +4,7 @@
 // The agents are sandboxed away from the corpus; every tool call runs here: each agent drops it in its run folder's
 // mailbox (an MCP server for Claude Code, ./ask for Codex) and this answers it. Text results are blanked of secrets.
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -503,6 +503,11 @@ export class Ask {
 
   // ---------------------------------------------------------------- Claude Code and Codex
 
+  // For signing in to Claude Code or Codex (main.ts agentSignIn): the same environment their runs get.
+  loginEnv(): NodeJS.ProcessEnv {
+    return this.agentEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
+  }
+
   // An agent's environment: nothing from this app's (no key or session of its own leaks in), plus what its sign-in
   // needs (an API key from the Keychain, for that one process).
   private agentEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
@@ -756,10 +761,26 @@ const isFile = (p: string) => {
 };
 const onPath = (name: string) => (process.env.PATH ?? '').split(':').filter(Boolean).map((d) => path.join(d, name)).find(isFile) ?? null;
 
+// Where people's own installs put a command a GUI app's short PATH misses: npm's global folder, Volta, Bun, pnpm, Yarn,
+// and nvm (its newest Node first).
+const byVersion = (a: string, b: string) => {
+  const v = (s: string) => s.replace(/^v/, '').split('.').map((n) => n.padStart(6, '0')).join('.');
+  return v(b).localeCompare(v(a));
+};
+function userBin(home: string, name: string): string | null {
+  const nvm = path.join(home, '.nvm/versions/node');
+  let nodes: string[] = [];
+  try {
+    nodes = fs.readdirSync(nvm).sort(byVersion).map((v) => path.join(nvm, v, 'bin', name));
+  } catch { /* no nvm */ }
+  return [...['.npm-global/bin', '.volta/bin', '.bun/bin', 'Library/pnpm', '.local/share/pnpm', '.yarn/bin'].map((d) => path.join(home, d, name)), ...nodes].find(isFile) ?? null;
+}
+
 // The Claude Code CLI: where installers put it (a GUI app's PATH is short), else the Claude app's own copy.
 export function findClaude(home = os.homedir()): string | null {
   const found = process.env.UMP_CLAUDE_CMD || onPath('claude')
-    || [path.join(home, '.claude/local/claude'), path.join(home, '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'].find(isFile);
+    || [path.join(home, '.claude/local/claude'), path.join(home, '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'].find(isFile)
+    || userBin(home, 'claude');
   if (found) return found;
   // ~/Library/Application Support/Claude/claude-code/<version>/<build>/claude.app/Contents/MacOS/claude
   const root = path.join(home, 'Library/Application Support/Claude/claude-code');
@@ -774,10 +795,29 @@ export function findClaude(home = os.homedir()): string | null {
   return null;
 }
 
-// Codex: on the PATH, from Homebrew, or the copy inside the ChatGPT app.
-export function findCodex(): string | null {
-  return process.env.UMP_CODEX_CMD || onPath('codex')
-    || ['/opt/homebrew/bin/codex', '/usr/local/bin/codex', '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'].find(isFile) || null;
+// Codex: on the PATH, from Homebrew or your own install (npm, nvm...), or the copy inside the ChatGPT app.
+export function findCodex(home = os.homedir()): string | null {
+  return process.env.UMP_CODEX_CMD || onPath('codex') || ['/opt/homebrew/bin/codex', '/usr/local/bin/codex'].find(isFile) || userBin(home, 'codex')
+    || ['/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'].find(isFile) || null;
+}
+
+// Opened from Finder or the Dock, an app gets the system's PATH, not yours: claude or codex installed with npm, nvm,
+// Volta or the like isn't on it. Your login shell's PATH, read once at the start (interactive, as Terminal would, so
+// nvm's lines in ~/.zshrc count), is added after the system's. Five seconds at most; nothing changes if it fails.
+export async function addShellPath(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  if (process.platform !== 'darwin' || env.UMP_NO_SHELL_PATH === '1') return [];
+  const shell = env.SHELL && /\/(zsh|bash|fish)$/.test(env.SHELL) ? env.SHELL : '/bin/zsh';
+  const mark = '__HOMECOMING_PATH__';
+  const out = await new Promise<string>((resolve) => {
+    execFile(shell, ['-ilc', `printf '${mark}%s${mark}' "$PATH"`], { timeout: 5000, env: { ...env, DISABLE_AUTO_UPDATE: 'true', ZSH_DISABLE_COMPFIX: 'true' } },
+      (e, stdout) => resolve(e ? '' : String(stdout)));
+  });
+  const found = out.split(mark)[1];
+  if (!found) return [];
+  const have = (env.PATH ?? '').split(':').filter(Boolean);
+  const add = [...new Set(found.split(':').filter((d) => d && !have.includes(d)))];
+  if (add.length) env.PATH = [...have, ...add].join(':');
+  return add;
 }
 
 // What Claude Code may read: not the corpus (under any of its names) and not this app's data (keys, conversations).

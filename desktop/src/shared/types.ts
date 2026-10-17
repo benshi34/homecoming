@@ -2,12 +2,14 @@
 
 import type { AskSettings, LocalStatus, SignIn } from './ask.ts';
 import type { Inbox } from './inbox.ts';
+import type { AgentReady, BrowserFound, PhoneInfo } from './setup.ts';
 
 export type Access = 'ok' | 'blocked' | 'absent';
 
 export interface Backup {
   dir: string;
   id: string;
+  udid?: string; // the device it's a backup of (bridge.py backups)
   device?: string | null;
   product?: string | null;
   ios?: string | null;
@@ -44,12 +46,16 @@ export interface Probe {
   identity: Identity | null;
   identity_suggestion: Identity | null;
   backups: Backup[];
-  mirror: { backup?: string; backed_up?: string; decrypted_at?: string; device?: string } | null;
+  mirror: { backup?: string; udid?: string; backed_up?: string; decrypted_at?: string; device?: string; product?: string } | null;
   keychain_password: boolean;
   ileapp_installed: boolean;
   mailbox_sources: string[];
   // Notification Center: whether it can be read (Full Disk Access), and whether the iPhone's notifications reach this Mac.
   notifications?: { readable: boolean; iphone: boolean };
+  // Your Setup: the browsers here (installed, or with history), the region phone numbers are read in, Mail's accounts.
+  browsers?: BrowserFound[];
+  phone?: PhoneInfo;
+  mail_accounts?: string[];
   retention: {
     claude: { present: boolean; days?: number | string | null; path?: string };
     messages: { readable: boolean; value: number | string | null };
@@ -101,7 +107,9 @@ export type AgentStatus = 'queued' | 'running' | 'needs_you' | 'failed' | 'reque
 // auto: started by the app, not the person: a look while it's on its way ("check"), or the download after a ready email
 // ("ready"). reason: why it needs you or failed, when that changes what the page offers.
 export interface AgentState { mode: AgentMode; status: AgentStatus; at: string; step?: string; note?: string; session?: string;
-  auto?: 'check' | 'ready'; reason?: 'chrome' | 'no-claude' | 'quit' }
+  auto?: 'check' | 'ready'; reason?: 'chrome' | 'no-claude' | 'quit';
+  waiting?: string; // running, and waiting in Chrome for the person to do this (a passkey, a sign-in, allowing Claude on a site)
+}
 
 export interface SourceState {
   requestedAt?: string;
@@ -114,6 +122,7 @@ export interface SourceState {
   noChecks?: string; // when the person said Stop Checking: Claude doesn't look for it by itself until they ask again
   stepsDone?: number[];
   skipped?: string; // reason
+  siteAllowed?: string; // Claude has worked on its site (Claude in the browser asks to allow each site once)
   doneAt?: string; // guided sources marked done by hand
   lastError?: string;
   lastErrorAt?: string;
@@ -152,6 +161,16 @@ export interface Settings {
   // download helper. Which agent does the work is the Ask provider (AskSettings.provider), shared by all of them.
   aiOn?: boolean;
   aiAgreedAt?: string;
+
+  // Your Setup (src/shared/setup.ts): unset means what was found on this Mac.
+  pageBrowser?: string; // the browser export pages open in (browsers.py id); unset: the Mac's default
+  agentBrowser?: string; // the browser Do It for Me works in; unset: the default, if Claude works in it, else the first here
+  historyOff?: string[]; // browsers whose history isn't read
+  phoneRegion?: string; // the region phone numbers without a country code belong to; unset: this Mac's region
+  mailChecks?: boolean; // look in Mail on this Mac for "your data is ready" (on unless turned off)
+  notificationChecks?: boolean; // and in this Mac's notifications (on unless turned off)
+  inboxesOff?: string[]; // addresses Claude doesn't look in for those emails
+  iphoneDevice?: string; // the device whose backup is read (a backup's udid); unset: the one read before, else the newest iPhone's
 }
 
 export interface AppState {
@@ -166,6 +185,7 @@ export interface AppState {
   identityDismissed: string[]; // "kind:value" (lowercase) the person said aren't them
   services: ServiceEntry[];
   ask: AskSettings;
+  notifyCheck?: NotifyCheck; // whether this app's notifications are shown (main.ts checkNotifications)
 }
 
 // The Setup Assistant: whether it's finished, where it is, and which web accounts the person said they use.
@@ -240,6 +260,25 @@ export interface SourceView {
   inboxes?: Inbox[]; // where its "it's ready" email will come, for Look in Gmail and the like (shared/inbox.ts)
   ignored?: string[]; // files in Downloads the person chose to ignore for this source
   arrived?: boolean; // came home while the window was closed: its banner shows when the window opens again
+  // Whether Chrome is signed in to it (py/signins.py, from its session cookie's name and expiry): Do It for Me can then
+  // do it without you. profile: the Chrome profile, when there are several; elsewhere: where it is signed in instead.
+  signIn?: { state: 'in' | 'out' | 'unknown'; profile?: string; elsewhere?: string; since?: string | null };
+  toRequest?: boolean; // not asked for yet, and nothing in the way: one for Ask for Everything (shared/request_all.ts)
+  siteOk?: boolean; // Claude has worked on its site already: Claude in the browser won't ask to allow it
+  requestEmail?: string; // a service you added that takes a request by email: where to
+}
+
+// Whether this app's notifications reach you: a test one, and what macOS's own record says of it (bridge.py
+// notification-shown). quiet: kept in Notification Center without being shown; missing: not taken at all; unknown:
+// the record can't be read (no Full Disk Access).
+export interface NotifyCheck { at: string; state: 'shown' | 'quiet' | 'missing' | 'unknown' }
+
+// Which services this Mac's browsers are signed in to (bridge.py signins): from cookie names and dates, never values.
+export interface SignInCheck {
+  at: string;
+  chrome: { installed: boolean; profiles: { dir: string; name: string; email?: string | null; claude: boolean }[] };
+  safari: { readable: boolean };
+  sources: Record<string, { chrome: { profile: string; until?: string | null; since?: string | null }[]; safari: boolean; unreadable?: string[] }>;
 }
 
 export interface Summary {
@@ -260,6 +299,8 @@ export interface Snapshot {
   readOnly: boolean;
   // The library's numbers have been read. Before that every source looks empty, so nothing is taken as just arrived.
   loaded?: boolean;
+  appleMail?: boolean; // Mail is set up on this Mac: requests by email can be sent from it
+  notifyCheck?: NotifyCheck; // the last check of whether this app's notifications are shown
   demo?: boolean; // a made-up library (scripts/demo.mjs)
   agentInstalled?: boolean; // Do It for Me can run: Claude Code is on this Mac (or the demo's stand-in)
   label?: string;
@@ -278,9 +319,48 @@ export interface Snapshot {
   claude: 'cli' | 'api' | 'codex' | null;
   // Found in your data and not yet in the app: built-in accounts and services already added are left out.
   discovery: Discovery | null;
-  defaultBrowser: string; // where export pages open: "Safari", "Google Chrome"
+  defaultBrowser: string; // where export pages open: "Safari", "Google Chrome" (the one chosen in Your Setup, else the Mac's default)
+  setup: SetupView;
   log: { time: string; line: string }[];
   ask: AskView;
+  libraryExport: LibraryExportView | null; // Export Your Library: the one going, or the last one's result until it's put away
+}
+
+// Export Your Library (main library_export.ts, py/export_library.py): the library in one .zip, saved where you choose.
+// records is always in it; media is the photos and attachments; originals is each download as it came, and what was
+// read from this Mac as it was.
+export type ExportPart = 'records' | 'media' | 'originals';
+export interface LibraryExportView {
+  state: 'waiting' | 'running' | 'done' | 'failed' | 'stopped'; // waiting: for an import to finish first
+  parts: ExportPart[];
+  path: string; // the .zip it's writing, or wrote
+  done: number; // bytes read so far
+  total: number; // of all it'll read
+  bytes?: number; // the .zip's size, once it's done
+  error?: string; // why it failed, in words
+  waitingFor?: string; // the job it's waiting on
+}
+export interface LibrarySizes {
+  parts: Record<ExportPart, number>; // as they are in the library
+  estimate: Record<ExportPart, number>; // about what each takes in the .zip, erring large
+  free: number; // free on this Mac's disk, where it's saved unless you pick another drive
+  phoneBackup: boolean; // the library links to a decrypted iPhone backup, which isn't exported
+}
+
+// Your Setup, worked out (src/shared/setup.ts): what was found, and what's used.
+export interface SetupView {
+  browsers: BrowserFound[];
+  macBrowser: string; // the Mac's own default, by name
+  pageBrowser: string | null; // chosen for export pages (an id), or null for the Mac's default
+  agentBrowser: { id: string; name: string } | null; // where Do It for Me works
+  agent: AgentReady; // whether Do It for Me can run here
+  phone: PhoneInfo | null;
+  mail: { accounts: string[]; checks: boolean; notifications: boolean };
+  inboxes: { email: string; app: string; on: boolean }[]; // your addresses, and whether Claude may look in each
+  // The devices backed up on this Mac (newest backup of each), the one read, and one read before that isn't it.
+  devices: { udid: string; device: string; product: string; date: string | null }[];
+  device: string | null;
+  deviceRead: { device: string; udid: string } | null; // read before, and not the one now read: what came from it is still in the library
 }
 
 // The Ask assistant's settings, and what this Mac has for it.
@@ -290,6 +370,10 @@ export interface AskView {
   keys: { anthropic: boolean; openai: boolean };
   local?: LocalStatus; // whether the local model's server answers (checked on this Mac only)
   signIn?: Partial<Record<'claude-code' | 'codex', SignIn>>; // whether Claude Code and Codex are signed in, as they say
+  // Signing in now (main.ts agentSignIn), in the browser: and the page to open, when the agent printed one.
+  // A sign-in under way. url: the page that comes back to this Mac by itself. code: a page that ends with a code to paste
+  // back is there too, should that one not work. paste: the page opened is that one.
+  signingIn?: Partial<Record<'claude-code' | 'codex', { url?: string; code?: boolean; paste?: boolean }>>;
 }
 
 export interface ContentGroup { title: string; rows: { label: string; count: number }[] }

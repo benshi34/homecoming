@@ -21,7 +21,8 @@ test('which downloads are worth identifying', () => {
   const yes: [string, boolean][] = [['takeout-1.zip', false], ['All Contacts.vcf', false], ['Inbox.mbox', true], ['Inbox.mbox', false], ['meeting.vtt', false],
     ['Timeline.json', false], ['location-history.json', false], ['takeout-20250301T120000Z-1-001', true], ['instagram-ada-2026', true], ['Export-1a2b3c4d', true],
     ['Complete_LinkedInDataExport_03-01-2025.zip.zip', false]];
-  const no: [string, boolean][] = [['report.pdf', false], ['photo.jpg', false], ['random folder', true], ['data.json', false], ['node_modules', true]];
+  const no: [string, boolean][] = [['report.pdf', false], ['photo.jpg', false], ['random folder', true], ['data.json', false], ['node_modules', true],
+    ['Homecoming Library 2026-10-15.zip', false]]; // Export Your Library's own .zip, saved in Downloads
   for (const [n, d] of yes) assert.ok(isCandidate(n, d), n);
   for (const [n, d] of no) assert.ok(!isCandidate(n, d), n);
 });

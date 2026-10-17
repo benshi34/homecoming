@@ -272,6 +272,12 @@ input[type=checkbox]:checked::after {
 .next-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
 .next-card .eyebrow { font-size: 11px; font-weight: 600; color: var(--accent); }
 .next-card .title { font-size: 14px; font-weight: 600; }
+.ask-all-mark { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* Ask for Everything's sheet: its groups, each a titled box. */
+.ra-section { margin-top: 14px; }
+.ra-title { font-size: 11.5px; font-weight: 600; color: var(--secondary); margin: 0 2px 5px; }
+.ra-footer { font-size: 11.5px; color: var(--secondary); margin: 6px 2px 0; line-height: 1.4; }
+.ra-buttons { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 10px; }
 .next-card .status { font-size: 12px; color: var(--secondary); }
 
 /* ---------------------------------------------------------------- setup assistant */
@@ -508,6 +514,16 @@ button.link:hover { text-decoration: underline; }
 .disclosure-body > p { margin-top: 6px; }
 .disclosure-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
 .sheet .mapping-error { font-size: 12px; color: var(--red); margin-top: 10px; line-height: 1.4; }
+
+/* Export Your Library (export_sheet.tsx): what goes in, with sizes; then how far it's got; then where it went. */
+.export-part-end { display: flex; align-items: center; gap: 10px; }
+.export-part-end .tag { margin-left: 0; vertical-align: 0; }
+.export-size { font-size: 12px; color: var(--secondary); font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+.export-status { font-size: 12px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.export-result { display: flex; gap: 12px; align-items: center; margin-top: 12px; font-size: 13px; }
+.export-result > svg { flex: none; color: var(--green); }
+.export-result[data-testid=export-failed] > svg { color: var(--orange); }
+.sheet .note.error { color: var(--red); }
 .record-text { margin-top: 10px; max-height: 300px; overflow: auto; font: 12px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; background: var(--fill); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------- explore */
@@ -1576,3 +1592,9 @@ button.superlative:hover { transform: translateY(-2px); box-shadow: var(--card-s
 .celebrate.calm.leaving .celebrate-card { animation: celebrate-out-calm 0.3s forwards; }
 @keyframes celebrate-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes celebrate-out-calm { to { opacity: 0; } }
+.tag-green { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.tag-orange { background: color-mix(in srgb, var(--orange) 20%, transparent); color: var(--orange); }
+
+/* Claude Code's sign-in code, pasted back: in AI Settings' row or Ask's note. */
+.paste-code { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.paste-code input { width: 240px; font: inherit; font-size: 12px; padding: 3px 7px; border-radius: 5px; border: 1px solid var(--separator); background: var(--field, transparent); color: inherit; }

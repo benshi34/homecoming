@@ -47,15 +47,15 @@ Status: ✅ run on my real data · 🧪 written against documented formats and s
 | apple_notes | `apple_notes.py:main` | `NoteStore.sqlite` (gzip → protobuf) | |
 | calendar | `calendar_events.py:main` | `Calendar.sqlitedb` | |
 | reminders | `reminders.py:main` | Reminders `Data-*.sqlite` | |
-| browser_history | `browser_history.py:main` | Safari `History.db`, Chrome `History` | |
+| browser_history | `browser_history.py:main` | Safari `History.db`; every Chromium browser's `<profile>/History` (Chrome, Arc, Edge, Brave, Vivaldi, Opera...; the table is `browsers.py`); Firefox and Zen `places.sqlite`. Browsers turned off in Your Setup (`UMP_BROWSERS_SKIP`) aren't read | |
 | app_usage | `app_usage.py:main` | Biome `App.InFocus`, `Media.NowPlaying` | `segb.py` (SEGB file reader) |
 | ai_coding | `ai_coding.py:main` | `~/.claude/projects`, `~/.codex/sessions` | |
-| photos | `photos.py:main` | `Photos.sqlite`, `search/psi.sqlite` | |
+| photos | `photos.py:main` | `Photos.sqlite`, `search/psi.sqlite`; what others shared (ZBUNDLESCOPE 1 iCloud link, 2 shared album with ZCLOUDISMYASSET for yours, 3 Shared with You; a Shared Library's contributor via ZASSETCONTRIBUTOR → ZSHAREPARTICIPANT.ZISCURRENTUSER) goes to `shared_photos` | |
 | voice_memos | `voice_memos.py:main` | `CloudRecordings.db` (no recordings synced yet, so 0 records) | |
 | notion | `notion_local.py:main` | Notion desktop `notion.db` | |
-| documents | `documents.py:main` | Documents, Desktop, Downloads, iCloud Drive | |
-| git_commits | `git_commits.py:main` | `git log` across local repos | `identity.py` |
-| mail | `mail_app.py:main` | Mail.app `~/Library/Mail` (no accounts on this Mac yet) | `email_parse.py` |
+| documents | `documents.py:main` | Documents, Desktop, Downloads, iCloud Drive; a file only in iCloud (`.icloud` placeholder, or flagged dataless since macOS 14) is listed, not read; one read before keeps its text | `common.cloud_only` |
+| git_commits | `git_commits.py:main` | `git log` across local repos; a repo with any `.git` file only in iCloud is skipped (git would download it); git runs only when it's a real one (`common.git_bin`) | `identity.py` |
+| mail | `mail_app.py:main` | Mail.app `~/Library/Mail/V*/<account>/**/*.emlx`, every account; Sent/Drafts mark mail as yours, Junk/Deleted get `meta.tier`; unchanged files aren't read again (`corpus/raw/mail/read.json`); the same Message-ID from an export is indexed once (`build_index.py`) | `email_parse.py` |
 
 Per-source gotchas for these are below.
 

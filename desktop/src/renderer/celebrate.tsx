@@ -71,9 +71,10 @@ function useMoments(sources: SourceView[], loaded: boolean): { now: Moment | nul
     }
     if (out.length && milestone) out[out.length - 1].milestone = milestone;
     // Asking for the last export there is to ask for is a milestone of its own: one was just asked for, and now every
-    // one is (the timeline counts one Claude is asking for already, so the snapshot before can't say).
-    const req = p.phases.find((ph) => ph.id === 'request');
-    const allAsked = asked.length > 0 && !!req?.total && req.done === req.total;
+    // one has been (the timeline counts one Claude is still asking for as asked, so it can't say; and with several asked
+    // one after another, only the last one gets it).
+    const web = sources.filter((v) => v.group === 'web' && v.section !== 'unavailable' && (!v.optional || v.section === 'done'));
+    const allAsked = asked.length > 0 && web.length > 0 && web.every((v) => !!v.requestedAt || v.section === 'done' || v.status.startsWith('Found'));
     for (const v of asked) {
       const w = BY_ID[v.id]?.waitHours;
       const onWay = sources.filter((x) => x.onTheWay).length;

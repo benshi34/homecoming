@@ -4,10 +4,12 @@
 import { type CSSProperties, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { setServices } from '../shared/catalog.ts';
+import { setPhoneRegion } from '../shared/identity.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { Assistant } from './assistant.tsx';
 import { Celebrations } from './celebrate.tsx';
+import { ExportSheet } from './export_sheet.tsx';
 import { Glyph } from './icons.tsx';
 import { MainWindow, type Nav } from './main_window.tsx';
 import { animate } from './ui.tsx';
@@ -20,6 +22,7 @@ function App() {
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string; undo?: { sourceId: string; action: string } }[]>([]);
   const [assistant, setAssistant] = useState<boolean | null>(null); // null: follow onboarding.done
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false); // Export Your Library
   const [adding, setAdding] = useState(false);
   const [nav, setNav] = useState<Nav>('overview');
   const [dragging, setDragging] = useState(false);
@@ -29,11 +32,13 @@ function App() {
   useEffect(() => {
     void api.snapshot().then((s) => {
       setServices(s.services ?? []);
+      setPhoneRegion(s.setup?.phone);
       layout.current = layoutOf(s);
       setSnap(s);
     });
     const off = api.onSnapshot((s) => {
       setServices(s.services ?? []);
+      setPhoneRegion(s.setup?.phone);
       const l = layoutOf(s);
       if (l !== layout.current) {
         layout.current = l;
@@ -48,11 +53,13 @@ function App() {
     });
     const offM = api.onMenu((cmd) => {
       if (cmd === 'show-settings') setSettingsOpen(true);
+      if (cmd === 'show-export') setExportOpen(true);
       if (cmd === 'add-service') animate(() => { setAssistant(false); setAdding(true); });
       if (cmd === 'show-hub') animate(() => { setAssistant(false); setNav('hub'); });
       if (cmd === 'show-assistant') animate(() => setAssistant(true));
       if (cmd === 'show-overview') animate(() => { setAssistant(false); setNav('overview'); });
       if (cmd === 'show-ai') animate(() => { setAssistant(false); setNav('ai'); });
+      if (cmd === 'show-setup') animate(() => { setAssistant(false); setNav('yoursetup'); });
       if (cmd.startsWith('open-source:')) animate(() => { setAssistant(false); setFocus({ id: cmd.slice(12), n: Date.now() }); });
     });
     return () => {
@@ -113,7 +120,8 @@ function App() {
       {showAssistant
         ? <Assistant snap={snap} onFinish={finish} onExit={exit} />
         : <MainWindow snap={snap} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen} nav={nav} setNav={setNav} focus={focus}
-          adding={adding} setAdding={setAdding} onAssistant={() => animate(() => setAssistant(true))} />}
+          adding={adding} setAdding={setAdding} onAssistant={() => animate(() => setAssistant(true))} onExport={() => setExportOpen(true)} />}
+      {exportOpen && <ExportSheet snap={snap} onClose={() => setExportOpen(false)} />}
       <div className="toasts" data-testid="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`}>

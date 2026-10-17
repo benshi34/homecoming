@@ -175,8 +175,8 @@ export function agentNeed(v: AgentState, p: AskProvider = v.settings.provider): 
 export function needText(n: AgentNeed): string {
   switch (n.kind) {
     case 'install': return `${n.harness === 'codex' ? 'Codex' : 'Claude Code'} isn't on this Mac.`;
-    case 'sign-in': return n.harness === 'codex' ? 'Codex isn\'t signed in on this Mac. Open Terminal, type codex login, and sign in with your ChatGPT account.'
-      : 'Claude Code isn\'t signed in on this Mac. Open Terminal, type claude, and sign in with your claude.ai account.';
+    case 'sign-in': return n.harness === 'codex' ? 'Codex isn\'t signed in on this Mac. Sign In opens ChatGPT\'s sign-in in your browser.'
+      : 'Claude Code isn\'t signed in on this Mac. Sign In opens claude.ai\'s sign-in in your browser.';
     case 'key': return n.key === 'anthropic' ? 'Claude Code needs your Anthropic API key to answer.' : 'Codex needs your OpenAI API key to answer.';
     case 'local': return `Nothing is answering at ${hostOf(n.url)}. Open ${LOCAL_SERVERS[n.server]?.name ?? 'the model server'}, then try again.`;
     case 'local-address': return `${hostOf(n.url)} isn't on this Mac. Use the address your model server shows, like ${LOCAL_SERVERS.ollama.url}.`;
@@ -205,8 +205,8 @@ export function explainError(provider: AskProvider, raw: string, opts: { localUr
   }
   if (provider !== 'local' && /invalid api key|invalid x-api-key|invalid_api_key|incorrect api key|\/login|not logged in|log in|sign in|signing in|401|unauthori[sz]ed|authentication|expired|credentials/i.test(r)) {
     switch (provider) {
-      case 'claude-code': return { text: 'Claude Code isn\'t signed in. Open Terminal, type claude, and sign in.', fix: 'sign-in' };
-      case 'codex': return { text: 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.', fix: 'sign-in' };
+      case 'claude-code': return { text: 'Claude Code isn\'t signed in. Sign In opens claude.ai\'s sign-in in your browser.', fix: 'sign-in' };
+      case 'codex': return { text: 'Codex\'s sign-in has expired. Sign In opens ChatGPT\'s sign-in in your browser, to sign in again.', fix: 'sign-in' };
       default: return { text: `${company} didn't accept the key. Check it under AI Settings.`, fix: 'key' };
     }
   }

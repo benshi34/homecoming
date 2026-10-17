@@ -372,6 +372,9 @@ class MailTests(Sandbox):
         asked[0]["seen"] = by["instagram"]["at"]
         again = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps(asked), extra_env=env))
         self.assertNotIn("instagram", {m["source"] for m in again["matches"]}, "a sign already known isn't news")
+        # Turned off in Your Setup: Mail isn't looked in at all.
+        off = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps(asked[1:]), extra_env={**env, "UMP_READY_MAIL": "0"}))
+        self.assertEqual((off["mail"], off["matches"]), (False, []))
 
     def test_an_email_beats_a_notification_about_the_same_export(self):
         t = lambda d, h=12: dt.datetime(2026, 10, d, h, tzinfo=dt.timezone.utc)
@@ -408,6 +411,26 @@ class NotificationTests(Sandbox):
         self.assertIn("Your data is ready to download", by["spotify"]["text"])
         self.assertEqual(by["reddit"]["via"], "Reddit", "an iPhone app's notification, forwarded to the Mac")
         self.assertNotIn("dinner", json.dumps(d), "nothing else leaves")
+
+    def test_whether_a_test_notification_was_shown(self):
+        t = lambda m: dt.datetime(2026, 10, 16, 21, m, tzinfo=dt.timezone.utc)
+        db = self.tmp / "db2/db"
+        notification_db(db, [("org.homecoming.desktop", t(10), "Homecoming notifications are on", "", "earlier"),
+                             ("org.homecoming.desktop", t(15), "Homecoming notifications are on", "", "now"),
+                             ("com.apple.mail", t(15), "Something else", "", "")])
+        env = {"UMP_NOTIFICATIONS_DB": str(db)}
+        ask = lambda since: jsonout(bridge(["notification-shown"], self.home, self.corpus, extra_env=env,
+                                           stdin=json.dumps({"title": "Homecoming notifications are on", "since": since})))
+        self.assertEqual(ask("2026-10-16T21:14:00Z"), {"readable": True, "found": True, "presented": False, "app": "org.homecoming.desktop"},
+                         "macOS kept it without showing it")
+        con = sqlite3.connect(db)
+        con.execute("update record set presented = 1 where rec_id = 2")
+        con.commit()
+        con.close()
+        self.assertTrue(ask("2026-10-16T21:14:00Z")["presented"], "shown")
+        self.assertEqual(ask("2026-10-16T21:16:00Z"), {"readable": True, "found": False}, "none since then: macOS didn't take it")
+        self.assertEqual(jsonout(bridge(["notification-shown"], self.home, self.corpus, stdin="{}",
+                                        extra_env={"UMP_NOTIFICATIONS_DB": str(self.tmp / "missing/db")})), {"readable": False})
 
     def test_unreadable_without_access(self):
         d = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps([{"id": "spotify", "names": ["Spotify"], "since": "2026-10-05T00:00:00Z"}]),
@@ -904,3 +927,40 @@ class IdentityAndIcloudTests(Sandbox):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhoneNotYoursTests(Sandbox):
+    """Several devices backed up here: each backup says which device it is, and what was read from one that isn't
+    yours comes out of the library, leaving what this Mac had."""
+
+    def test_each_backup_names_its_device(self):
+        make_fixtures.backup(self.home)
+        b = jsonout(bridge(["probe"], self.home, self.corpus))["backups"][0]
+        self.assertEqual(b["udid"], "00008120-TEST", "no Target Identifier: the folder's name")
+
+    def test_forget_phone(self):
+        norm = self.corpus / "normalized"
+        norm.mkdir()
+        rec = lambda src, i, copy=None, kind="message": json.dumps({"id": str(i), "source": src, "kind": kind, "ts": f"2026-0{i}-01T00:00:00Z",
+                                                                    **({"meta": {"copy": copy}} if copy else {})})
+        (norm / "imessage.jsonl").write_text("\n".join([rec("imessage", 1, "mac"), rec("imessage", 2, "iphone"), rec("imessage", 3, "iphone")]) + "\n")
+        (norm / "calls.jsonl").write_text(rec("calls", 4, "iphone", "call") + "\n")
+        for src in ("phone_whatsapp", "health", "iphone_contacts", "photos"):
+            (norm / f"{src}.jsonl").write_text(rec(src, 5, kind="record") + "\n")
+        manifest = {s: {"count": 1} for s in ("phone_whatsapp", "health", "iphone_contacts", "photos", "calls")}
+        manifest["imessage"] = {"count": 3, "kinds": {"message": 3}}
+        (self.corpus / "manifest.json").write_text(json.dumps(manifest))
+        mirror = self.corpus / "raw/iphone"
+        (mirror / "files/HomeDomain").mkdir(parents=True)
+        (mirror / "files/HomeDomain/sms.db").write_text("x")
+        (mirror / "backup.json").write_text("{}")
+        r = jsonout(bridge(["forget-phone"], self.home, self.corpus))
+        self.assertEqual(r["removed"], {"phone_whatsapp": 1, "health": 1, "iphone_contacts": 1, "imessage": 2, "calls": 1})
+        self.assertEqual([json.loads(l)["id"] for l in (norm / "imessage.jsonl").read_text().splitlines()], ["1"], "the Mac's own stays")
+        self.assertEqual((norm / "calls.jsonl").read_text(), "")
+        self.assertTrue((norm / "photos.jsonl").exists(), "not from the phone")
+        m = json.loads((self.corpus / "manifest.json").read_text())
+        self.assertEqual(sorted(m), ["calls", "imessage", "photos"])
+        self.assertEqual((m["imessage"]["count"], m["imessage"]["kinds"], m["imessage"]["first"]), (1, {"message": 1}, "2026-01-01T00:00:00Z"))
+        self.assertFalse((mirror / "files").exists())
+        self.assertFalse((mirror / "backup.json").exists())

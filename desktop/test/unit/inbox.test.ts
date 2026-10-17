@@ -45,7 +45,7 @@ test('signed in or not, as Claude Code and Codex say; signed out stops Ask with 
   const base = { settings: DEFAULT_ASK, installed: { 'claude-code': true, codex: true }, keys: { anthropic: false, openai: false } };
   const out = { state: 'out' as const, at: '' };
   assert.deepEqual(agentNeed({ ...base, signIn: { 'claude-code': out } }), { kind: 'sign-in', harness: 'claude-code' });
-  assert.match(needText({ kind: 'sign-in', harness: 'codex' }), /type codex login/);
+  assert.match(needText({ kind: 'sign-in', harness: 'codex' }), /Sign In opens ChatGPT's sign-in in your browser/);
   assert.equal(agentNeed({ ...base, signIn: { 'claude-code': { state: 'unknown', at: '' } } }), null, 'not known: not in the way');
   assert.deepEqual(agentNeed({ ...base, signIn: { 'claude-code': out } }, 'anthropic'), { kind: 'key', key: 'anthropic' }, 'a key choice needs its key, not the sign-in');
 });

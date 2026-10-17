@@ -86,9 +86,16 @@ export function adoptFolder(oldDir: string, newDir: string): string {
   }
 }
 
+// What Your Setup tells the connectors and bridge.py (src/shared/setup.ts setupEnv): set by the main process whenever
+// the settings change, and given to every Python it starts.
+let setup: Record<string, string> = {};
+export function setSetupEnv(e: Record<string, string>) {
+  setup = e;
+}
+
 // Packaged, Python mustn't write .pyc files into the signed app: they come precompiled.
 export function childEnv(p: Paths, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...env, CORPUS_DIR: p.corpus, UMP_REPO: p.repo, PYTHONUNBUFFERED: '1', HOME: p.home, ...(p.packaged ? { PYTHONDONTWRITEBYTECODE: '1' } : {}) };
+  return { ...env, CORPUS_DIR: p.corpus, UMP_REPO: p.repo, PYTHONUNBUFFERED: '1', HOME: p.home, ...(p.packaged ? { PYTHONDONTWRITEBYTECODE: '1' } : {}), ...setup };
 }
 
 export function urlOverrides(env: NodeJS.ProcessEnv): Record<string, string> {

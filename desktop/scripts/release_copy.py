@@ -2,9 +2,9 @@
 
     python3 desktop/scripts/release_copy.py OUT [--corpus PATH] [--allow TERM ...]
 
-Copies the committed versions (git archive HEAD, so nothing uncommitted and nothing ignored) of README.md, BETA.md,
+Copies the committed versions (git archive HEAD, so nothing uncommitted and nothing ignored) of README.md, WHAT_TO_TRY.md,
 .gitignore, desktop/ and connectors/ into OUT, which must not exist yet. The research notes, the evals and the
-experiments stay behind.
+experiments stay behind, and so does the demo (npm run demo).
 
 Then it scans every text file in OUT for the names, emails, usernames and phone numbers in the corpus's
 identity.json, and the full names of everyone with 20 or more messages in corpus.db, and exits 1 if any turn up.
@@ -26,7 +26,8 @@ import tarfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PATHS = ["README.md", "BETA.md", ".gitignore", "desktop", "connectors"]
+PATHS = ["README.md", "WHAT_TO_TRY.md", ".gitignore", "desktop", "connectors"]
+DEMO_FILES = ["desktop/scripts/demo.mjs", "desktop/scripts/demo_library.py", "desktop/test/e2e/demo.test.ts"]
 NOT_SCANNED = re.compile(r"(^|/)vendor/|services\.json$|service_icons\.json$|world_land\.json$|categories\.json$|link_check\.json$|THIRD_PARTY\.md$")
 
 
@@ -39,6 +40,17 @@ def export(out: Path):
     gi = out / ".gitignore"
     lines = gi.read_text().splitlines()
     gi.write_text("".join(f"{l}\n" for l in lines if "evals" not in l.lower()))
+    # Nor the demo (npm run demo): its scripts, its test, its npm script and its part of desktop/README.md.
+    for rel in DEMO_FILES:
+        (out / rel).unlink()
+    pkg = out / "desktop/package.json"
+    text, n = re.subn(r'\n    "demo": "[^"\n]*",', "", pkg.read_text())
+    readme = out / "desktop/README.md"
+    doc, m = re.subn(r"To show the app without anyone's real data, run the demo:\n.*?\n(?=It uses the connectors)", "", readme.read_text(), flags=re.S)
+    if n != 1 or m != 1:
+        sys.exit("release_copy.py: couldn't take the demo out of desktop/package.json or desktop/README.md; update DEMO_FILES and these")
+    pkg.write_text(text)
+    readme.write_text(doc)
 
 
 def terms(corpus: Path) -> set[str]:

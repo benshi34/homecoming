@@ -44,7 +44,7 @@ from browser_history import classify
 from common import MANIFEST, CORPUS, Writer, from_unix
 from contacts import parse_vcards, vcard_name
 from mapped_exports import MAPPED, mapped_exports
-from email_parse import html_to_text, iter_mbox, parse as parse_email
+from email_parse import SENT_FOLDERS, SKIP_FOLDERS, TIER_OF_FOLDER, html_to_text, iter_mbox, parse as parse_email
 from identity import ME, is_me_email, is_me_name
 
 IMPORTS = CORPUS / "imports"
@@ -264,12 +264,6 @@ ACTIVITY = (("Searched for ", "search"), ("Watched ", "media"), ("Listened to ",
             ("Viewed ", "visit"), ("Used ", "app_usage"), ("Prompted ", "ai_turn"), ("Asked ", "ai_turn"))
 
 
-SENT_FOLDERS = {"sent", "sent items", "sent messages", "sent mail"}
-# Kept, but tagged meta.tier so searches can leave them out: junk can hide real mail, and deleted mail is mail
-# the user received or wrote.
-SKIP_FOLDERS = {"junk", "junk email", "spam", "trash", "deleted items", "deleted messages", "outbox"}
-TIER_OF_FOLDER = {"junk": "spam", "junk email": "spam", "spam": "spam", "trash": "deleted", "deleted items": "deleted",
-                  "deleted messages": "deleted", "outbox": "unsent"}
 
 
 def mbox_folder(p):

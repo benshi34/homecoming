@@ -33,7 +33,7 @@ function sockets(main: number): string[] {
 }
 const local = (line: string) => /\s(127\.0\.0\.1|\[::1\]|localhost)[:\s]/.test(line) && !/->(?!127\.0\.0\.1|\[::1\])/.test(line);
 
-test('a new person on this Mac: welcome to the end, then Explore, and nothing leaves the Mac', { skip: SKIP, timeout: 20 * 60_000 }, async () => {
+test('a new person on this Mac: welcome to the end, then Explore, and nothing leaves the Mac', { skip: SKIP, timeout: 30 * 60_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ump-walk-'));
   for (const d of ['corpus', 'state', 'Downloads']) fs.mkdirSync(path.join(root, d));
   const env = {
@@ -58,6 +58,7 @@ test('a new person on this Mac: welcome to the end, then Explore, and nothing le
     assert.equal(steps[0], 'welcome');
     assert.equal(steps.at(-1), 'done', `walked ${steps.join(' → ')}`);
     await page.waitForSelector('[data-testid=sidebar]');
+    // Mail on a first run reads every message (minutes for a big mailbox), so up to 20 minutes for the whole Mac.
     for (let i = 0; i < 240 && (await snap(page)).jobs.length; i++) await page.waitForTimeout(5000);
     const s = await snap(page);
     assert.equal(s.jobs.length, 0, 'the Mac is read');

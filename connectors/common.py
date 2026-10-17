@@ -138,15 +138,52 @@ def columns(con, table):
     return {r[1] for r in con.execute(f"pragma table_info({table})")}
 
 
+# st_flags bit of a file whose contents are only in iCloud Drive (or another cloud drive): it keeps its own name, and
+# opening it downloads it, slowly, all of it, and not at all offline.
+SF_DATALESS = 0x40000000
+
+
+def cloud_only(path):
+    """Whether reading this file (or the one a link points to) would download it from iCloud first. Asking doesn't."""
+    try:
+        return bool(os.stat(path).st_flags & SF_DATALESS)
+    except (OSError, AttributeError):
+        return False
+
+
 _GIT = {}
+_GIT_BIN = []
+# GitHub Desktop brings a git of its own, for people who never installed the developer tools.
+GITHUB_DESKTOP_GIT = "/Applications/GitHub Desktop.app/Contents/Resources/app/git/bin/git"
+
+
+def git_bin():
+    """The git to run, or None. On a Mac without the Command Line Tools, /usr/bin/git is only a stub, and running it
+    puts up macOS's "install the developer tools?" dialog: it counts only once xcode-select has a developer folder."""
+    if not _GIT_BIN:
+        found = shutil.which("git")
+        if found and os.path.realpath(found) == "/usr/bin/git":
+            try:
+                ok = subprocess.run(["xcode-select", "-p"], capture_output=True, timeout=10).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                ok = False
+            found = found if ok else None
+        if not found and os.access(GITHUB_DESKTOP_GIT, os.X_OK):
+            found = GITHUB_DESKTOP_GIT
+        _GIT_BIN.append(found)
+    return _GIT_BIN[0]
 
 
 def code_version():
     """The repo commit the connectors ran from, plus any connector files edited since, so each manifest
-    entry says exactly which code produced it."""
+    entry says exactly which code produced it. Nothing when they don't run from a clone (the packaged app)."""
     if not _GIT:
+        if not (ROOT / ".git").exists() or not git_bin():
+            _GIT.update(commit=None, uncommitted=[])
+            return dict(_GIT)
+
         def git(*args):
-            return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True).stdout.strip()
+            return subprocess.run([git_bin(), "-C", str(ROOT), *args], capture_output=True, text=True).stdout.strip()
         changed = [line.split(maxsplit=1)[1] for line in git("status", "--porcelain", "--", "connectors").splitlines()]
         _GIT.update(commit=git("rev-parse", "--short", "HEAD") or None, uncommitted=sorted(changed))
     return dict(_GIT)

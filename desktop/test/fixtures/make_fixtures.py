@@ -272,7 +272,7 @@ def explore_corpus(corpus):
         "4b6d29dc0000001549444154789c63fccfc0f09f8101cc5880510106"
         "0d00a3d01fe1ba4a0b3d0000000049454e44ae426082"))
     n = iter(range(1, 10 ** 6))
-    sets = {k: [] for k in ("imessage", "instagram", "discord", "calls", "photos", "health", "git_commits", "apple_notes",
+    sets = {k: [] for k in ("imessage", "instagram", "discord", "calls", "photos", "shared_photos", "health", "git_commits", "apple_notes",
                             "google_activity", "calendar", "signal", "phone_airbnb")}
 
     def add(source, **f):
@@ -347,6 +347,10 @@ def explore_corpus(corpus):
         add("photos", kind="photo", ts=f"{day}T03:00:00Z", title="IMG.HEIC", is_me=True,
             text="Photo\nPlace: Shinjuku, Tokyo, Japan\nPeople: Grace", meta={"lat": 35.69, "lon": 139.70, "timezone": "Asia/Tokyo",
                                                                               "files": [str(png)]})
+    # Not where you were either: a friend's photo in a shared album (photos.py's shared_photos), from Lisbon, with Grace.
+    add("shared_photos", kind="photo", ts="2025-06-10T12:00:00Z", title="IMG.HEIC", author="someone else", is_me=False,
+        text="Photo\nIn a shared album\nPlace: Lisbon, Portugal\nPeople: Grace",
+        meta={"lat": 38.72, "lon": -9.14, "shared": "shared_album", "files": [str(png)]})
     for d, steps in (("2025-03-12", 9000), ("2025-03-13", 4000)):
         add("health", kind="health_day", ts=f"{d}T00:00:00", meta={"steps": steps})
     for i, d in enumerate(("2025-03-10", "2025-03-11", "2025-03-12")):

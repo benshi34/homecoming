@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { CATALOG } from '../../src/shared/catalog.ts';
-import { computeSources, gapYears, LAW_HINT, latestBackup, mirrorIsCurrent, nextUp, READ_ONLY_OK, robustFirst, summarize, totals } from '../../src/shared/status.ts';
+import { computeSources, gapYears, LAW_HINT, latestBackup, mirrorIsCurrent, nextUp, otherPhoneRead, phoneDevices, READ_ONLY_OK, robustFirst, summarize, totals } from '../../src/shared/status.ts';
 import type { Backup, JobView } from '../../src/shared/types.ts';
 import { actionIds, H, hoursAgo, input, NOW, probe, state, stats, view, views } from './helpers.ts';
 
@@ -325,6 +325,30 @@ describe('iPhone backup', () => {
     assert.ok(!mirrorIsCurrent(probe({ mirror: { backup: b.id, backed_up: '2026-08-01 00:00:00' } }), b));
     assert.ok(!mirrorIsCurrent(probe(), b));
   });
+
+  test('several devices backed up: yours, not whichever is newest', () => {
+    const phone = (id: string, udid: string, product: string, date: string, device = id) =>
+      backup({ id, udid, product, device, date: `2026-${date}T00:00:00+00:00` });
+    const ada = phone('ada', 'U-ADA', 'iPhone17,1', '03-01', "Ada's iPhone");
+    const adaOld = phone('ada-archived', 'U-ADA', 'iPhone17,1', '01-01');
+    const ipad = phone('ipad', 'U-PAD', 'iPad16,3', '05-01');
+    const sam = phone('sam', 'U-SAM', 'iPhone16,2', '04-01', "Sam's iPhone");
+    const all = [adaOld, ada, ipad, sam];
+    assert.equal(latestBackup(probe({ backups: [ada, ipad] }))!.id, 'ada', 'an iPhone before a newer iPad');
+    assert.equal(latestBackup(probe({ backups: all }))!.id, 'sam', 'nothing read yet: the newest iPhone');
+    assert.equal(latestBackup(probe({ backups: all, mirror: { backup: 'ada', udid: 'U-ADA' } }))!.id, 'ada', 'the one read before, not a newer one');
+    assert.equal(latestBackup(probe({ backups: all, mirror: { backup: 'ada' } }))!.id, 'ada', 'an older read, without its udid: by its folder');
+    assert.equal(latestBackup(probe({ backups: all, mirror: { backup: 'ada', udid: 'U-ADA' } }), 'U-SAM')!.id, 'sam', 'picked in Your Setup');
+    assert.equal(latestBackup(probe({ backups: all }), 'U-GONE')!.id, 'sam', 'a pick no longer here: as if none');
+    assert.deepEqual(phoneDevices(probe({ backups: all })).map((x) => x.id), ['ipad', 'sam', 'ada'], 'each device once, by its newest backup');
+    assert.deepEqual(otherPhoneRead(probe({ backups: all, mirror: { backup: 'ada', udid: 'U-ADA', device: "Ada's iPhone" } }), 'U-SAM'),
+      { device: "Ada's iPhone", udid: 'U-ADA' });
+    assert.equal(otherPhoneRead(probe({ backups: all, mirror: { backup: 'ada', udid: 'U-ADA' } })), null, 'still the one read');
+    const v = view('iphone_backup', { probe: probe({ backups: all, mirror: { backup: 'ada', udid: 'U-ADA' } }),
+      state: state((st) => (st.settings.iphoneDevice = 'U-SAM')) });
+    assert.match(v.detail!, /^Sam's iPhone/);
+    assert.ok(v.actions.some((a) => a.id === 'show-setup'), 'a way to pick another');
+  });
 });
 
 describe('web exports', () => {
@@ -468,6 +492,16 @@ describe('web exports', () => {
     assert.equal(at('stopped').status, 'Not requested yet');
     assert.match(at('stopped').detail!, /^You stopped Claude 6 min ago\. If it had already asked Instagram for your data, choose I've Requested It\./);
     assert.match(at('dismissed').detail!, /^Doing it yourself: follow the steps below, then choose I've Requested It\./);
+  });
+
+  test('Do It for Me in another browser (Your Setup): its states and buttons name that one', () => {
+    const v = view('instagram', { browser: 'Arc', state: state((s) => (s.sources.instagram = {
+      agent: { mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Turn on the Claude in Chrome extension.', reason: 'chrome', session: 's1' } })) });
+    assert.equal(v.status, 'Needs you: turn on Claude in Arc');
+    assert.match(v.detail!, /^Claude works in your Arc through the Claude in Chrome extension/);
+    assert.equal(v.actions[0].label, 'Open Arc');
+    const down = view('instagram', { browser: 'Brave', state: state((s) => (s.sources.instagram = { requestedAt: hoursAgo(30), agent: { mode: 'download', status: 'downloading', at: hoursAgo(1) } })) });
+    assert.equal(down.status, 'Nothing arrived from Brave');
   });
 
   test('a download that never arrived says so, instead of quietly going back to waiting', () => {

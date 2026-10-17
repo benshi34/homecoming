@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   onboarding: (patch: unknown) => ipcRenderer.invoke('onboarding', patch),
   ask: (op: unknown) => ipcRenderer.invoke('ask', op),
   explore: (op: string, args?: unknown[]) => ipcRenderer.invoke('explore', { op, args }),
+  libraryExport: (op: string, parts?: string[]) => ipcRenderer.invoke('library-export', { op, parts }),
   // How far an Explore artifact has got while it's built (main explore.ts).
   onExploreProgress: (cb: (p: unknown) => void) => {
     const h = (_e: unknown, p: unknown) => cb(p);
@@ -40,9 +41,9 @@ contextBridge.exposeInMainWorld('api', {
     });
     return () => hs.forEach(([ch, h]) => ipcRenderer.removeListener(ch, h));
   },
-  // Menu commands: Settings…, Setup Assistant…, Overview, AI Settings (from Settings).
+  // Menu commands: Settings…, Setup Assistant…, Overview, AI Settings (from Settings), Export Your Library….
   onMenu: (cb: (cmd: string) => void) => {
-    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub', 'show-ai', 'open-source'].map((ch) => {
+    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub', 'show-ai', 'show-export', 'show-setup', 'open-source'].map((ch) => {
       // open-source carries the source to open: a notification about it was clicked.
       const h = (_e: unknown, id?: string) => cb(ch === 'open-source' ? `open-source:${id}` : ch);
       ipcRenderer.on(ch, h);

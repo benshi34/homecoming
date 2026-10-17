@@ -12,15 +12,33 @@ export const KINDS: { kind: Kind; field: keyof Identity; label: string; add: str
   { kind: 'phone', field: 'phones', label: 'Phone numbers', add: 'Add a phone number' },
 ];
 
+// The region a number without its country code belongs to (connectors/phones.py, from the probe): North America until
+// the probe says otherwise. The main process and the window each set it from what the probe found.
+let PHONE: { cc: string; trunk: string; intl: string } = { cc: '1', trunk: '1', intl: '011' };
+export function setPhoneRegion(p?: { cc: string | null; trunk: string | null; intl: string } | null) {
+  if (p) PHONE = { cc: p.cc ?? '', trunk: p.trunk ?? '', intl: p.intl };
+}
+
+// "+<country code><number>", the same as connectors/phones.py e164: "07700 900123" in the UK and "+44 7700 900123" are one.
+export function e164(value: string): string {
+  const v = value.trim();
+  const d = v.replace(/\D/g, '');
+  if (v.startsWith('+')) return `+${d}`;
+  const { cc, trunk, intl } = PHONE;
+  for (const pre of [intl, '00']) if (pre && d.startsWith(pre) && d.length - pre.length >= 8) return `+${d.slice(pre.length)}`; // 0011 before 00
+  if (!cc) return `+${d}`; // a region phones.py doesn't know: as written
+  if (cc === '1') return d.length === 11 && d.startsWith('1') ? `+${d}` : d.length === 10 ? `+1${d}` : `+${d}`;
+  if (trunk && d.startsWith(trunk)) return `+${cc}${d.slice(trunk.length)}`;
+  if (d.startsWith(cc) && d.length >= cc.length + 8) return `+${d}`;
+  return `+${cc}${d}`;
+}
+
 // Same normalization as bridge.py's Candidates.norm, so "+1 (415) 555-0100" and "4155550100" are one number.
 export function normalize(kind: Kind, value: string): string {
   const v = value.trim();
   if (kind === 'email') return v.toLowerCase();
   if (kind === 'username') return v.replace(/^@/, '').toLowerCase();
-  if (kind === 'phone') {
-    const d = v.replace(/\D/g, '');
-    return v.startsWith('+') ? `+${d}` : d.length === 10 ? `+1${d}` : `+${d}`;
-  }
+  if (kind === 'phone') return e164(v);
   return v.replace(/\s+/g, ' ').toLowerCase();
 }
 

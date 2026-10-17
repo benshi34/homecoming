@@ -63,11 +63,22 @@ DERIVED = ("CameraRollDomain", ("Media/PhotoData/Thumbnails/", "Media/PhotoData/
                                 "Media/PhotoData/CPL/", "Media/PhotoData/Metadata/", "Media/MediaAnalysis/"))
 
 
+def udid(info, folder):
+    """The device a backup is of (an archived copy of one is a folder of its own, with the same device)."""
+    return info.get("Target Identifier") or info.get("Unique Identifier") or folder.name
+
+
 def latest_backup():
+    """The newest finished backup of an iPhone (an iPad or an iPod's only when there's no iPhone's)."""
     done = [d for d in BACKUPS.iterdir() if (d / "Info.plist").exists() and (d / "Manifest.db").exists()]
     if not done:
         sys.exit(f"No finished backup in {BACKUPS}")
-    return max(done, key=lambda d: (d / "Info.plist").stat().st_mtime)
+    def iphone(d):
+        try:
+            return str(plistlib.loads((d / "Info.plist").read_bytes()).get("Product Type", "")).startswith("iPhone")
+        except Exception:
+            return False
+    return max(done, key=lambda d: (iphone(d), (d / "Info.plist").stat().st_mtime))
 
 
 def parse_keybag(data):
@@ -234,6 +245,17 @@ def main(argv=None, password=None):
 
     state_file = OUT / "mirror_state.json"  # fileID -> [stored bytes, mtime] of the copy in the mirror
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    # Another device than the one copied before (Your Setup picked a different iPhone): start the copy over, or the
+    # other one's files would stay mixed in with this one's.
+    try:
+        before = json.loads((OUT / "backup.json").read_text())
+    except (OSError, ValueError):
+        before = None
+    this = udid(bk.info, bk.dir)
+    if before and (before.get("udid") or before.get("backup")) not in (this, bk.dir.name):
+        print(f"A different device from last time ({before.get('device')}): copying this one from the start")
+        shutil.rmtree(FILES, ignore_errors=True)
+        state = {}
     t, done, skipped, failed, written = time.time(), 0, 0, [], 0
     for file_id, domain, rel, n, mtime, key in rows:
         if domain in NEVER or NEVER_FILES.search(rel) or (not a.all and domain == DERIVED[0] and rel.startswith(DERIVED[1])):
@@ -264,7 +286,7 @@ def main(argv=None, password=None):
         print("Failures by reason:", dict(Counter(f[2] for f in failed)), "(listed in extract_failures.json)")
     shutil.copy2(bk.dir / "Info.plist", OUT / "Info.plist")  # unencrypted device + installed-apps metadata
     (OUT / "backup.json").write_text(json.dumps({
-        "backup": bk.dir.name, "device": bk.info.get("Device Name"), "product": bk.info.get("Product Type"),
+        "backup": bk.dir.name, "udid": this, "device": bk.info.get("Device Name"), "product": bk.info.get("Product Type"),
         "ios": bk.info.get("Product Version"), "backed_up": str(bk.info.get("Last Backup Date")),
         "encrypted": bk.encrypted, "decrypted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "derivatives_included": a.all}, indent=1))

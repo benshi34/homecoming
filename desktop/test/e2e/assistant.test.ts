@@ -72,7 +72,7 @@ test('opens on the welcome page with the step timeline', async () => {
   assert.equal(await step(), 'welcome');
   assert.match(await run.page.locator('.hero h1').innerText(), /Welcome to Homecoming/);
   assert.match(await run.page.locator('[data-testid=sb-Welcome]').getAttribute('class') ?? '', /current/);
-  assert.equal(await run.page.locator('[data-testid=steps-bar] .sb-item').count(), 11);
+  assert.equal(await run.page.locator('[data-testid=steps-bar] .sb-item').count(), 12);
   // The tour: three steps on made-up data, labeled as such. Picking one stops it moving on by itself.
   const stage = run.page.locator('[data-testid=tour-stage]');
   assert.equal(await run.page.locator('.tour-timer').count(), 1, 'it moves on by itself until you pick a step');
@@ -200,6 +200,16 @@ test('choosing accounts skips the rest and builds one page per account', async (
   }
   assert.deepEqual(await ids('accounts'), ['other_mail', 'reddit', 'discord'], 'the common ones keep their most-used-first order');
   assert.match(await run.page.locator('button[data-action=assistant-continue]').innerText(), /Continue with 3/);
+  await cont();
+  // Notifications: macOS asks once, when the first one comes, so it's sent here; then whether it was shown.
+  assert.equal(await step(), 'notifications');
+  const box = run.page.locator('[data-testid=notifications-status]');
+  assert.match(await box.innerText(), /Not allowed yet/);
+  await shot(run.page, 'assistant-07a-notifications');
+  await box.locator('button[data-action=allow-notifications]').click();
+  await until(run.page, 'checked', (x) => !!x.notifyCheck, 20_000);
+  assert.match(fs.readFileSync(path.join(env.UMP_USER_DATA, 'opened.txt'), 'utf8'), /notify: Homecoming notifications are on/);
+  await box.locator('button[data-action=allow-notifications]', { hasText: 'Check Again' }).waitFor();
   await cont();
   // AI, asked once: what it's for, and which agent. Not Now moves on with it off.
   assert.equal(await step(), 'ai');

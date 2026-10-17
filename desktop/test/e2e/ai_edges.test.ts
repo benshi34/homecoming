@@ -88,9 +88,13 @@ test('a run cut short by quitting is set aside while AI is off, and back when it
   // As Homecoming leaves one when it quits mid-run.
   await p.evaluate(() => (window as unknown as { api: { action(id: string, a: string, p?: unknown): Promise<unknown> } }).api.action('instagram', 'agent-request'));
   await until(p, 'working', working, 15_000);
+  const pid = Number(fs.readFileSync(`${file('agent.log')}.pid`, 'utf8'));
   await run.close();
   const state = saved();
   assert.equal(state.sources.instagram.agent.status, 'running', 'killed with it running');
+  // Claude in Chrome went with it, rather than going on with nobody to hear from it.
+  await new Promise((r) => setTimeout(r, 500));
+  assert.throws(() => process.kill(pid, 0), /ESRCH/, 'the run is gone');
   run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_AGENT_CMD: path.join(DESKTOP, 'test/fakes/fake_claude_browser.py'), FAKE_BROWSER_PLAN: file('plan.json'),
     FAKE_BROWSER_LOG: file('agent.log'), UMP_MAIL_DB: path.join(sb.home, 'Mail/V10/MailData/Envelope Index'), UMP_NOTIFICATIONS_DB: file('no-notifications/db'), UMP_SIGNAL_MS: '500',
     UMP_CLAUDE_CMD: path.join(DESKTOP, 'test/fakes/fake_claude.py'), FAKE_CLAUDE_PLAN: file('claude-plan.json') }));

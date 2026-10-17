@@ -10,13 +10,15 @@ import zipfile
 from pathlib import Path
 
 from apple_notes import _fields, _varint
-from common import HOME, ROOT, Writer, from_unix
+from common import HOME, NORM, ROOT, Writer, cloud_only, from_unix
 
 AVENUE = ("Filesystem walk of ~/Documents, ~/Desktop, ~/Downloads and ~/Library/Mobile Documents (iCloud Drive "
           "+ app containers like com~apple~Pages). Text: pypdf for PDF, macOS textutil for doc/docx/rtf/odt, "
           "zip+XML for pptx, IWA (snappy+protobuf) string walk for Pages/Keynote/Numbers, cell text for ipynb. "
           "Heuristics drop dependencies, datasets (>5 .txt per folder), exports and build output. "
-          "iCloud files that are not downloaded locally (.icloud placeholders) are listed but not read.")
+          "iCloud files that are only in iCloud (Optimize Mac Storage: .icloud placeholders before macOS 14, files "
+          "flagged dataless since) are listed but not read, so nothing is downloaded; one read before keeps what was "
+          "read.")
 
 ROOTS = {"Documents": HOME / "Documents", "Desktop": HOME / "Desktop", "Downloads": HOME / "Downloads",
          "iCloud": HOME / "Library/Mobile Documents"}
@@ -167,6 +169,11 @@ def walk(root):
 
 
 def main():
+    # Files an earlier run read: one now only in iCloud keeps that record rather than becoming a name.
+    try:
+        before = {json.loads(line).get("id") for line in (NORM / "documents.jsonl").open()}
+    except (OSError, ValueError):
+        before = set()
     with Writer("documents", AVENUE) as w:
         for label, root in ROOTS.items():
             for path, txt_count in walk(root):
@@ -182,8 +189,15 @@ def main():
                     continue
                 ext = path.suffix.lower()
                 try:
-                    st = path.stat()
+                    st = path.stat()  # only the file's details: this doesn't download it
                 except OSError:
+                    continue
+                if cloud_only(path):  # reading it would download it: its name and dates only
+                    if (ext in TEXT_EXT or ext in CREATIVE_EXT) and str(path) not in before:
+                        w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=name,
+                              text=f"{name} (in iCloud, not downloaded)", thread=label, thread_name=str(path.parent),
+                              meta={"root": label, "path": str(path), "downloaded": False, "bytes": st.st_size})
+                    w.notes["in_icloud_only"] = w.notes.get("in_icloud_only", 0) + 1
                     continue
                 if ext in CREATIVE_EXT:
                     w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", is_me=True,

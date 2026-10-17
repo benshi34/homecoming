@@ -79,10 +79,10 @@ test('what the chosen agent still needs: the agent, its key, a local server that
 
 test('agents\' errors in plain words, with the way forward', () => {
   const login = explainError('claude-code', 'Invalid API key · Please run /login\nClaude Code stopped (exit 1)');
-  assert.deepEqual(login, { text: 'Claude Code isn\'t signed in. Open Terminal, type claude, and sign in.', fix: 'sign-in' });
+  assert.deepEqual(login, { text: 'Claude Code isn\'t signed in. Sign In opens claude.ai\'s sign-in in your browser.', fix: 'sign-in' });
   assert.deepEqual(explainError('anthropic', 'Invalid API key · Please run /login'), { text: 'Anthropic didn\'t accept the key. Check it under AI Settings.', fix: 'key' });
   const codex = explainError('codex', 'unexpected status 401 Unauthorized: Your authentication token has expired. Please try signing in again.');
-  assert.deepEqual(codex, { text: 'Codex\'s sign-in has expired. Open Terminal, type codex login, and sign in again.', fix: 'sign-in' });
+  assert.deepEqual(codex, { text: 'Codex\'s sign-in has expired. Sign In opens ChatGPT\'s sign-in in your browser, to sign in again.', fix: 'sign-in' });
   assert.equal(explainError('openai', '401 Unauthorized: Incorrect API key provided').text, 'OpenAI didn\'t accept the key. Check it under AI Settings.');
   const local = explainError('local', 'error sending request for url (http://localhost:1234/v1/responses): Connection refused (os error 61)',
     { localUrl: 'http://localhost:1234/v1', localServer: 'lmstudio' });
