@@ -13,6 +13,7 @@ import { addEvent, answerOf, explainError, followupPrompt, isLocalAddress, PROVI
   type AskSettings, type AskSummary, type AskTurn, type LocalStatus, type SignIn } from '../shared/ask.ts';
 import { lineSplitter } from './bridge.ts';
 import { childEnv, type Paths } from './paths.ts';
+import { tieToApp } from './tied.ts';
 
 interface ToolDef {
   name: string;
@@ -524,6 +525,7 @@ export class Ask {
       // the listener below is added would never reach it.
       if (run.signal.aborted) return resolve();
       const p = spawn(cmd, args, { cwd, env: this.agentEnv(env), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+      tieToApp(p, true);
       let err = '';
       const kill = () => {
         try {

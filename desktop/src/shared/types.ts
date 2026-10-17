@@ -194,6 +194,8 @@ export interface Onboarding {
   step?: string;
   chosen?: string[];
   skippedAt?: string; // left before the end: the Overview offers to carry on
+  // Opened again once finished or left, and not left since: a restart (Full Disk Access's Quit & Reopen) comes back to it.
+  open?: boolean;
 }
 
 export interface JobView {
@@ -268,10 +270,10 @@ export interface SourceView {
   requestEmail?: string; // a service you added that takes a request by email: where to
 }
 
-// Whether this app's notifications reach you: a test one, and what macOS's own record says of it (bridge.py
-// notification-shown). quiet: kept in Notification Center without being shown; missing: not taken at all; unknown:
-// the record can't be read (no Full Disk Access).
-export interface NotifyCheck { at: string; state: 'shown' | 'quiet' | 'missing' | 'unknown' }
+// Whether this app's notifications reach you: its switches in Notification settings (bridge.py notification-prefs), or
+// before macOS has asked, whether a test one was put on screen (notification-shown). quiet: kept in Notification Center
+// without being shown; off: turned off there; missing: the test one wasn't taken; unknown: neither can be read.
+export interface NotifyCheck { at: string; state: 'shown' | 'quiet' | 'off' | 'missing' | 'unknown' }
 
 // Which services this Mac's browsers are signed in to (bridge.py signins): from cookie names and dates, never values.
 export interface SignInCheck {
@@ -303,6 +305,9 @@ export interface Snapshot {
   notifyCheck?: NotifyCheck; // the last check of whether this app's notifications are shown
   demo?: boolean; // a made-up library (scripts/demo.mjs)
   agentInstalled?: boolean; // Do It for Me can run: Claude Code is on this Mac (or the demo's stand-in)
+  // What Claude is at besides each service's own run: its first look at each site (and what it's waiting for you to do
+  // there), and how far Ask for Everything has got.
+  claudeWork?: { visit: { sites: string[]; step?: string; waiting?: string } | null; batch: { total: number; done: number } | null };
   label?: string;
   accent?: string;
   onboarding: Onboarding;

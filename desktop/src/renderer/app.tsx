@@ -28,6 +28,15 @@ function App() {
   const [dragging, setDragging] = useState(false);
   const [focus, setFocus] = useState<{ id: string; n: number } | null>(null); // a source to show (its notification was clicked)
   const layout = useRef('');
+  // The Setup Assistant, opened again (from the toolbar or the menu): kept open across a restart until it's left.
+  const openAssistant = () => {
+    setAssistant(true);
+    void api.onboarding({ open: true });
+  };
+  const toMain = () => {
+    setAssistant(false);
+    void api.onboarding({ open: false });
+  };
 
   useEffect(() => {
     void api.snapshot().then((s) => {
@@ -54,13 +63,13 @@ function App() {
     const offM = api.onMenu((cmd) => {
       if (cmd === 'show-settings') setSettingsOpen(true);
       if (cmd === 'show-export') setExportOpen(true);
-      if (cmd === 'add-service') animate(() => { setAssistant(false); setAdding(true); });
-      if (cmd === 'show-hub') animate(() => { setAssistant(false); setNav('hub'); });
-      if (cmd === 'show-assistant') animate(() => setAssistant(true));
-      if (cmd === 'show-overview') animate(() => { setAssistant(false); setNav('overview'); });
-      if (cmd === 'show-ai') animate(() => { setAssistant(false); setNav('ai'); });
-      if (cmd === 'show-setup') animate(() => { setAssistant(false); setNav('yoursetup'); });
-      if (cmd.startsWith('open-source:')) animate(() => { setAssistant(false); setFocus({ id: cmd.slice(12), n: Date.now() }); });
+      if (cmd === 'add-service') animate(() => { toMain(); setAdding(true); });
+      if (cmd === 'show-hub') animate(() => { toMain(); setNav('hub'); });
+      if (cmd === 'show-assistant') animate(() => openAssistant());
+      if (cmd === 'show-overview') animate(() => { toMain(); setNav('overview'); });
+      if (cmd === 'show-ai') animate(() => { toMain(); setNav('ai'); });
+      if (cmd === 'show-setup') animate(() => { toMain(); setNav('yoursetup'); });
+      if (cmd.startsWith('open-source:')) animate(() => { toMain(); setFocus({ id: cmd.slice(12), n: Date.now() }); });
     });
     return () => {
       off();
@@ -100,9 +109,9 @@ function App() {
   if (!snap) return <div className="window wide"><div className="sidebar drag" /><div className="column"><div className="empty">Checking this Mac…</div></div></div>;
 
   // Left part-way, it stays left (the Overview offers to carry on) until it's finished.
-  const showAssistant = assistant ?? (!snap.onboarding.done && !snap.onboarding.skippedAt);
+  const showAssistant = assistant ?? (!!snap.onboarding.open || (!snap.onboarding.done && !snap.onboarding.skippedAt));
   const leave = (patch: Partial<Snapshot['onboarding']>) => {
-    void api.onboarding(patch);
+    void api.onboarding({ ...patch, open: false });
     animate(() => {
       setAssistant(false);
       setNav('overview');
@@ -120,7 +129,7 @@ function App() {
       {showAssistant
         ? <Assistant snap={snap} onFinish={finish} onExit={exit} />
         : <MainWindow snap={snap} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen} nav={nav} setNav={setNav} focus={focus}
-          adding={adding} setAdding={setAdding} onAssistant={() => animate(() => setAssistant(true))} onExport={() => setExportOpen(true)} />}
+          adding={adding} setAdding={setAdding} onAssistant={() => animate(() => openAssistant())} onExport={() => setExportOpen(true)} />}
       {exportOpen && <ExportSheet snap={snap} onClose={() => setExportOpen(false)} />}
       <div className="toasts" data-testid="toasts">
         {toasts.map((t) => (

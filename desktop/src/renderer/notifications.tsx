@@ -15,7 +15,8 @@ export function notifyWords(c: NotifyCheck | undefined, now = new Date()): { tag
   const when = c ? `Checked ${ago(c.at, now)}.` : undefined;
   if (!c) return { tag: 'Not checked', on: null, say: 'Homecoming tells you when an export is ready, or when Claude needs you. Send a test to make sure macOS shows them.' };
   if (c.state === 'shown') return { tag: 'On', on: true, when, say: 'macOS shows them. To keep them on screen until you look, choose Alerts for Homecoming in Notification settings.' };
-  if (c.state === 'quiet') return { tag: 'Off', on: false, when, say: 'macOS keeps them without showing them, so you won\'t notice when Claude needs you. In Notification settings, allow Homecoming and choose Alerts.' };
+  if (c.state === 'quiet') return { tag: 'Off', on: false, when, say: 'macOS keeps them in Notification Center without showing them, so you won\'t notice when Claude needs you. In Notification settings, choose Alerts (or Banners) for Homecoming.' };
+  if (c.state === 'off') return { tag: 'Off', on: false, when, say: 'They\'re turned off for Homecoming, so you won\'t notice when Claude needs you. In Notification settings, turn on Allow Notifications for Homecoming and choose Alerts.' };
   if (c.state === 'missing') return { tag: 'Off', on: false, when, say: 'macOS didn\'t take the test notification. In Notification settings, allow Homecoming\'s notifications and choose Alerts.' };
   return { tag: 'Can\'t tell', on: null, when, say: 'Sent a test. If it didn\'t show, allow Homecoming\'s notifications in Notification settings and choose Alerts.' };
 }

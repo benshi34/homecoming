@@ -432,6 +432,22 @@ class NotificationTests(Sandbox):
         self.assertEqual(jsonout(bridge(["notification-shown"], self.home, self.corpus, stdin="{}",
                                         extra_env={"UMP_NOTIFICATIONS_DB": str(self.tmp / "missing/db")})), {"readable": False})
 
+    def test_notification_settings_for_this_app(self):
+        # usernoted's preferences: each app's flags. Bit 25 allows its notifications; bit 3 is banners, bit 4 alerts.
+        prefs = self.tmp / "usernoted.plist"
+        apps = [{"bundle-id": "org.homecoming.desktop", "flags": (1 << 25) | (1 << 3) | 0b110},
+                {"bundle-id": "org.homecoming.desktop.dev", "flags": (1 << 3) | 0b110},
+                {"bundle-id": "com.example.alerts", "flags": (1 << 25) | (1 << 4)},
+                {"bundle-id": "com.example.quiet", "flags": 1 << 25}]
+        prefs.write_bytes(plistlib.dumps({"apps": apps, "version": 1}, fmt=plistlib.FMT_BINARY))
+        ask = lambda b, p=prefs: jsonout(bridge(["notification-prefs", b], self.home, self.corpus, extra_env={"UMP_NOTIFICATION_PREFS": str(p)}))
+        self.assertEqual(ask("org.homecoming.desktop"), {"readable": True, "found": True, "allowed": True, "style": "banners"})
+        self.assertEqual(ask("org.homecoming.desktop.dev")["allowed"], False, "turned off")
+        self.assertEqual(ask("com.example.alerts")["style"], "alerts")
+        self.assertEqual(ask("com.example.quiet")["style"], "none", "allowed, kept in Notification Center only")
+        self.assertEqual(ask("org.never.asked"), {"readable": True, "found": False}, "macOS hasn't asked yet")
+        self.assertEqual(ask("org.homecoming.desktop", self.tmp / "missing.plist"), {"readable": False})
+
     def test_unreadable_without_access(self):
         d = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps([{"id": "spotify", "names": ["Spotify"], "since": "2026-10-05T00:00:00Z"}]),
                            extra_env={"UMP_NOTIFICATIONS_DB": str(self.tmp / "missing/db")}))

@@ -43,7 +43,7 @@ before(async () => {
   db.close();
   run = await launch(sandboxEnv(sb, {
     UMP_NO_AUTORUN: '1', UMP_AGENT_CMD: path.join(DESKTOP, 'test/fakes/fake_claude_browser.py'), FAKE_BROWSER_PLAN: file('plan.json'),
-    FAKE_BROWSER_LOG: file('agent.log'), UMP_NOTIFICATIONS_DB: file('notifications/db'), UMP_NOTIFY_CHECK_MS: '1500',
+    FAKE_BROWSER_LOG: file('agent.log'), UMP_NOTIFICATIONS_DB: file('notifications/db'), UMP_NOTIFY_CHECK_MS: '1500', UMP_NOTIFICATION_PREFS: file('usernoted.plist'),
   }));
   await until(run.page, 'first probe', (x) => !!x.probeTime);
 });
@@ -70,7 +70,7 @@ test('notifications: a test, macOS keeping it without showing it, the way to its
   await row.locator('button[data-action=check-notifications]').click();
   await until(p, 'the test sent', () => opened().includes('notify: Homecoming notifications are on'), 5_000);
   keptQuietly('Homecoming notifications are on');
-  await row.locator('.warn-text', { hasText: 'macOS keeps them without showing them' }).waitFor({ timeout: 10_000 });
+  await row.locator('.warn-text', { hasText: 'without showing them' }).waitFor({ timeout: 10_000 });
   assert.equal((await snap(p)).notifyCheck?.state, 'quiet');
   assert.equal(await row.locator('[data-testid=notifications-tag]').innerText(), 'Off');
   // Settings says so too.
@@ -92,6 +92,28 @@ test('notifications: a test, macOS keeping it without showing it, the way to its
   await settings({ agentExports: true });
   await until(p, 'the first one', () => opened().includes('notify: Homecoming will tell you here'), 5_000);
   await until(p, 'checked', (x) => x.notifyCheck?.state === 'missing', 10_000); // not in the record this time
+});
+
+// This app's switches in Notification settings, as usernoted keeps them: bit 25 allows them, bit 3 is banners.
+function notificationSettings(flags: number) {
+  fs.writeFileSync(file('usernoted.plist'), `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>apps</key><array><dict>
+    <key>bundle-id</key><string>com.github.Electron</string><key>flags</key><integer>${flags}</integer></dict></array></dict></plist>`);
+}
+
+test('notifications: Notification settings say they\'re on, though the test one has gone from Notification Center; and off, on coming back', async () => {
+  const p = run.page;
+  notificationSettings((1 << 25) | (1 << 3) | 0b110);
+  await act(p, '*', 'show-ai');
+  const row = p.locator('[data-testid=notifications-row]');
+  await row.locator('button[data-action=check-notifications]').click();
+  await until(p, 'on', (x) => x.notifyCheck?.state === 'shown', 10_000);
+  await row.locator('[data-testid=notifications-tag]', { hasText: /^On$/ }).waitFor({ timeout: 5_000 });
+  // Turned off in Notification settings, then back to the window: it says so, with no test needed.
+  notificationSettings((1 << 3) | 0b110);
+  await run.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('focus'));
+  await until(p, 'off', (x) => x.notifyCheck?.state === 'off', 10_000);
+  await row.locator('.warn-text', { hasText: 'turned off for Homecoming' }).waitFor({ timeout: 5_000 });
+  fs.rmSync(file('usernoted.plist'));
 });
 
 test('waiting for you: a notification at once, first in Needs You, then Claude carries on by itself', async () => {

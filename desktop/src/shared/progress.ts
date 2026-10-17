@@ -39,7 +39,9 @@ export interface Progress {
 
 // What the percentage is of: everything that applies, and an optional one once you've collected it.
 const counts = (v: SourceView) => v.section !== 'unavailable' && (!v.optional || v.section === 'done');
-const requested = (v: SourceView) => !!v.requestedAt || v.section === 'done' || v.section === 'working' || v.status.startsWith('Found');
+// In progress counts (an import, say), but not Claude still asking for it (queued, or at it): that's asked once it's done.
+const claudeAsking = (v: SourceView) => !v.requestedAt && v.actions.some((a) => a.id === 'agent-stop');
+const requested = (v: SourceView) => !!v.requestedAt || v.section === 'done' || (v.section === 'working' && !claudeAsking(v)) || v.status.startsWith('Found');
 
 function phase(id: PhaseId, title: string, members: SourceView[], isDone: (v: SourceView) => boolean, detail: (done: number, total: number) => string): Phase {
   const total = members.length;

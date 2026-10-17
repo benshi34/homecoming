@@ -32,6 +32,17 @@ describe('progress', () => {
     assert.ok(p.percent > 0 && p.percent < 1);
   });
 
+  test('Claude still asking for one (waiting its turn, or at it) isn\'t counted as asked until it has', () => {
+    const asking = (status: 'queued' | 'running', requestedAt?: string) => state((s) => {
+      Object.assign(s.settings, { aiOn: true, agentExports: true });
+      s.sources.instagram = { requestedAt, agent: { mode: 'request', status, at: hoursAgo(0) } };
+    });
+    const req = (st: ReturnType<typeof state>) => progress(views({ state: st }), NOW).phases.find((x) => x.id === 'request')!.done;
+    assert.equal(req(asking('queued')), 0, 'waiting its turn');
+    assert.equal(req(asking('running')), 0, 'Claude at it');
+    assert.equal(req(state((s) => (s.sources.instagram = { requestedAt: hoursAgo(0) }))), 1, 'asked');
+  });
+
   test('requests and arrivals', () => {
     const st = state((s) => {
       s.sources.discord = { requestedAt: hoursAgo(1) };

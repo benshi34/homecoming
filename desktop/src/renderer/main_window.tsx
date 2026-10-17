@@ -16,6 +16,7 @@ import { ExplorePage, exploreHome, exploreOpen, Num } from './explore.tsx';
 import { Hub, type HubFilter } from './hub.tsx';
 import { ArrivalBanners, RowCount, useArrivals, WaitClock } from './moments.tsx';
 import { AddServiceSheet, Detail, vt } from './parts.tsx';
+import { ClaudeWork } from './claude_work.tsx';
 import { NotificationsRow } from './notifications.tsx';
 import { RequestAllSheet } from './request_all.tsx';
 import { YourSetupPage } from './your_setup.tsx';
@@ -346,6 +347,9 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
           </div>
         </div>
       </div>
+
+      {/* What Claude is doing for you, and Stop: first, while it's at work. */}
+      <ClaudeWork snap={snap} onJump={onJump} />
 
       <Group title="Up next">
         {!snap.probeTime ? (

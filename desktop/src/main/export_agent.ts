@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Source } from '../shared/catalog.ts';
 import type { AgentMode, AgentStatus } from '../shared/types.ts';
+import { tieToApp } from './tied.ts';
 
 // The browser, and only the parts that act in it: not file_upload or upload_image (they'd send this Mac's files to a
 // page), not the console or network readers, not the recorder.
@@ -146,6 +147,7 @@ export function runAgent(o: { bin: string; prompt: string; resume?: string; repl
     '--permission-mode', 'dontAsk', '--settings', JSON.stringify({ permissions: { allow: BROWSER } }), ...(o.resume ? ['--resume', o.resume] : [])];
   // Only the model calls leave this Mac: no telemetry or error reports.
   const child = spawn(o.bin, args, { cwd: dir, env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  tieToApp(child);
   child.stdin.end(o.resume ? continuing(o.reply) : o.prompt);
   let session = o.resume;
   let text = '';

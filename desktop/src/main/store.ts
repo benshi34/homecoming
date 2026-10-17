@@ -48,7 +48,7 @@ export function normalize(raw: unknown): AppState {
     onboarding: r.onboarding && typeof r.onboarding === 'object'
       ? { done: !!r.onboarding.done, step: typeof r.onboarding.step === 'string' ? r.onboarding.step : undefined,
         chosen: Array.isArray(r.onboarding.chosen) ? r.onboarding.chosen.filter((x) => typeof x === 'string') : undefined,
-        skippedAt: typeof r.onboarding.skippedAt === 'string' ? r.onboarding.skippedAt : undefined }
+        skippedAt: typeof r.onboarding.skippedAt === 'string' ? r.onboarding.skippedAt : undefined, open: r.onboarding.open === true || undefined }
       : { done: false },
     identityDismissed: Array.isArray(r.identityDismissed) ? r.identityDismissed.filter((x) => typeof x === 'string') : [],
     services: Array.isArray(r.services) ? r.services.filter((x) => x && typeof x.id === 'string' && typeof x.name === 'string' && typeof x.folder === 'string')

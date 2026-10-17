@@ -19,6 +19,7 @@ import { NotificationsBox } from './notifications.tsx';
 import { RequestAllSheet } from './request_all.tsx';
 import { requestPlan } from '../shared/request_all.ts';
 import { Welcome } from './welcome.tsx';
+import { ClaudeWork } from './claude_work.tsx';
 
 interface PageSpec {
   body: ReactNode;
@@ -80,6 +81,8 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
           <div className={`page ${page.wide ? 'wide' : ''}`}>{page.body}</div>
         </div>
       </div>
+      {/* Claude at work (asked for on an earlier page): how it's going, what it needs from you, and Stop. */}
+      <div className="assistant-work"><ClaudeWork snap={snap} compact /></div>
       <div className="footer-bar">
         {i > 0 && <Button onClick={back} testAction="assistant-back">Back</Button>}
         {step.kind !== 'done' && <Button kind="plain" onClick={onExit} testAction="assistant-exit">Skip Setup Assistant</Button>}

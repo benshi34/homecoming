@@ -43,7 +43,7 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
         <p data-testid="ra-fresh">First, Claude opens the {fresh === 1 ? 'site' : `${fresh} sites`} it hasn't worked on before, so {B} can ask you to allow Claude on {fresh === 1 ? 'it' : 'each'}: stay near it for a minute or two and choose Allow, then it goes on by itself.</p>
       )}
 
-      {(snap.notifyCheck?.state === 'quiet' || snap.notifyCheck?.state === 'missing') && plan.claude.length + plan.signIn.length > 0 && (
+      {['quiet', 'off', 'missing'].includes(snap.notifyCheck?.state ?? '') && plan.claude.length + plan.signIn.length > 0 && (
         <div style={{ marginTop: 10 }} data-testid="ra-notifications"><Banner kind="warning">
           macOS isn't showing Homecoming's notifications, so you won't see when Claude needs you. In Notification settings, allow Homecoming and choose Alerts.
           <div style={{ marginTop: 6 }}><Button size="small" onClick={() => void api.action('*', 'open-app-notifications')} testAction="ra-open-notifications">Open Notification Settings</Button></div>

@@ -347,11 +347,22 @@ test('Back slides back and keeps what was entered', async () => {
   assert.deepEqual(run.errors, []);
 });
 
-test('after a restart the main window comes first', async () => {
+test('opened again, a restart (as Full Disk Access\'s Quit & Reopen does) comes back to it, on the same page', async () => {
+  assert.equal((await snap(run.page)).onboarding.open, true);
+  await run.close();
+  run = await launch(env, { assistant: true });
+  await run.page.locator('[data-testid=app][data-mode=assistant]').waitFor();
+  assert.equal(await step(), 'keep');
+});
+
+test('once it\'s left, after a restart the main window comes first', async () => {
+  await run.page.locator('button[data-action=assistant-exit]').click();
+  await run.page.locator('[data-testid=app][data-mode=main]').waitFor();
   await run.close();
   run = await launch(env, { assistant: true });
   await run.page.locator('[data-testid=app][data-mode=main]').waitFor();
   const s = await until(run.page, 'probe', (x) => !!x.probeTime);
   assert.equal(s.onboarding.done, true);
+  assert.ok(!s.onboarding.open, 'left: not opened again');
   assert.equal(find(s, 'discord').section, 'done');
 });

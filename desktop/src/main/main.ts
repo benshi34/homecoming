@@ -18,6 +18,7 @@ import { inboxesFor, inboxUrl } from '../shared/inbox.ts';
 import { agentBrowser, agentReady, inboxesOn, pageBrowser, setupEnv, type AgentReady } from '../shared/setup.ts';
 import type { AgentMode, AgentState, AppState, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats } from '../shared/types.ts';
 import { Ask, findClaude, findCodex, addShellPath } from './ask.ts';
+import { tieToApp } from './tied.ts';
 import { Bridge } from './bridge.ts';
 import { exploreRunner } from './explore.ts';
 import { agentPrompt, type AgentOutcome, type AgentRun, runAgent, visitPrompt } from './export_agent.ts';
@@ -509,6 +510,7 @@ function snapshot(): Snapshot {
     sources: views, summary, next: probe ? nextUp(views) : null, jobs,
     settings: settingsView(), probeTime: probe?.time, corpusPath: P.corpus, readOnly: READONLY, loaded: !!stats, demo: DEMO, appleMail: mailPlaces().appleMail,
     notifyCheck: store.state.notifyCheck, label: LABEL, agentInstalled: agentCan(),
+    claudeWork: { visit: visitNow, batch: batch ? { total: batch.ids.length, done: batch.results.size } : null },
     identity: probe?.identity ?? null, identitySuggestion: probe?.identity_suggestion ?? null,
     onboarding: store.state.onboarding, accent: accentColor(), identityCandidates: candidates, identityCandidatesReady: candidatesReady, identityDismissed: store.state.identityDismissed,
     services: store.state.services, discovery: newDiscoveries(), mappings: mappings(), claude: claudeKind(),
@@ -577,6 +579,7 @@ function agentSignIn(harness: 'claude-code' | 'codex'): { ok: boolean; error?: s
     Object.assign(env, { BROWSER: path.join(dir, 'open'), HOMECOMING_SIGN_IN_PAGE: pageFile });
   }
   const p = spawn(bin, harness === 'codex' ? ['login'] : ['auth', 'login', '--claudeai'], { cwd: os.tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'] });
+  tieToApp(p);
   signInProcs.set(harness, p);
   const opened = (url: string) => {
     st.url = url;
@@ -1484,18 +1487,18 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       store.update(() => {
         for (const id of ids) delete store.source(id).noChecks;
       });
-      const start = () => ids.forEach((id) => startAgent(id, 'request'));
       // Sites Claude hasn't worked on yet: each opened once first, while you're there to say yes to each, then the rest
-      // runs by itself. Not while Claude is at something else (its runs ask as they go, then).
+      // runs by itself (the ones not stopped meanwhile). Not while Claude is at something else (its runs ask as they go, then).
       const fresh = ids.filter((id) => !store.state.sources[id]?.siteAllowed && urlFor(BY_ID[id]));
-      if (!fresh.length || agentRun || visiting || agentQueue.length) start();
+      if (!fresh.length || agentRun || visiting || agentQueue.length) ids.forEach((id) => startAgent(id, 'request'));
       else {
         const now = new Date().toISOString();
         store.update(() => {
           for (const id of ids) store.source(id).agent = { mode: 'request', status: 'queued', at: now, step: `Waiting: Claude opens each site first, so ${browserWord()} can ask you to allow it` };
         });
+        for (const id of ids) afterVisit.add(id);
         push();
-        void visitSites(fresh).finally(start);
+        void visitSites(fresh).finally(() => ids.filter((id) => afterVisit.delete(id)).forEach((id) => startAgent(id, 'request')));
       }
       return { ok: true, ids };
     }
@@ -1571,6 +1574,10 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
     }
     case 'agent-stop':
       stopAgent(sourceId);
+      break;
+    case 'agent-stop-all': // everything Claude is doing or about to: the first look at each site too
+      for (const id of [...afterVisit, ...agentQueue.map((q) => q.sourceId), ...(agentRun ? [agentRun.sourceId] : [])]) stopAgent(id);
+      visiting?.stop();
       break;
     case 'agent-dismiss':
       // You'll do it yourself: kept a while, so the page can say what's next. A look Claude was making counts as made.
@@ -1747,6 +1754,7 @@ function chromeStatus(): Promise<'connected' | 'not connected' | 'no claude code
     const cwd = fs.mkdtempSync(path.join(app.getPath('temp'), 'ump-chrome-'));
     const p = spawn(bin, ['-p', '--chrome', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }),
       '--setting-sources', 'project', '--tools', '', '--no-session-persistence'], { cwd, stdio: ['pipe', 'pipe', 'ignore'], env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } });
+    tieToApp(p);
     let buf = '';
     let done = false;
     const finish = (r: 'connected' | 'not connected') => {
@@ -1802,18 +1810,33 @@ const expiresAt = (id: string) => linkExpires(BY_ID[id], store.state.sources[id]
 // Before Ask for Everything's runs: each service's site Claude hasn't worked on, opened once (nothing done on it), so
 // Claude in the browser asks you to allow each now, in the first minute or two, with a notification for each, instead
 // of one at a time later with nobody there to say yes. The ones it got onto aren't asked about again.
+// What it's doing (the window shows it, with what it's waiting for you to do), and Ask for Everything's that start after.
 let visiting: AgentRun | null = null;
+let visitNow: { sites: string[]; step?: string; waiting?: string } | null = null;
+const afterVisit = new Set<string>();
 async function visitSites(ids: string[]) {
   const bin = agentBin();
   if (!bin) return;
   const pages = ids.map((id) => ({ id, name: BY_ID[id].name, url: urlFor(BY_ID[id])! }));
   log(`Claude opens ${pages.length === 1 ? 'one site' : `${pages.length} sites`} first, so ${browserWord()} can ask you to allow it on each.`);
+  visitNow = { sites: pages.map((p) => p.name) };
   const run = runAgent({ bin, prompt: visitPrompt(pages, browserWord()), model: store.state.ask?.models?.['claude-code'] || undefined, log, timeoutMs: 15 * 60_000,
-    onStep: (line) => log(`Claude: ${line}`),
-    onWaiting: (what) => tell('Claude is waiting for you', `${what} Then it asks for your exports by itself.`, undefined, true) });
+    onStep: (line) => {
+      log(`Claude: ${line}`);
+      if (visitNow) visitNow = { ...visitNow, step: line, waiting: undefined };
+      push();
+    },
+    onWaiting: (what) => {
+      if (visitNow) visitNow = { ...visitNow, waiting: what };
+      push();
+      tell('Claude is waiting for you', `${what} Then it asks for your exports by itself.`, undefined, true);
+    } });
   visiting = run;
+  push();
   const out = await run.done;
   visiting = null;
+  visitNow = null;
+  push();
   if (quitting) return;
   const host = (u: string) => {
     try {
@@ -1882,6 +1905,12 @@ async function watchSignIns() {
 }
 
 function stopAgent(sourceId: string, quiet = false) {
+  // Waiting for Claude's first look at each site: it won't start, and with none left waiting, the look stops too.
+  if (afterVisit.delete(sourceId)) {
+    stopped(sourceId, quiet);
+    if (!afterVisit.size) visiting?.stop();
+    push();
+  }
   const i = agentQueue.findIndex((q) => q.sourceId === sourceId);
   if (i >= 0) {
     agentQueue.splice(i, 1);
@@ -2119,24 +2148,51 @@ async function checkNotifications(first = false): Promise<NotifyCheck['state']> 
   const title = first ? 'Homecoming will tell you here' : 'Homecoming notifications are on';
   const since = new Date(Date.now() - 2000).toISOString();
   tell(title, first ? 'When Claude needs you, or an export is ready, it says so here.' : 'This is how Homecoming tells you when Claude needs you, or an export is ready.');
-  // macOS can take a few seconds to file it (the first after the app starts, longer): watched for up to 10, done as
-  // soon as it's been shown.
+  // Watched for up to 10 seconds (macOS asks the first time, and you answer), done as soon as they're shown. What
+  // Notification settings say for this app is the answer, once macOS has asked. Before that, or if they can't be read,
+  // whether macOS put this one on screen: macOS can take a few seconds to file it, and drops it once it's dismissed.
   let state: NotifyCheck['state'] = 'unknown';
   const until = Date.now() + Number(process.env.UMP_NOTIFY_CHECK_MS || 10_000);
   try {
     for (;;) {
       await new Promise((r) => setTimeout(r, 1000));
-      const r = await bridge.json<{ readable: boolean; found?: boolean; presented?: boolean }>(['notification-shown'], JSON.stringify({ title, since }));
-      state = !r.readable ? 'unknown' : !r.found ? 'missing' : r.presented ? 'shown' : 'quiet';
-      if (state === 'shown' || state === 'unknown' || Date.now() >= until) break;
+      const prefs = await notifyPrefs();
+      if (prefs) state = prefs;
+      else {
+        const r = await bridge.json<{ readable: boolean; found?: boolean; presented?: boolean }>(['notification-shown'], JSON.stringify({ title, since }));
+        state = !r.readable ? 'unknown' : !r.found ? 'missing' : r.presented ? 'shown' : 'quiet';
+      }
+      if (state === 'shown' || (state === 'unknown' && !prefs) || Date.now() >= until) break;
     }
   } catch (e) {
     log(`Couldn't check notifications: ${(e as Error).message}`);
   }
-  store.update((s) => (s.notifyCheck = { at: new Date().toISOString(), state }));
-  log(`Notifications: ${state === 'shown' ? 'shown' : state === 'quiet' ? 'macOS keeps them without showing them' : state === 'missing' ? 'macOS didn\'t take the test one' : 'can\'t tell'}.`);
-  push();
+  setNotifyState(state);
   return state;
+}
+
+function setNotifyState(state: NotifyCheck['state']) {
+  store.update((s) => (s.notifyCheck = { at: new Date().toISOString(), state }));
+  log(`Notifications: ${{ shown: 'shown', quiet: 'macOS keeps them without showing them', off: 'turned off in Notification settings',
+    missing: 'macOS didn\'t take the test one', unknown: 'can\'t tell' }[state]}.`);
+  push();
+}
+
+// This app's switches in Notification settings (py/bridge.py notification-prefs): off, on without showing them (quiet),
+// or shown as banners or alerts. null before macOS has asked, or if they can't be read.
+async function notifyPrefs(): Promise<'shown' | 'quiet' | 'off' | null> {
+  const id = bundleId();
+  if (!id) return null;
+  const r = await bridge.json<{ readable: boolean; found?: boolean; allowed?: boolean; style?: string }>(['notification-prefs', id]);
+  return !r.readable || !r.found ? null : !r.allowed ? 'off' : r.style === 'none' ? 'quiet' : 'shown';
+}
+
+// Back in the app (from Notification settings, say): what they say now, once there's been a check to update.
+let prefsLookedAt = 0;
+function lookAtNotifyPrefs() {
+  if (!store.state.notifyCheck || Date.now() - prefsLookedAt < 3000) return;
+  prefsLookedAt = Date.now();
+  void notifyPrefs().then((s) => s && s !== store.state.notifyCheck?.state && setNotifyState(s)).catch(() => {});
 }
 
 // This app's bundle id, for its own page in Notification settings (Homecoming, or its build run from source).
@@ -2335,6 +2391,7 @@ function createWindow() {
       void refresh();
       void checkSignals();
     }
+    lookAtNotifyPrefs();
   });
   win.on('closed', () => (win = null));
 }
@@ -2517,6 +2574,8 @@ if (!app.requestSingleInstanceLock()) {
       notify('Homecoming is still running', 'It\'s in the menu bar, watching for your exports. Quit it from the menu bar icon.');
     }
   });
+  // Told to stop with a signal (kill, or a logout's last resort): quit as from the menu, so what's running is stopped.
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(sig, () => app.quit());
   app.on('before-quit', () => {
     quitting = true;
     queue.cancelAll(); // don't leave a connector (or iLEAPP under it) running without the app

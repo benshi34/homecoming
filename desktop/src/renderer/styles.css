@@ -1598,3 +1598,25 @@ button.superlative:hover { transform: translateY(-2px); box-shadow: var(--card-s
 /* Claude Code's sign-in code, pasted back: in AI Settings' row or Ask's note. */
 .paste-code { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .paste-code input { width: 240px; font: inherit; font-size: 12px; padding: 3px 7px; border-radius: 5px; border: 1px solid var(--separator); background: var(--field, transparent); color: inherit; }
+
+/* Claude at work (claude_work.tsx): on the Overview, and as a strip in the Setup Assistant. */
+.claude-work { background: var(--group-box); border-radius: 10px; box-shadow: 0 0 0 0.5px var(--separator); padding: 12px 14px; margin: 14px 0 4px; }
+.claude-work.compact { margin: 0; padding: 8px 12px; border-radius: 8px; }
+.assistant-work { padding: 0 24px 8px; }
+.assistant-work:empty { display: none; }
+.cw-head { display: flex; align-items: flex-start; gap: 10px; }
+.cw-mark { padding-top: 2px; }
+.cw-text { flex: 1; min-width: 0; }
+.cw-title { font-weight: 600; font-size: 13px; }
+.cw-sub, .cw-step { font-size: 12px; color: var(--secondary); margin-top: 2px; }
+.cw-step { font-style: italic; }
+.cw-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.cw-progress { display: flex; align-items: center; gap: 8px; margin: 8px 0 0 26px; font-size: 11px; color: var(--secondary); }
+.cw-progress .bar { flex: 1; }
+.cw-rows { margin: 8px 0 0 26px; border-top: 0.5px solid var(--separator); }
+.cw-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 0.5px solid var(--separator); }
+.cw-row:last-child { border-bottom: none; }
+.cw-row.clickable { cursor: default; }
+.cw-row-main { flex: 1; min-width: 0; }
+.cw-row-name { font-size: 12px; font-weight: 500; }
+.cw-row-status { font-size: 11px; color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

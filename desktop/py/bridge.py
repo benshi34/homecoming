@@ -778,6 +778,28 @@ def notification_shown(title, since):
     return {"readable": True, "found": False}
 
 
+def notification_prefs(bundle):
+    """This app's switches in Notification settings, as macOS keeps them: whether its notifications are allowed, and
+    their style (none: kept in Notification Center without showing; banners; alerts). From usernoted's preferences
+    (in its group container since macOS 15; com.apple.ncprefs before), each app's flags: bit 25 allows them, bit 3 is
+    banners and bit 4 alerts. {"readable": False} if they can't be read, {"found": False} before macOS has asked."""
+    paths = [Path(os.environ["UMP_NOTIFICATION_PREFS"])] if os.environ.get("UMP_NOTIFICATION_PREFS") else [
+        LIB / "Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist",
+        LIB / "Preferences/com.apple.ncprefs.plist"]
+    for p in paths:
+        try:
+            prefs = plistlib.loads(p.read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        for a in prefs.get("apps") or []:
+            if isinstance(a, dict) and a.get("bundle-id") == bundle and isinstance(a.get("flags"), int):
+                f = a["flags"]
+                return {"readable": True, "found": True, "allowed": bool(f >> 25 & 1),
+                        "style": "alerts" if f >> 4 & 1 else "banners" if f >> 3 & 1 else "none"}
+        return {"readable": True, "found": False}
+    return {"readable": False}
+
+
 def _text(x):
     """A notification field: usually a string, sometimes a list (a localized format and its arguments)."""
     if isinstance(x, list):
@@ -1770,6 +1792,8 @@ def main(argv):
     elif cmd == "notification-shown":
         a = json.loads(sys.stdin.read() or "{}")
         out(notification_shown(a.get("title", ""), a.get("since", "1970-01-01T00:00:00+00:00")))
+    elif cmd == "notification-prefs":
+        out(notification_prefs(rest[0] if rest else ""))
     elif cmd == "export-signals":
         out(export_signals(json.loads(sys.stdin.read() or "[]")))
     elif cmd == "fix-shell-retention":
