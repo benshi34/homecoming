@@ -27,11 +27,12 @@ What the app finds on your Mac (your browsers, Mail's accounts, your region) is 
 
 Everything Homecoming collects stays on your Mac, in your library: the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what iLEAPP reads from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
 
-Only three things ever leave your Mac, and each is something you start:
+Only four things ever leave your Mac, and each is something you start:
 
 - **Asking a question.** Ask sends the model you pick (Claude through Claude Code, or a model through Codex) what it looks up to answer you: the text with secrets such as passwords and keys blanked out, and any photo it looks at as it is. Before a company's model is used for the first time, the app shows what that company keeps and how to turn off training on your data, and waits for you. You can also pick a model that runs on your Mac (through Codex, with Ollama or LM Studio).
 - **An export the app doesn't know yet.** It can ask Claude how that export is laid out. The request holds file and field names, plus one example value per field only if you tick that box, and you see it and approve it before it's sent. Without the Claude Code CLI or an API key, you copy the request into any Claude chat yourself.
 - **Requesting your data.** Download pages open in your own browser, signed in as you, like any other site you visit.
+- **Do It for Me**, if you turn it on: Claude Code works in your browser through the Claude in Chrome extension, on each service's export page and, if you let it, in the inboxes you pick, for the "your data is ready" email. What's on those pages goes to Anthropic, as when you use Claude in Chrome yourself.
 
 There's no analytics, no account, no update check and no telemetry.
 
@@ -41,7 +42,7 @@ It reads, and changes only what you tell it to:
 
 - **Photos and files in iCloud, read only:** photos others shared with you (shared albums, Shared with You, a Shared Library) are kept, but apart from yours, so where they were taken isn't counted as where you were. Documents and files that are only in iCloud ("Optimize Mac Storage") are listed by name, not downloaded.
 - **Mail, read only:** every account in Mail on this Mac is read into your library, like Messages and Notes. An email you also have from an export (Gmail in Google Takeout, say) is kept once.
-- **Notifications, read only:** while an export is on its way, the app looks for the service's "your data is ready" notification on this Mac, and its email in Mail. Nothing else in your notifications is kept. Either can be turned off in Your Setup.
+- **Notifications, read only:** while an export is on its way, the app looks for the service's "your data is ready" notification on this Mac, and its email in Mail. Nothing else in your notifications is kept. Either can be turned off in General.
 - **Downloads you're expecting** move from `~/Downloads` into your library's `imports/` folder when they arrive. Files on another drive are copied, not moved. Anything you weren't expecting waits for a yes.
 - **Two settings, only if you click Keep:** Claude Code's `cleanupPeriodDays` in `~/.claude/settings.json`, so it stops deleting transcripts after 30 days, and a few lines at the end of `~/.zshrc`, marked `# Added by Homecoming`, so Terminal keeps every command and when it ran.
 - **Settings in other apps:** Messages, Safari, your iPhone and Google can delete old history. For each one, the app shows you how to keep it, and you change it there yourself.
@@ -155,7 +156,7 @@ npm ci
 npm start
 ```
 
-`npm ci` installs exactly the versions listed in `desktop/package-lock.json` and checks each download against its recorded hash. Setup downloads those packages and the two Python packages, and the first `npm start` downloads Electron itself (about 300 MB unpacked), checked against the checksums that come with it. After that, nothing is downloaded.
+`npm ci` installs exactly the versions listed in `desktop/package-lock.json` and checks each download against its recorded hash. `pip` downloads the two Python packages, and the first `npm start` downloads Electron itself (about 300 MB unpacked), checked against the checksums that come with it. After that, nothing is downloaded.
 
 To use a different Python 3.14, start the app with `UMP_PYTHON=/path/to/python3 npm start`.
 
