@@ -12,7 +12,8 @@ from common import HOME, LIB, Writer, from_unix, snapshot_sqlite
 
 AVENUE = ("Local JSONL. Claude Code: ~/.claude/projects/<cwd-slug>/<session>.jsonl (CLI and the desktop "
           "app's Code tab share this). Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, thread names in "
-          "~/.codex/session_index.jsonl. Cursor: ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb, "
+          "~/.codex/session_index.jsonl; a forked session's file (forked_from_id) begins with a copy of its parent's "
+          "conversation, kept once, from the parent's own file. Cursor: ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb, "
           "table cursorDiskKV: composerData:<id> (conversation order in fullConversationHeadersOnly, or the whole "
           "conversation in older versions) and bubbleId:<composer>:<bubble> (type 1 = you, 2 = the assistant). "
           "VS Code chat (Copilot and others): User/workspaceStorage/*/chatSessions/*.json, or *.jsonl change logs "
@@ -71,6 +72,40 @@ def claude_code(w):
                 w.add(id=r["uuid"], kind="ai_turn", author="me", is_me=True, text=text, **base)
 
 
+def _codex_file(f):
+    """A rollout file: its session (the first session_meta: a fork's file has its parent's after it), the session it
+    was forked from, when it started, where it ran, and its messages in order, as (role, text, timestamp)."""
+    sid = cwd = forked = start = None
+    msgs = []
+    for l in f.open():
+        r = json.loads(l)
+        p = r.get("payload") or {}
+        if r.get("type") == "session_meta":
+            if sid is None:
+                sid, cwd, forked, start = p.get("id"), p.get("cwd"), p.get("forked_from_id"), r.get("timestamp")
+            continue
+        if r.get("type") != "response_item" or p.get("type") != "message" or p.get("role") not in ("user", "assistant"):
+            continue
+        text = _text(p.get("content"))
+        if text.strip() and not text.lstrip().startswith(NOISE_PREFIXES):
+            msgs.append((p["role"], text, r.get("timestamp")))
+    return sid or f.stem, cwd, forked, start, msgs
+
+
+def _copied(msgs, earlier, until=None):
+    """How many of msgs' first messages are a copy of earlier ones (a fork's of its parent's conversation, a resumed
+    session's of its own): each turns up next in earlier, by role and text. The copy can leave some out. Only what
+    was said before until counts, so the session's own first message isn't taken for one its parent said later."""
+    earlier = [m for m in earlier if not (until and m[2] and m[2] > until)]
+    j = k = 0
+    while k < len(msgs):
+        j = next((i for i in range(j, len(earlier)) if earlier[i][:2] == msgs[k][:2]), None)
+        if j is None:
+            break
+        j, k = j + 1, k + 1
+    return k
+
+
 def codex(w):
     names = {}
     idx = HOME / ".codex/session_index.jsonl"
@@ -78,23 +113,25 @@ def codex(w):
         for l in idx.open():
             d = json.loads(l)
             names[d["id"]] = d.get("thread_name")
-    for f in sorted((HOME / ".codex/sessions").rglob("rollout-*.jsonl")):
-        sid, cwd, n = None, None, 0
-        for l in f.open():
-            r = json.loads(l)
-            p = r.get("payload") or {}
-            if r.get("type") == "session_meta":
-                sid, cwd = p.get("id"), p.get("cwd")
-            if r.get("type") != "response_item" or p.get("type") != "message" or p.get("role") not in ("user", "assistant"):
-                continue
-            text = _text(p.get("content"))
-            if not text.strip() or text.lstrip().startswith(NOISE_PREFIXES):
-                continue
-            n += 1
-            me = p["role"] == "user"
-            w.add(id=f"codex:{sid or f.stem}:{n}", kind="ai_turn", ts=r.get("timestamp"), author="me" if me else "codex",
-                  is_me=me, thread=sid or f.stem, thread_name=names.get(sid), text=text,
-                  meta={"cwd": cwd, "tool": "codex"})
+    files = [(f, *_codex_file(f)) for f in sorted((HOME / ".codex/sessions").rglob("rollout-*.jsonl"))]
+    # A forked session's file starts with a copy of its parent's conversation, read already from the parent's own
+    # file: those are skipped, and its own messages are numbered from 1. Parents are read first. A session in more
+    # than one file (resumed) goes on from what's been read. The n-th message of a session is codex:<session>:<n>.
+    sessions = {sid for _, sid, *_ in files}
+    said = {}  # session -> its messages read so far, (role, text, timestamp)
+    done = set()
+    while len(done) < len(files):
+        ready = [x for x in files if x[0] not in done and (not x[3] or x[3] not in sessions or x[3] in said or x[3] == x[1])]
+        for f, sid, cwd, forked, start, msgs in ready or [x for x in files if x[0] not in done]:
+            done.add(f)
+            skip = _copied(msgs, said.get(forked, []), start) if forked and forked != sid else 0
+            mine = said.setdefault(sid, [])
+            rest = msgs[skip:]
+            for role, text, ts in rest[_copied(rest, mine, start):]:
+                mine.append((role, text, ts))
+                me = role == "user"
+                w.add(id=f"codex:{sid}:{len(mine)}", kind="ai_turn", ts=ts, author="me" if me else "codex",
+                      is_me=me, thread=sid, thread_name=names.get(sid), text=text, meta={"cwd": cwd, "tool": "codex"})
 
 
 CURSOR_DB = LIB / "Application Support/Cursor/User/globalStorage/state.vscdb"

@@ -1,12 +1,13 @@
-// The hub: every service the app can collect from, so nobody has to remember what they signed up for. The
-// built-in accounts, the services you added, and the ~2,700 in data/services.json, each once, by kind, with
-// what your mail, browsing and apps say about it.
+// The hub: every source the app can collect from, so nobody has to remember what they signed up for. This Mac's and
+// the iPhone's, the built-in accounts, the services you added, and the ~2,700 in data/services.json, each once, by
+// kind, with what your mail, browsing and apps say about it. A source you skipped, or that isn't on this Mac, is here
+// with its state, to include again.
 
 import { BY_ID, CATALOG } from './catalog.ts';
 import type { DirectoryEntry, Discovery, FoundService, ServiceEntry, SourceView } from './types.ts';
 
 export const CATEGORIES: { id: string; label: string }[] = [
-  { id: 'social', label: 'Social networks and forums' }, { id: 'messaging', label: 'Messaging' },
+  { id: 'mac', label: 'This Mac and your iPhone' }, { id: 'social', label: 'Social networks and forums' }, { id: 'messaging', label: 'Messaging' },
   { id: 'accounts', label: 'Accounts and email' }, { id: 'shopping', label: 'Shopping' }, { id: 'food', label: 'Food and delivery' },
   { id: 'travel', label: 'Travel and getting around' }, { id: 'money', label: 'Money' }, { id: 'video', label: 'Video and TV' },
   { id: 'music', label: 'Music and podcasts' }, { id: 'games', label: 'Games' }, { id: 'reading', label: 'Reading, writing and news' },
@@ -33,7 +34,9 @@ export interface HubRow {
   domain?: string; // the one shown
   domains?: string[]; // every one it has, for search
   sourceId?: string; // built-in or added: the source it is
+  group?: string; // its kind of source, for its icon: this Mac's, the iPhone's, or a service's (the default)
   section?: SourceView['section'];
+  needsYou?: boolean;
   status?: string;
   found?: FoundService; // evidence from your data
   exportKnown: boolean;
@@ -64,22 +67,29 @@ export function siteFor(name: string, domains: string[], site?: string): string 
 export function hubRows(dir: DirectoryEntry[], views: SourceView[], services: ServiceEntry[], discovery: Discovery | null): HubRow[] {
   const view = new Map(views.map((v) => [v.id, v]));
   const builtIns = CATALOG.filter((s) => (s.group === 'web' || s.group === 'guided') && !s.custom && BUILTIN_CATEGORY[s.id]);
+  // This Mac's and the iPhone's, with the guided ones about them (Messages in iCloud, the iPhone's contacts).
+  const onMac = CATALOG.filter((s) => s.group === 'mac' || s.group === 'iphone' || (s.group === 'guided' && !s.custom && !BUILTIN_CATEGORY[s.id]));
   const builtInDomains = new Set(builtIns.flatMap((s) => s.domains ?? []));
   const added = new Map(services.map((e) => [e.slug, e]));
   const strength = new Map((discovery?.found ?? []).map((f, i) => [f.slug, i]));
   const found = new Map((discovery?.found ?? []).map((f) => [f.slug, f]));
   const bySlug = new Map(dir.map((e) => [e.slug, e]));
   const rows: HubRow[] = [];
+  for (const s of onMac) {
+    const v = view.get(s.id);
+    rows.push({ key: s.id, name: s.name, category: 'mac', state: 'built-in', sourceId: s.id, group: s.group, section: v?.section, needsYou: v?.needsYou,
+      status: v?.status, exportKnown: false, popular: true, rank: -2 });
+  }
   for (const s of builtIns) {
     const v = view.get(s.id);
     rows.push({ key: s.id, name: s.name, category: BUILTIN_CATEGORY[s.id], state: 'built-in', sourceId: s.id, domain: s.domains?.[0],
-      section: v?.section, status: v?.status, exportKnown: true, popular: true, rank: -2 });
+      section: v?.section, needsYou: v?.needsYou, status: v?.status, exportKnown: true, popular: true, rank: -2 });
   }
   for (const e of services) {
     const v = view.get(e.id);
     const d = bySlug.get(e.slug);
     rows.push({ key: e.id, name: e.name, category: KNOWN.has(d?.category ?? '') ? d!.category! : 'other', state: 'added', slug: e.slug,
-      sourceId: BY_ID[e.id] ? e.id : undefined, domain: e.domains[0], section: v?.section, status: v?.status,
+      sourceId: BY_ID[e.id] ? e.id : undefined, domain: e.domains[0], section: v?.section, needsYou: v?.needsYou, status: v?.status,
       exportKnown: !!(e.url || d?.export?.url), popular: !!d?.popular, rank: -1 });
   }
   for (const e of dir) {

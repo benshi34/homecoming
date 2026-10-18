@@ -13,6 +13,7 @@ export interface ExploreProgress {
   done?: number;
   total?: number | null;
   waiting?: string;
+  changed?: boolean; // key "*": the library changed, so what was built before is out of date
 }
 export const isError = (x: unknown): x is ExploreError => !!x && typeof x === 'object' && 'error' in x;
 

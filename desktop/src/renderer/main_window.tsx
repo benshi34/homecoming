@@ -5,8 +5,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useStat
 import { ago, count } from '../shared/format.ts';
 import { type Phase, progress, readyIn, wayTag } from '../shared/progress.ts';
 import { requestPlan } from '../shared/request_all.ts';
-import { READ_ONLY_NOTE } from '../shared/status.ts';
-import { countFor, listFor, listSummary, type Nav, navOf } from '../shared/lists.ts';
+import { countFor, listFor, listSummary, type Nav, navOf, needsYou, STAGE_WORD, todoBadge } from '../shared/lists.ts';
 import type { Snapshot, SourceView } from '../shared/types.ts';
 import { AiPage, AskAiGate } from './ai.tsx';
 import { api } from './api.ts';
@@ -17,22 +16,21 @@ import { Hub, type HubFilter } from './hub.tsx';
 import { ArrivalBanners, RowCount, useArrivals, WaitClock } from './moments.tsx';
 import { AddServiceSheet, Detail, vt } from './parts.tsx';
 import { ClaudeWork } from './claude_work.tsx';
-import { NotificationsRow } from './notifications.tsx';
 import { RequestAllSheet } from './request_all.tsx';
+import { GeneralPage } from './general.tsx';
 import { YourSetupPage } from './your_setup.tsx';
-import { AiMark, animate, Button, Checkmark, Group, GroupRow, ProgressBar, ProgressRing, Sheet, Spinner, Toggle } from './ui.tsx';
+import { AiMark, animate, Button, Checkmark, Group, GroupRow, ProgressBar, ProgressRing, Sheet, Spinner } from './ui.tsx';
 
 export type { Nav } from '../shared/lists.ts';
 
 const NAV: { id: Nav; label: string; glyph: string }[] = [
-  { id: 'needs', label: 'Needs You', glyph: 'bell' },
+  { id: 'todo', label: 'To Do', glyph: 'checklist' },
   { id: 'working', label: 'In Progress', glyph: 'arrows' },
   { id: 'done', label: 'Collected', glyph: 'checkCircle' },
-  { id: 'unavailable', label: 'Not Collecting', glyph: 'minusCircle' },
 ];
 
-export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, onExport, nav, setNav, adding, setAdding, focus }: {
-  snap: Snapshot; settingsOpen: boolean; setSettingsOpen: (v: boolean) => void; onAssistant: () => void; onExport: () => void; nav: Nav; setNav: (n: Nav) => void;
+export function MainWindow({ snap, onAssistant, onExport, nav, setNav, adding, setAdding, focus }: {
+  snap: Snapshot; onAssistant: () => void; onExport: () => void; nav: Nav; setNav: (n: Nav) => void;
   adding: boolean; setAdding: (v: boolean) => void; focus?: { id: string; n: number } | null;
 }) {
   const [selected, setSelected] = useState<Partial<Record<Nav, string>>>({});
@@ -53,7 +51,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
     lastCollected.current = prog.collected;
   }, [prog.collected, loaded]);
 
-  // After you act on a source it moves (Needs You -> In Progress -> Collected); the selection follows it for a
+  // After you act on a source it moves (To Do -> In Progress -> Collected); the selection follows it for a
   // couple of minutes instead of jumping to whatever is next in the old list.
   const follow = useRef<{ id: string; until: number } | null>(null);
   // A source just added: shown as soon as it's in a snapshot, from wherever you added it.
@@ -74,9 +72,15 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
     const v = all.find((s) => s.id === f.id);
     if (!v) return;
     const n = navOf(v);
+    // Skipped: put away, not followed (the toast says where it went, with Undo), and the list goes on.
+    if (n === 'hub') {
+      follow.current = null;
+      return;
+    }
+    // Included again from its page over All Sources: that page closes, and it's shown where it lives now.
     animate(() => {
       setNav(n);
-      setSelected((s) => ({ ...s, [n]: v.id }));
+      setSelected((s) => ({ ...s, [n]: v.id, hub: undefined }));
     });
   }, [all, nav]);
 
@@ -97,14 +101,15 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
     if (focus) jump(focus.id);
   }, [focus?.n]);
 
+  const peek = all.find((v) => v.id === selected.hub);
   const pick = (id: string) => {
     if (follow.current?.id !== id) follow.current = null;
     animate(() => setSelected((s) => ({ ...s, [nav]: id })));
   };
 
   const counts: Record<Nav, number> = {
-    overview: 0, ask: 0, ai: 0, yoursetup: 0, explore: 0, needs: countFor('needs', all), working: countFor('working', all),
-    done: countFor('done', all), unavailable: countFor('unavailable', all),
+    overview: 0, ask: 0, ai: 0, yoursetup: countFor('yoursetup', all), general: 0, explore: 0, todo: countFor('todo', all), working: countFor('working', all),
+    done: countFor('done', all),
     setup: countFor('setup', all),
     found: snap.discovery?.found.length ?? 0,
     hub: 0,
@@ -138,7 +143,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
   };
 
   return (
-    <div className={`window ${nav === 'overview' || nav === 'found' || nav === 'hub' || nav === 'explore' || nav === 'ai' || nav === 'yoursetup' || (nav === 'ask' && snap.settings.aiOn !== true) ? 'wide' : ''}`}>
+    <div className={`window ${nav === 'overview' || nav === 'found' || nav === 'hub' || nav === 'explore' || nav === 'ai' || nav === 'yoursetup' || nav === 'general' || (nav === 'ask' && snap.settings.aiOn !== true) ? 'wide' : ''}`}>
       <nav className="sidebar drag" data-testid="sidebar">
         <div className="no-drag">
           <SideItem id="overview" label="Overview" glyph="gauge" nav={nav} onClick={() => go('overview')} />
@@ -146,14 +151,17 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
           {/* On Explore already: back to its home page, as a tab bar does. */}
           <SideItem id="explore" label="Explore" glyph="compass" nav={nav} onClick={() => (nav === 'explore' ? exploreHome() : go('explore'))} />
           <div className="sidebar-section">Sources</div>
-          {NAV.map((n) => <SideItem key={n.id} id={n.id} label={n.label} glyph={n.glyph} nav={nav} count={counts[n.id]} alert={n.id === 'needs'} onClick={() => go(n.id)} />)}
+          {NAV.map((n) => <SideItem key={n.id} id={n.id} label={n.label} glyph={n.glyph} nav={nav} count={counts[n.id]} alert={n.id === 'todo' && todoBadge(all).alert} onClick={() => go(n.id)} />)}
           {/* Every source there is, yours or not yet, and the ones your data points to: adding one starts on that page. */}
           <SideItem id="hub" label="All Sources" glyph="layers" nav={nav} onClick={() => go('hub')} />
           <SideItem id="found" label="Found in Your Data" glyph="search" nav={nav} count={counts.found || undefined} onClick={() => go('found')} />
           <div className="sidebar-section">This Mac</div>
-          <SideItem id="setup" label="Setup Checks" glyph="gear" nav={nav} count={counts.setup || undefined} alert onClick={() => go('setup')} />
+          {/* Its to-dos, plain. A check that holds the rest up needs you now, and To Do lists it first. */}
+          <SideItem id="setup" label="Setup Checks" glyph="shield" nav={nav} count={counts.setup || undefined} onClick={() => go('setup')} />
+          {/* Every setting has one home here: how Homecoming works, who you are and what's on this Mac, and what AI does. */}
           <div className="sidebar-section">Settings</div>
-          <SideItem id="yoursetup" label="Your Setup" glyph="laptop" nav={nav} onClick={() => go('yoursetup')} />
+          <SideItem id="general" label="General" glyph="gear" nav={nav} onClick={() => go('general')} />
+          <SideItem id="yoursetup" label="Your Setup" glyph="laptop" nav={nav} count={counts.yoursetup || undefined} onClick={() => go('yoursetup')} />
           <SideItem id="ai" label="AI Settings" glyph="sparkle" icon={<AiMark size={16} />} nav={nav} onClick={() => go('ai')} />
         </div>
         <div className="sidebar-foot no-drag" data-testid="sidebar-progress">
@@ -164,27 +172,38 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
 
       {nav === 'overview' ? (
         <div className="column grouped">
-          <Toolbar title="Overview" onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
+          <Toolbar title="Overview" onAssistant={onAssistant} snap={snap} />
           <div className="scroll"><Overview snap={snap} onJump={jump} onAssistant={onAssistant} /></div>
         </div>
       ) : nav === 'ask' && snap.settings.aiOn !== true ? (
         <div className="column grouped">
-          <Toolbar title="Ask" onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
+          <Toolbar title="Ask" onAssistant={onAssistant} snap={snap} />
           <div className="scroll"><AskAiGate snap={snap} onSettings={() => go('ai')} /></div>
         </div>
       ) : nav === 'ask' ? (
-        <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
+        <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
+      ) : nav === 'general' ? (
+        <GeneralPage snap={snap} onAssistant={onAssistant} onExport={onExport} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
       ) : nav === 'yoursetup' ? (
-        <YourSetupPage snap={snap} onSource={jump} onAi={() => go('ai')} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
+        <YourSetupPage snap={snap} onSource={jump} onAi={() => go('ai')} editing={selected.yoursetup === 'identity'} onEdited={() => setSelected((x) => ({ ...x, yoursetup: undefined }))}
+          toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
       ) : nav === 'ai' ? (
-        <AiPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
+        <AiPage snap={snap} onGeneral={() => go('general')} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
       ) : nav === 'explore' ? (
-        <ExplorePage snap={snap} onSource={jump} toolbar={<ToolbarButtons onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} />} />
+        <ExplorePage snap={snap} onSource={jump} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
       ) : nav === 'found' || nav === 'hub' ? (
         <div className="column grouped">
-          <Toolbar title={nav === 'hub' ? 'All Sources' : 'Found in Your Data'} onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
+          <Toolbar title={nav === 'hub' ? 'All Sources' : 'Found in Your Data'} onAssistant={onAssistant} snap={snap} />
           <div className="scroll"><Hub snap={snap} filter={nav === 'found' ? 'found' : hubFilter} onOpen={added} onAdded={(ids) => ids.length > 1 && added(ids[0])}
             onAddOther={addOther} onFilter={onHubFilter} /></div>
+          {/* A source that isn't collected (skipped, or not on this Mac): its page, over All Sources, to include it again. */}
+          {nav === 'hub' && peek && (
+            <Sheet onClose={() => setSelected((x) => ({ ...x, hub: undefined }))} testId="source-sheet" width={640}>
+              <Detail key={peek.id} snap={snap} view={peek} onActed={(id) => (follow.current = { id, until: Date.now() + 120_000 })}
+                onExplore={(page) => { exploreOpen(page); go('explore'); }} />
+              <div className="sheet-actions"><Button kind="primary" onClick={() => setSelected((x) => ({ ...x, hub: undefined }))} testAction="source-sheet-done">Done</Button></div>
+            </Sheet>
+          )}
         </div>
       ) : (
         <>
@@ -200,7 +219,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
                 {groups.filter((g) => g.rows.length).map((g) => (
                   <div key={g.title ?? 'main'} data-group={g.title ?? 'main'}>
                     {g.title && <div className="list-section">{g.title}</div>}
-                    {g.rows.map((v) => <Row key={v.id} v={v} selected={v.id === selId} onSelect={pick} needsYou={g.needsYou} popped={popped.has(v.id)}
+                    {g.rows.map((v) => <Row key={v.id} v={v} selected={v.id === selId} onSelect={pick} where={g.title === 'Needs you now' && (v.section !== 'todo' || v.group === 'setup')} popped={popped.has(v.id)}
                       unlocks={g === groups[0] ? all.filter((s) => s.blockedBy === v.id && s.group !== 'setup') : []} />)}
                   </div>
                 ))}
@@ -209,7 +228,7 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
             </div>
           </div>
           <div className="column grouped" data-testid="right">
-            <Toolbar onAssistant={onAssistant} onSettings={() => setSettingsOpen(true)} snap={snap} />
+            <Toolbar onAssistant={onAssistant} snap={snap} />
             <div className="scroll">
               <div style={vt('detail')}>{view ? <Detail key={view.id} snap={snap} view={view} onActed={(id) => (follow.current = { id, until: Date.now() + 120_000 })}
                 onExplore={(page) => { exploreOpen(page); go('explore'); }} /> : null}</div>
@@ -219,8 +238,6 @@ export function MainWindow({ snap, settingsOpen, setSettingsOpen, onAssistant, o
       )}
       <ArrivalBanners banners={banners} onOpen={jump} onDismiss={dismiss} />
       {adding && <AddServiceSheet initialName={addName} onClose={() => setAdding(false)} onAdded={added} />}
-      {settingsOpen && <SettingsSheet snap={snap} onClose={() => setSettingsOpen(false)} onAssistant={() => { setSettingsOpen(false); onAssistant(); }}
-        onExport={() => { setSettingsOpen(false); onExport(); }} />}
     </div>
   );
 }
@@ -236,7 +253,7 @@ function SideItem({ id, label, glyph, icon, nav, count: n, alert, onClick }: { i
   );
 }
 
-function Toolbar({ title, snap, onAssistant, onSettings }: { title?: string; snap: Snapshot; onAssistant: () => void; onSettings: () => void }) {
+function Toolbar({ title, snap, onAssistant }: { title?: string; snap: Snapshot; onAssistant: () => void }) {
   return (
     <div className="toolbar drag">
       {title && <h1>{title}</h1>}
@@ -244,23 +261,22 @@ function Toolbar({ title, snap, onAssistant, onSettings }: { title?: string; sna
       {snap.readOnly && !snap.demo && <span className="tag">Read-only</span>}
       <div className="spacer" />
       {snap.jobs.length > 0 && <span className="sub no-drag" style={{ display: 'flex', alignItems: 'center', gap: 6, marginRight: 6 }}><Spinner size={12} />{snap.jobs[0].label}</span>}
-      <ToolbarButtons onAssistant={onAssistant} onSettings={onSettings} />
+      <ToolbarButtons onAssistant={onAssistant} />
     </div>
   );
 }
 
-function ToolbarButtons({ onAssistant, onSettings }: { onAssistant: () => void; onSettings: () => void }) {
+// The Setup Assistant, again: its name shows as soon as the pointer is over it. Settings are in the sidebar (and ⌘,).
+function ToolbarButtons({ onAssistant }: { onAssistant: () => void }) {
   return (
-    <>
-      <button className="icon-btn no-drag" onClick={onAssistant} title="Setup Assistant" aria-label="Setup Assistant"><Glyph name="sparkle" size={16} /></button>
-      <button className="icon-btn no-drag" onClick={onSettings} title="Settings" aria-label="Settings"><Glyph name="gear" size={16} /></button>
-    </>
+    <button className="icon-btn no-drag" onClick={onAssistant} aria-label="Setup Assistant" data-tip="Setup Assistant" data-testid="open-assistant"><Glyph name="signpost" size={16} /></button>
   );
 }
 
-function Row({ v, selected, onSelect, unlocks, needsYou, popped }: { v: SourceView; selected: boolean; onSelect: (id: string) => void; unlocks: SourceView[]; needsYou?: boolean; popped?: boolean }) {
-  // The dot marks each row the sidebar badge counts.
-  const side = needsYou ? <span className="status-dot needs" role="img" aria-label="Needs you" data-testid="needs-dot" />
+// where: say which stage it's in (in To Do's Needs you now, where rows from all of them meet).
+function Row({ v, selected, onSelect, unlocks, where, popped }: { v: SourceView; selected: boolean; onSelect: (id: string) => void; unlocks: SourceView[]; where?: boolean; popped?: boolean }) {
+  // The dot marks each row that needs you, in whichever list: To Do's orange badge counts them.
+  const side = needsYou(v) ? <span className="status-dot needs" role="img" aria-label="Needs you" data-testid="needs-dot" />
     : v.section === 'done' && v.group !== 'setup' && v.records > 0 ? <RowCount v={v} popped={!!popped} /> : v.waiting ? <WaitClock size={15} started={v.requestedAt} />
       : v.section === 'working' ? <Spinner size={13} /> : null;
   return (
@@ -269,10 +285,10 @@ function Row({ v, selected, onSelect, unlocks, needsYou, popped }: { v: SourceVi
       <SourceIcon id={v.id} group={v.group} size={28} />
       <div className="main">
         <div className="name"><span className="n">{v.name}</span>{v.tag && <span className="tag">{v.tag}</span>}</div>
-        <div className="status">{v.status}</div>
+        <div className="status">{where && <span className="stage" data-testid="row-stage">{v.group === 'setup' ? 'Setup Checks' : STAGE_WORD[v.section]} · </span>}{v.status}</div>
         {v.warnings[0] && <div className="warn">{v.warnings[0]}</div>}
         {unlocks.length > 0 && <div className="unlocks">Unlocks {unlocks.map((u) => u.name).join(', ')}</div>}
-        {v.section === 'working' && !v.waiting && <div style={{ marginTop: 5 }}><ProgressBar value={v.progress} small /></div>}
+        {v.section === 'working' && !v.waiting && !v.needsYou && <div style={{ marginTop: 5 }}><ProgressBar value={v.progress} small /></div>}
       </div>
       <div className="side">{side}</div>
     </div>
@@ -281,10 +297,9 @@ function Row({ v, selected, onSelect, unlocks, needsYou, popped }: { v: SourceVi
 
 function EmptyList({ nav }: { nav: Nav }) {
   const text: Partial<Record<Nav, [string, string]>> = {
-    needs: ['Nothing needs you', 'Everything that needs a hand is done or on its way.'],
+    todo: ['Nothing to do', 'Nothing needs you, and every source is started, collected or skipped. When something can\'t go on without you (a sign-in, a download to confirm, Claude waiting in your browser), it shows up here first.'],
     working: ['Nothing in progress', 'Reading and imports show up here while they run.'],
     done: ['Nothing collected yet', 'Sources land here as they\'re read.'],
-    unavailable: ['Collecting everything', 'Sources you skip, and ones that aren\'t on this Mac, show up here. You can include any of them again.'],
   };
   const [h, p] = text[nav] ?? ['', ''];
   return <div className="empty appear"><h2>{h}</h2>{p}</div>;
@@ -339,7 +354,7 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
           </ProgressRing>
           <div>
             <h2>{prog.collected} of {prog.applicable} sources in your library</h2>
-            <p>{prog.toDo ? `${prog.toDo} ${prog.toDo === 1 ? 'thing needs' : 'things need'} you` : 'Nothing needs you right now'}{prog.waiting.length ? ` · ${prog.waiting.length} ${prog.waiting.length === 1 ? 'export' : 'exports'} on the way` : ''}.</p>
+            <p data-testid="ov-line">{prog.toDo ? `${prog.toDo} ${prog.toDo === 1 ? 'thing needs' : 'things need'} you` : 'Nothing needs you right now'}{snap.summary.todo ? ` · ${snap.summary.todo} to start` : ''}{prog.waiting.length ? ` · ${prog.waiting.length} ${prog.waiting.length === 1 ? 'export' : 'exports'} on the way` : ''}.</p>
             <div className="ov-stats">
               <span><b>{count(snap.summary.records)}</b> records</span>
               <span><b>{snap.summary.working}</b> in progress</span>
@@ -415,58 +430,3 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
   );
 }
 
-// ---------------------------------------------------------------- settings
-
-function SettingsSheet({ snap, onClose, onAssistant, onExport }: { snap: Snapshot; onClose: () => void; onAssistant: () => void; onExport: () => void }) {
-  const s = snap.settings;
-  // Read-only mode: settings that would change what's kept are shown, not changed.
-  const locked = snap.readOnly && !snap.demo;
-  const lock = (t: ReactNode) => (locked ? <span title={READ_ONLY_NOTE} style={{ opacity: 0.45, pointerEvents: 'none' }}>{t}</span> : t);
-  // Claude's checks need it to download what it finds, and Claude Code.
-  const agent = s.aiOn === true && !!s.agentExports && s.agentDownloads !== false && snap.agentInstalled !== false;
-  return (
-    <Sheet onClose={onClose} testId="settings" width={500}>
-      <h2>Settings</h2>
-      <div className="group-box" style={{ marginTop: 10 }}>
-        <GroupRow title="Read this Mac every day" subtitle="Screen Time, Chrome and the call log forget history. Each run keeps what it saw."
-          trailing={lock(<Toggle checked={s.autoRefresh} onChange={(v) => void api.settings({ autoRefresh: v })} label="Read this Mac every day" />)} />
-        <GroupRow title="Watch Downloads for exports"
-          subtitle={s.watchDownloads ? 'An export you asked for is imported as it lands in Downloads. Any other waits on its page for you to say yes.'
-            : 'Off: add each download on its page. What Claude downloads for you is still read.'}
-          trailing={lock(<Toggle checked={s.watchDownloads} onChange={(v) => void api.settings({ watchDownloads: v })} label="Watch Downloads" testId="toggle-watch" />)} />
-        <GroupRow title="Keep working when the window is closed" subtitle="Homecoming stays in the menu bar, reading this Mac and watching for your exports."
-          trailing={<Toggle checked={!!s.background} onChange={(v) => void api.settings({ background: v })} label="Keep working when closed" testId="toggle-background" />} />
-        <GroupRow title="Open at login" subtitle={s.background ? 'Starts in the menu bar when you log in.' : 'Opens Homecoming when you log in.'}
-          trailing={<Toggle checked={!!s.openAtLogin} onChange={(v) => void api.settings({ openAtLogin: v })} label="Open at login" testId="toggle-login" />} />
-      </div>
-
-      <div className="group-box" style={{ marginTop: 12 }} data-testid="settings-notifications">
-        <NotificationsRow snap={snap} />
-      </div>
-
-      <div className="group-box" style={{ marginTop: 12 }}>
-        <GroupRow title="Look for exports every few hours" testId="settings-checks"
-          subtitle={agent ? `While an export is on its way, Claude opens ${snap.setup.agentBrowser?.name ?? 'Chrome'} now and then to check the service's page, or your webmail for the email saying it's ready, and downloads it.`
-            : 'Needs Do It for Me, with downloads on, in AI Settings.'}
-          trailing={agent ? lock(<Toggle checked={s.agentChecks !== false} onChange={(v) => void api.settings({ agentChecks: v })} label="Look for exports every few hours" testId="toggle-checks" />)
-            : <span className="tag">Off</span>} />
-        <GroupRow title="AI and Do It for Me…" subtitle="Which agent does the work, and what uses it." testId="settings-ai"
-          onClick={() => { onClose(); void api.action('*', 'show-ai'); }} />
-        <GroupRow title="Your Setup…" subtitle="Who you are, your browsers, Mail and the inboxes Claude may look in." testId="settings-setup"
-          onClick={() => { onClose(); void api.action('*', 'show-setup'); }} />
-      </div>
-
-      <div className="group-box" style={{ marginTop: 12 }}>
-        <GroupRow title="Your library" subtitle={<code className="selectable">{snap.corpusPath}</code>}
-          trailing={<Button size="small" onClick={onExport} testAction="settings-export">Export…</Button>} />
-      </div>
-      <div className="sheet-actions" style={{ justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Button onClick={() => void api.action('*', 'run-all-mac')} disabled={snap.readOnly} title={locked ? READ_ONLY_NOTE : undefined}>Read This Mac Now</Button>
-          <Button onClick={onAssistant}>Setup Assistant…</Button>
-        </div>
-        <Button kind="primary" onClick={onClose}>Done</Button>
-      </div>
-    </Sheet>
-  );
-}

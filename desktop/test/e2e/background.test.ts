@@ -63,17 +63,17 @@ test('an export that comes home while the window is closed: a notification, then
   assert.match(await run.page.locator('[data-testid=arrival-discord]').innerText(), /Discord is home/);
 });
 
-test('Settings: keeping working in the background and opening at login are two choices, and AI Settings is a row away', async () => {
+test('General: keeping working in the background and opening at login are two choices; the menu\'s Settings… opens it', async () => {
   const p = run.page;
-  await p.locator('button[aria-label=Settings]').first().click();
-  const sheet = p.locator('[data-testid=settings]');
+  // Settings… (⌘,) in the menu, as the menu bar's does: the General page, in the sidebar's Settings.
+  await run.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('show-settings'));
+  const sheet = p.locator('[data-testid=general]');
   await sheet.waitFor();
+  assert.equal(await p.locator('[data-testid=nav-general]').getAttribute('aria-current'), 'page');
   assert.equal(await sheet.locator('[data-testid=toggle-background]').getAttribute('aria-checked'), 'true');
   assert.equal(await sheet.locator('[data-testid=toggle-login]').getAttribute('aria-checked'), 'true', 'follows it until set');
   await sheet.locator('[data-testid=toggle-login]').click();
   await until(p, 'login off on its own', (x) => x.settings.openAtLogin === false && x.settings.background === true);
   if (SHOTS) await p.screenshot({ path: path.join(SHOTS, 'settings.png') });
-  await sheet.locator('[data-testid=settings-ai]').click();
-  await p.locator('[data-testid=ai-page]').waitFor();
-  assert.equal(await p.locator('[data-testid=settings]').count(), 0);
+  assert.equal(await p.locator('button[aria-label=Settings]').count(), 0, 'no separate Settings button or sheet');
 });

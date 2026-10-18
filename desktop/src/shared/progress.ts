@@ -41,7 +41,7 @@ export interface Progress {
 const counts = (v: SourceView) => v.section !== 'unavailable' && (!v.optional || v.section === 'done');
 // In progress counts (an import, say), but not Claude still asking for it (queued, or at it): that's asked once it's done.
 const claudeAsking = (v: SourceView) => !v.requestedAt && v.actions.some((a) => a.id === 'agent-stop');
-const requested = (v: SourceView) => !!v.requestedAt || v.section === 'done' || (v.section === 'working' && !claudeAsking(v)) || v.status.startsWith('Found');
+const requested = (v: SourceView) => !!v.requestedAt || v.section === 'done' || (v.section === 'working' && !v.needsYou && !claudeAsking(v)) || v.status.startsWith('Found');
 
 function phase(id: PhaseId, title: string, members: SourceView[], isDone: (v: SourceView) => boolean, detail: (done: number, total: number) => string): Phase {
   const total = members.length;
@@ -86,7 +86,7 @@ export function progress(views: SourceView[], now: Date): Progress {
   return {
     phases, collected, applicable: applicable.length,
     percent: applicable.length ? collected / applicable.length : 0,
-    toDo: views.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional).length,
+    toDo: views.filter((v) => v.needsYou && !v.blockedBy && !v.optional).length,
     waiting,
   };
 }
@@ -152,7 +152,7 @@ export function defaultChosen(views: SourceView[]): string[] {
 
 // An export is handled once it's asked for, collected or skipped (for now or for good).
 export function exportHandled(v: SourceView): boolean {
-  return !!v.requestedAt || v.section === 'done' || v.section === 'working' || v.section === 'unavailable' || !!v.deferred;
+  return !!v.requestedAt || v.section === 'done' || (v.section === 'working' && !v.needsYou) || v.section === 'unavailable' || !!v.deferred;
 }
 
 // Where the Setup Assistant goes when an export is handled (or from the list, with no `from`): the next one not yet

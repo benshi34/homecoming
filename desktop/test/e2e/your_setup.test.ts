@@ -1,7 +1,9 @@
-// Your Setup: what was found on this Mac, each changeable and back again. A home with Arc (the default browser, with
-// history), Firefox's history and Brave's app: Do It for Me works in Arc until Brave is picked; turning Arc's history
-// off reads browsing history again without it; export pages open in the browser picked; phone numbers are read in
-// the region picked; Mail, notifications and each inbox can be turned off. Claude Code is a stand-in (test/fakes).
+// Settings, each in its one home: Your Setup (who you are and what was found on this Mac), General (how Homecoming
+// works) and AI Settings (what AI does). A home with Arc (the default browser, with history), Firefox's history and
+// Brave's app: turning Arc's history off reads browsing history again without it; export pages open in the browser
+// picked; phone numbers are read in the region picked; who you are is changed right there (Your Setup). Looking in
+// Mail and notifications can be turned off (General). Do It for Me works in Arc until Brave is picked, and each inbox
+// Claude may look in can be turned off (AI Settings). Claude Code is a stand-in (test/fakes).
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -101,9 +103,9 @@ after(async () => {
   sb?.cleanup();
 });
 
-test('Your Setup sits with AI Settings, and shows what was found', async () => {
+test('Settings is General, Your Setup and AI Settings; Your Setup shows what was found, and nothing of AI\'s', async () => {
   const p = run.page;
-  assert.match(await p.locator('[data-testid=sidebar]').innerText(), /\bSettings\s+Your Setup\s+AI Settings\b/);
+  assert.match(await p.locator('[data-testid=sidebar]').innerText(), /\bSettings\s+General\s+Your Setup\s+(\d+\s+)?AI Settings\b/, 'Your Setup has a badge while who you are has new finds');
   await p.locator('[data-testid=nav-yoursetup]').click();
   const page = p.locator('[data-testid=your-setup]');
   await page.waitFor();
@@ -111,16 +113,22 @@ test('Your Setup sits with AI Settings, and shows what was found', async () => {
   assert.deepEqual(s.setup.browsers.map((b) => b.id).sort(), ['arc', 'brave', 'firefox']);
   assert.equal(s.setup.agentBrowser?.id, 'arc', 'the default browser, since Claude works in it');
   assert.equal(s.setup.agent.ok, true);
-  assert.equal(await page.locator('[data-testid=setup-agent-browser-pick]').inputValue(), 'arc');
   assert.match(await page.locator('[data-testid=setup-browser-brave]').innerText(), /No history on this Mac yet/);
   assert.match(await page.locator('[data-testid=setup-identity]').innerText(), /Ada Lovelace[\s\S]*1 email address/);
-  assert.match(await page.locator('[data-testid=setup-inboxes]').innerText(), /ada@example\.com/);
+  for (const ai of ['setup-agent-browser-pick', 'setup-inboxes', 'toggle-mail-checks']) assert.equal(await page.locator(`[data-testid=${ai}]`).count(), 0, `${ai}: not here`);
   await shot(p, 'your-setup');
+  // Claude's browser and inboxes: AI Settings.
+  await p.locator('[data-testid=nav-ai]').click();
+  const ai = p.locator('[data-testid=ai-page]');
+  assert.equal(await ai.locator('[data-testid=setup-agent-browser-pick]').inputValue(), 'arc');
+  assert.match(await ai.locator('[data-testid=setup-inboxes]').innerText(), /ada@example\.com/);
+  await shot(p, 'ai-settings-do-it');
   assert.deepEqual(run.errors, []);
 });
 
 test('a browser\'s history off, then on again: read without it, then with it', async () => {
   const p = run.page;
+  await p.locator('[data-testid=nav-yoursetup]').click();
   const page = p.locator('[data-testid=your-setup]');
   await page.locator('[data-testid=toggle-history-arc]').click();
   await until(p, 'arc off', (x) => JSON.stringify(x.settings.historyOff) === '["arc"]' && x.setup.browsers.find((b) => b.id === 'arc')?.read === false);
@@ -133,8 +141,9 @@ test('a browser\'s history off, then on again: read without it, then with it', a
   assert.equal(manifest().browser_history.notes?.not_read, undefined);
 });
 
-test('Do It for Me in another browser, and back', async () => {
+test('Do It for Me in another browser, and back (AI Settings)', async () => {
   const p = run.page;
+  await p.locator('[data-testid=nav-ai]').click();
   const pick = p.locator('[data-testid=setup-agent-browser-pick]');
   await pick.selectOption('brave');
   let s = await until(p, 'brave', (x) => x.setup.agentBrowser?.id === 'brave');
@@ -147,6 +156,7 @@ test('Do It for Me in another browser, and back', async () => {
 
 test('export pages open in the browser picked, and in the Mac\'s default again', async () => {
   const p = run.page;
+  await p.locator('[data-testid=nav-yoursetup]').click();
   const pick = p.locator('[data-testid=setup-page-browser-pick]');
   const mac = (await snap(p)).defaultBrowser;
   await pick.selectOption('firefox');
@@ -166,30 +176,36 @@ test('phone numbers read in the region picked, and this Mac\'s again', async () 
   assert.equal(s.settings.phoneRegion, '');
 });
 
-test('Mail, notifications and an inbox, off and on again', async () => {
+test('Mail and notifications (General), and an inbox Claude may look in (AI Settings), off and on again', async () => {
   const p = run.page;
-  const page = p.locator('[data-testid=your-setup]');
+  await p.locator('[data-testid=nav-general]').click();
+  const page = p.locator('[data-testid=general]');
   for (const [id, key] of [['toggle-mail-checks', 'mailChecks'], ['toggle-notification-checks', 'notificationChecks']] as const) {
     await page.locator(`[data-testid=${id}]`).click();
     await until(p, `${key} off`, (x) => x.settings[key] === false);
     await page.locator(`[data-testid=${id}]`).click();
     await until(p, `${key} on`, (x) => x.settings[key] === true);
   }
-  await page.locator('[data-testid="toggle-inbox-ada@example.com"]').click();
+  await shot(p, 'general');
+  await p.locator('[data-testid=nav-ai]').click();
+  const ai = p.locator('[data-testid=ai-page]');
+  await ai.locator('[data-testid="toggle-inbox-ada@example.com"]').click();
   await until(p, 'inbox off', (x) => x.setup.inboxes[0]?.on === false && JSON.stringify(x.settings.inboxesOff) === '["ada@example.com"]');
-  await page.locator('[data-testid="toggle-inbox-ada@example.com"]').click();
+  await ai.locator('[data-testid="toggle-inbox-ada@example.com"]').click();
   await until(p, 'inbox on', (x) => x.setup.inboxes[0]?.on === true);
-  await page.locator('[data-testid=setup-keys]').scrollIntoViewIfNeeded();
-  await shot(p, 'your-setup-email-ai');
   assert.deepEqual(run.errors, []);
 });
 
-test('Change… opens who you are', async () => {
+test('who you are is changed right in Your Setup, and isn\'t among Setup Checks', async () => {
   const p = run.page;
+  await p.locator('[data-testid=nav-yoursetup]').click();
   await p.locator('button[data-action=setup-identity-change]').click();
-  await p.locator('[data-testid=list-column] [data-testid=row-identity].selected, [data-testid=row-identity][aria-selected=true]').first().waitFor({ timeout: 10_000 })
-    .catch(async () => assert.match(await p.locator('[data-testid=right]').innerText(), /Who you are/));
+  await p.locator('[data-testid=your-setup] [data-testid=setup-identity-form] [data-testid=identity-form]').waitFor({ timeout: 10_000 });
   await shot(p, 'your-setup-identity');
+  await p.locator('button[data-action=setup-identity-close]').click();
+  await p.locator('[data-testid=setup-identity-form]').waitFor({ state: 'detached' });
+  await p.locator('[data-testid=nav-setup]').click();
+  assert.equal(await p.locator('[data-testid=row-identity]').count(), 0);
 });
 
 test('several iPhones backed up: the one read is picked, and what came from one that isn\'t yours comes out', async () => {

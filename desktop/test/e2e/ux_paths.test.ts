@@ -1,7 +1,7 @@
 // Paths through the app that used to dead-end or quietly undo a choice (the UX audit of October 2026): leaving the
 // Setup Assistant part-way and coming back, adding a service that isn't listed, an identity typed but not added, an
 // export already in Downloads, a service added from the Overview, the same service added twice, and sources waiting
-// on Full Disk Access.
+// on Full Disk Access, and one skipped: put away in All Sources, and included again from there.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -56,12 +56,12 @@ test('leaving the Setup Assistant part-way: the Overview offers to carry on, aft
 
 test('Full Disk Access not on: going on is allowed, and said plainly', async () => {
   const p = await start({ done: false, step: 'access' });
-  await until(p, 'Full Disk Access checked', (x) => find(x, 'fda').section === 'needs');
+  await until(p, 'Full Disk Access checked', (x) => find(x, 'fda').section === 'todo');
   const cont = p.locator('button[data-action=assistant-continue]', { hasText: 'Without' });
   await cont.waitFor();
   assert.equal(await cont.innerText(), 'Continue Without It');
   assert.ok(!(await cont.getAttribute('class'))?.includes('primary'), 'the blue button is the one that turns it on');
-  assert.match(await p.locator('[data-testid=assistant] .page').innerText(), /wait under Needs You until it's on/);
+  assert.match(await p.locator('[data-testid=assistant] .page').innerText(), /wait in To Do until it's on/);
 });
 
 test('Accounts: one that isn\'t listed is added by name, from what you searched for', async () => {
@@ -126,7 +126,7 @@ test('main window: a service added from All Sources opens; the same one twice is
 
 test('asking for an export, and its coming home, are celebrated, and never in the way', async () => {
   const p = run!.page;
-  await p.locator('[data-testid=nav-needs]').click();
+  await p.locator('[data-testid=nav-todo]').click();
   await act(p, 'x', 'mark-requested');
   const asked = p.locator('[data-testid=celebration][data-kind=asked]');
   await asked.waitFor({ timeout: 5000 });
@@ -140,12 +140,45 @@ test('asking for an export, and its coming home, are celebrated, and never in th
   await home.waitFor({ state: 'detached', timeout: 6000 });
 });
 
-test('Needs You lists what waits on Full Disk Access, with the way to turn it on', async () => {
+test('To Do lists what waits on Full Disk Access, with the way to turn it on, and the check first, as needing you now', async () => {
   const p = run!.page;
-  await p.locator('[data-testid=nav-needs]').click();
+  await p.locator('[data-testid=nav-todo]').click();
   const group = p.locator('[data-group="Waiting on Full Disk Access"]');
   await group.locator('[data-testid=row-imessage]').click();
   await p.locator('[data-testid=detail][data-source=imessage] button[data-action=open-fda-settings]').waitFor();
   assert.equal(await group.locator('[data-testid=needs-dot]').count(), 0, 'not counted as needing you: it waits on one thing');
+  const now = p.locator('[data-group="Needs you now"]');
+  assert.match(await now.locator('[data-testid=row-fda]').innerText(), /Setup Checks · [\s\S]*Unlocks/, 'the check that unlocks it, saying where it lives');
+  assert.equal(await now.locator('[data-testid=row-imessage]').count(), 0);
+  assert.deepEqual(run!.errors, []);
+});
+
+test('skipped: the list goes on, the toast says where it went; All Sources has it, and this Mac\'s, to include again', async () => {
+  const p = await start({ done: true });
+  await p.locator('[data-testid=nav-todo]').click();
+  await p.locator('[data-testid=row-reddit]').click();
+  await p.locator('[data-testid=detail][data-source=reddit] button[data-action=skip]').click();
+  await p.locator('[data-testid=skip-form] button', { hasText: 'I don\'t use Reddit' }).click();
+  await until(p, 'skipped', (x) => find(x, 'reddit').section === 'unavailable');
+  await p.locator('[data-testid=toasts]', { hasText: 'Reddit is skipped. It\'s in All Sources if you want it back.' }).waitFor({ timeout: 5_000 });
+  await p.waitForTimeout(500);
+  assert.equal(await p.locator('[data-testid=hub]').count(), 0, 'not followed into All Sources');
+  assert.equal(await p.locator('[data-testid=row-reddit]').count(), 0, 'and not in To Do');
+  // In All Sources, under its kind, with this Mac's sources (Messages, waiting on Full Disk Access) among the rest.
+  await p.locator('[data-testid=nav-hub]').click();
+  await p.locator('[data-testid=hub-search]').fill('Messages');
+  await p.locator('[data-testid=hub-imessage]').waitFor({ timeout: 10_000 });
+  await p.locator('[data-testid=hub-search]').fill('Reddit');
+  await p.locator('[data-testid=hub-reddit]').click();
+  const sheet = p.locator('[data-testid=source-sheet]');
+  await sheet.locator('[data-testid=detail][data-source=reddit] button[data-action=unskip]').click();
+  await until(p, 'included again', (x) => find(x, 'reddit').section === 'todo');
+  await p.locator('[data-testid=detail][data-source=reddit]').waitFor({ timeout: 10_000 });
+  await sheet.waitFor({ state: 'detached', timeout: 5_000 });
+  assert.equal(await p.locator('[data-testid=row-reddit]').count(), 1, 'shown where it lives now: To Do');
+  // Back to All Sources: its page doesn't open again by itself.
+  await p.locator('[data-testid=nav-hub]').click();
+  await p.locator('[data-testid=hub]').waitFor();
+  assert.equal(await sheet.count(), 0);
   assert.deepEqual(run!.errors, []);
 });

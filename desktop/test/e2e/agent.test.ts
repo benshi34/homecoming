@@ -81,7 +81,7 @@ test('Do It for Me asks once, requests in Chrome, stops for a sign-in, and carri
   await shot(p, 'agent-working');
   let s = await until(p, 'needs you', (x) => find(x, 'instagram').status.startsWith('Needs you'), 20_000);
   assert.equal(find(s, 'instagram').status, 'Needs you: Sign in to Instagram in Chrome.');
-  assert.equal(find(s, 'instagram').section, 'needs');
+  assert.deepEqual([find(s, 'instagram').section, find(s, 'instagram').needsYou], ['working', true], 'stays In Progress, and needs you');
   await shot(p, 'agent-needs-you');
   const first = runs()[0];
   assert.ok(first.args.includes('--chrome'), 'it drives Chrome');

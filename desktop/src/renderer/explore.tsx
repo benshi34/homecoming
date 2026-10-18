@@ -250,7 +250,8 @@ function useArtifact<T>(op: string, args: string[] = []): { data: T | null; erro
   return { data: state.data, error: state.error, loading: !cache.has(k) && !state.error, k };
 }
 
-// How far each artifact being built has got (main sends "explore-progress").
+// How far each artifact being built has got (main sends "explore-progress"), and when the library changes. Listened
+// to from the first time Explore opens: before that, nothing's here to go out of date.
 const progress = new Map<string, ExploreProgress>();
 const listeners = new Set<() => void>();
 let listening = false;
@@ -260,6 +261,11 @@ function useProgress(k: string): ExploreProgress | undefined {
     if (!listening) {
       listening = true;
       api.onExploreProgress((p) => {
+        // The library changed: what's here is built again (main has it built ahead, or builds it when asked).
+        if (p.changed) {
+          cache.clear();
+          return;
+        }
         const prev = progress.get(p.key);
         progress.set(p.key, p.steps ? { key: p.key, steps: p.steps } : p.waiting ? { key: p.key, waiting: p.waiting } : { ...prev, ...p, waiting: undefined });
         for (const l of listeners) l();

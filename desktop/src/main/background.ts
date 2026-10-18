@@ -7,7 +7,7 @@ const clip = (t: string, n = 60) => (t.length > n ? `${t.slice(0, n - 1)}…` : 
 
 // What needs you, most pressing first, as the Dock badge counts it: Claude's questions as such, the rest by their status.
 export function trayNeeds(views: SourceView[]): { id: string; label: string }[] {
-  return views.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional)
+  return views.filter((v) => v.needsYou && !v.blockedBy && !v.optional)
     .sort((a, b) => a.priority - b.priority)
     .map((v) => ({ id: v.id, label: clip(v.status.startsWith('Needs you') ? `Claude needs you for ${v.name}` : `${v.name}: ${v.status}`) }));
 }

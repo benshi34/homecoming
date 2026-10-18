@@ -20,7 +20,7 @@ export interface StatusInput {
   // Do It for Me can run: Claude Code is on this Mac, with a browser and a sign-in it works with. Left out (the tests),
   // it's taken to be.
   claudeCode?: boolean;
-  browser?: string; // the browser Do It for Me works in (Your Setup), by name; Chrome when left out
+  browser?: string; // the browser Do It for Me works in (AI Settings), by name; Chrome when left out
   demo?: boolean; // the demo, where a stand-in plays Claude
   // Your email addresses and whether Mail is set up on this Mac: where to look for a service's "it's ready" email.
   mail?: { emails: string[]; appleMail: boolean };
@@ -186,10 +186,10 @@ const unskip: Action = { id: 'unskip', label: 'Include Again' };
 const unmark: Action = { id: 'unmark-done', label: 'Mark as Not Done' };
 // On a page that waits for Full Disk Access: the way to turn it on, right there.
 const fdaFix: Action = { id: 'open-fda-settings', label: 'Open Full Disk Access Settings…', primary: true };
-// Set aside with "Not now": kept with the optional ones under Needs You, so it comes back to mind.
+// Set aside with "Not now": kept with the optional ones in To Do, so it comes back to mind.
 const NOT_NOW = 'Not now';
 function deferred(v: SourceView): SourceView {
-  return { ...v, section: 'needs', optional: true, deferred: true, priority: 95, status: 'Set aside for now', steps: undefined, actions: [{ ...unskip, primary: true }] };
+  return { ...v, section: 'todo', optional: true, deferred: true, priority: 95, status: 'Set aside for now', steps: undefined, actions: [{ ...unskip, primary: true }] };
 }
 
 // ---------------------------------------------------------------- setup
@@ -204,9 +204,16 @@ const NOT_FOR_ME: Record<string, { label: string; reason: string }> = {
   iphone_notifications: { label: 'I Don\'t Have an iPhone', reason: 'No iPhone' },
 };
 
+// Setup checks that hold the rest up until they're done: nothing on this Mac is read without Full Disk Access or Python,
+// and a library in iCloud would upload everything it collects. The others (keeping history, free space, who you are)
+// are worth doing, but nothing waits on them.
+const BLOCKING = new Set(['fda', 'python_env', 'corpus_location']);
+
 function setupView(src: Source, inp: StatusInput): SourceView {
   const v = setupState(src, inp);
-  if (v.section !== 'needs') return v;
+  if (v.section !== 'todo') return v;
+  // A check that holds everything else up needs you (first in To Do, with a dot); the rest are to do, in Setup Checks.
+  if (!v.optional && !v.blockedBy && BLOCKING.has(src.id)) v.needsYou = true;
   if (src.id.startsWith('retention_')) v.notes = [...(v.notes ?? []), KEEP_WHY];
   const no = NOT_FOR_ME[src.id];
   if (no) v.actions = [...v.actions, { id: 'skip', label: no.label }];
@@ -231,14 +238,14 @@ function setupState(src: Source, inp: StatusInput): SourceView {
         // Imports keep turning up addresses and accounts: ask about the new ones.
         const fresh = newCandidates(found, id, state.identityDismissed ?? []);
         if (fresh.length) {
-          return { ...v, section: 'needs', priority: 9.9, status: `${describeNew(fresh)} found`,
+          return { ...v, section: 'todo', priority: 9.9, status: `${describeNew(fresh)} found`,
             detail: fresh.map((c) => `${c.value} (${c.sources.map((s) => s.label).slice(0, 2).join(', ')})`).join('\n'),
             actions: [{ id: 'save-identity', label: 'Review', input: 'identity', primary: true }] };
         }
         return { ...v, status: `${list(id!.names.slice(0, 2))}, ${id!.emails.length} email${id!.emails.length === 1 ? '' : 's'}`, actions: [{ id: 'save-identity', label: 'Edit', input: 'identity' }] };
       }
       // Not urgent: collection doesn't wait for it. It's a final check that labels what's yours.
-      return { ...v, section: 'needs', priority: 65,
+      return { ...v, section: 'todo', priority: 65,
         status: found.some((c) => c.strong) ? `Found ${found.filter((c) => c.strong).length} things that look like you: check them` : 'Tell the app who you are',
         actions: [{ id: 'save-identity', label: 'Save', input: 'identity', primary: true }] };
     }
@@ -247,14 +254,14 @@ function setupState(src: Source, inp: StatusInput): SourceView {
       if (probe.fda === null) return { ...v, section: 'unavailable', status: 'Nothing on this Mac needs it' };
       // The Mac's sources it keeps closed, and the iPhone backup when there's one it can't see.
       const blocked = Object.values(probe.sources).filter((a) => a === 'blocked').length + (!probe.backups?.length && !state.sources.iphone_backup?.skipped ? 1 : 0);
-      return { ...v, section: 'needs', priority: 1, status: `Needed for ${blocked} source${blocked === 1 ? '' : 's'} on this Mac`,
+      return { ...v, section: 'todo', priority: 1, status: `Needed for ${blocked} source${blocked === 1 ? '' : 's'} on this Mac`,
         actions: [{ id: 'open-fda-settings', label: 'Open System Settings…', primary: true }, recheck] };
     }
     case 'python_env': {
       const p = probe.python;
       const missing = [!p.cryptography && 'cryptography', !p.pypdf && 'pypdf'].filter(Boolean) as string[];
       if (!missing.length) return { ...v, status: `Python ${p.version}` };
-      return { ...v, section: 'needs', priority: 2, status: `Missing ${list(missing)}`,
+      return { ...v, section: 'todo', priority: 2, status: `Missing ${list(missing)}`,
         detail: `Open Terminal, paste this line and press Return, then choose Check Again:\n${p.path} -m pip install ${missing.join(' ')}`,
         notes: missing.includes('cryptography') ? ['Without cryptography, encrypted iPhone backups can\'t be read.'] : ['Without pypdf, PDFs are skipped.'],
         actions: [recheck] };
@@ -262,7 +269,7 @@ function setupState(src: Source, inp: StatusInput): SourceView {
     case 'corpus_location': {
       const c = probe.corpus;
       if (!c.in_icloud) return { ...v, status: c.real_path };
-      return { ...v, section: 'needs', priority: 5, status: 'In iCloud Drive',
+      return { ...v, section: 'todo', priority: 5, status: 'In iCloud Drive',
         detail: `${c.path} syncs to iCloud, so every message and email you collect is uploaded, and iCloud can write conflict copies next to the files.`,
         actions: [{ id: 'exclude-icloud', label: 'Keep It on This Mac', primary: true,
           confirm: `Your library's folder is renamed "${c.path.split('/').pop()}.nosync", a name iCloud Drive doesn't sync, and a shortcut is left where it was, so everything keeps working. Nothing in it is changed or deleted.` }, recheck] };
@@ -271,7 +278,7 @@ function setupState(src: Source, inp: StatusInput): SourceView {
       const free = probe.corpus.free_bytes;
       if (free >= MIN_FREE) return { ...v, status: `${bytes(free)} free` };
       if (st?.doneAt) return { ...v, status: `${bytes(free)} free`, warnings: ['Low on space: large exports may not fit.'], actions: [recheck] };
-      return { ...v, section: 'needs', priority: 6, status: `Only ${bytes(free)} free`,
+      return { ...v, section: 'todo', priority: 6, status: `Only ${bytes(free)} free`,
         detail: 'Large exports (Google Photos, Drive, a big mailbox) may not fit. Free up space or keep exports on an external drive.',
         actions: [recheck, { id: 'mark-done', label: 'Continue Anyway' }] };
     }
@@ -280,7 +287,7 @@ function setupState(src: Source, inp: StatusInput): SourceView {
       if (!c.present) return { ...v, section: 'unavailable', status: 'Claude Code isn\'t on this Mac' };
       const days = typeof c.days === 'number' ? c.days : null;
       if (days !== null && days >= CLAUDE_KEEP_DAYS) return { ...v, status: days >= 36500 ? 'Kept forever' : `Kept for ${count(days)} days` };
-      return { ...v, section: 'needs', priority: 9.5, status: days === null ? 'Transcripts are deleted after 30 days' : `Transcripts are deleted after ${days} days`,
+      return { ...v, section: 'todo', priority: 9.5, status: days === null ? 'Transcripts are deleted after 30 days' : `Transcripts are deleted after ${days} days`,
         actions: [{ id: 'fix-claude-retention', label: 'Keep Them', primary: true,
           confirm: 'Claude Code is told to keep its transcripts: the app sets cleanupPeriodDays in ~/.claude/settings.json and changes nothing else there. You can change it back in that file any time.' }] };
     }
@@ -290,14 +297,14 @@ function setupState(src: Source, inp: StatusInput): SourceView {
       const kept = sh.savehist ?? 1000;
       if (kept >= SHELL_KEEP && sh.extended) return { ...v, status: `Keeps ${count(kept)} commands, with their times` };
       const what = `Keeps only your last ${count(kept)} commands${sh.extended ? '' : ', without times'}`;
-      return { ...v, section: 'needs', priority: 9.6, status: what, actions: [{ id: 'fix-shell-retention', label: 'Keep Every Command', primary: true,
+      return { ...v, section: 'todo', priority: 9.6, status: what, actions: [{ id: 'fix-shell-retention', label: 'Keep Every Command', primary: true,
         confirm: 'Four lines are added to the end of your Terminal settings (~/.zshrc): record when each command ran, and keep up to a million. New Terminal windows use them; nothing else in the file changes.' }] };
     }
     case 'retention_messages': {
       const m = probe.retention.messages;
-      if (!m.readable) return st?.doneAt ? { ...v, status: 'Checked by you', actions: [unmark] } : { ...v, section: 'needs', priority: 9.8, status: 'Check that Messages keeps everything', actions: [{ id: 'open-app', label: 'Open Messages' }, { id: 'mark-done', label: 'It\'s Set to Forever' }] };
+      if (!m.readable) return st?.doneAt ? { ...v, status: 'Checked by you', actions: [unmark] } : { ...v, section: 'todo', priority: 9.8, status: 'Check that Messages keeps everything', actions: [{ id: 'open-app', label: 'Open Messages' }, { id: 'mark-done', label: 'It\'s Set to Forever' }] };
       if (m.value === null || m.value === 0) return { ...v, status: 'Forever' };
-      return { ...v, section: 'needs', priority: 9.3, status: `Messages deletes conversations after ${m.value} days`,
+      return { ...v, section: 'todo', priority: 9.3, status: `Messages deletes conversations after ${m.value} days`,
         actions: [{ id: 'open-app', label: 'Open Messages', primary: true }, recheck] };
     }
     case 'retention_iphone_messages': {
@@ -306,7 +313,7 @@ function setupState(src: Source, inp: StatusInput): SourceView {
       if (m?.readable && (m.value === null || m.value === 0)) return { ...v, status: 'Forever (from your iPhone backup)' };
       if (st?.doneAt) return { ...v, status: 'Checked by you', actions: [unmark] };
       const days = typeof m?.value === 'number' ? m.value : null;
-      return { ...v, section: 'needs', priority: 58,
+      return { ...v, section: 'todo', priority: 58,
         status: days ? `The iPhone deletes messages after ${days} days` : 'Check that the iPhone keeps messages forever',
         detail: m?.readable ? undefined : 'The app reads this from your iPhone backup once one has been read.',
         actions: [{ id: 'mark-done', label: 'It\'s Set to Forever', primary: true }] };
@@ -318,21 +325,21 @@ function setupState(src: Source, inp: StatusInput): SourceView {
     case 'retention_google': {
       if (state.sources.google_takeout?.skipped) return { ...v, section: 'unavailable', status: 'Not using Google' };
       if (st?.doneAt) return { ...v, status: 'Checked by you', actions: [unmark] };
-      return { ...v, section: 'needs', priority: 57, status: 'Google may auto-delete your activity',
+      return { ...v, section: 'todo', priority: 57, status: 'Google may auto-delete your activity',
         actions: [{ id: 'open-external', label: 'Open Activity Controls', primary: true }, { id: 'mark-done', label: 'I\'ve Done It' }] };
     }
     case 'iphone_notifications': {
       if (state.sources.iphone_backup?.skipped) return { ...v, section: 'unavailable', status: 'No iPhone' };
       if (probe.notifications?.iphone) return { ...v, status: 'On: your iPhone\'s notifications reach this Mac' };
       if (st?.doneAt) return { ...v, status: 'Turned on by you', actions: [unmark] };
-      return { ...v, section: 'needs', priority: 59, status: 'Your iPhone\'s notifications don\'t reach this Mac yet',
+      return { ...v, section: 'todo', priority: 59, status: 'Your iPhone\'s notifications don\'t reach this Mac yet',
         detail: 'While you wait for an export, the app watches this Mac\'s notifications for one saying your data is ready. Many services tell you on your iPhone, so forward those here too.',
         actions: [{ id: 'open-notification-settings', label: 'Open Notification Settings', primary: true }, { id: 'mark-done', label: 'I\'ve Turned It On' }] };
     }
     case 'retention_maps': {
       if (state.sources.maps_timeline?.skipped) return { ...v, section: 'unavailable', status: 'Not using Maps Timeline' };
       if (st?.doneAt) return { ...v, status: 'Checked by you', actions: [unmark] };
-      return { ...v, section: 'needs', priority: 57, status: 'Timeline deletes visits older than 3 months by default',
+      return { ...v, section: 'todo', priority: 57, status: 'Timeline deletes visits older than 3 months by default',
         actions: [{ id: 'mark-done', label: 'I\'ve Done It', primary: true }] };
     }
     case 'retention_safari': {
@@ -341,10 +348,10 @@ function setupState(src: Source, inp: StatusInput): SourceView {
       if (days !== null && days >= SAFARI_MANUAL_DAYS) return { ...v, status: 'Manually' };
       if (st?.doneAt) return { ...v, status: 'Checked by you', actions: [unmark] };
       if (!s.readable && probe.fda !== true) {
-        return { ...v, section: 'needs', priority: 9.7, blockedBy: 'fda', status: 'Needs Full Disk Access to check',
+        return { ...v, section: 'todo', priority: 9.7, blockedBy: 'fda', status: 'Needs Full Disk Access to check',
           detail: 'Or check it yourself with the steps below, then choose Done.', actions: [fdaFix, { id: 'mark-done', label: 'Done' }] };
       }
-      return { ...v, section: 'needs', priority: 9.7, status: days === null ? 'Safari removes history after a year' : `Safari removes history after ${days} days`,
+      return { ...v, section: 'todo', priority: 9.7, status: days === null ? 'Safari removes history after a year' : `Safari removes history after ${days} days`,
         actions: [{ id: 'open-app', label: 'Open Safari', primary: true }, { id: 'mark-done', label: 'Done' }, recheck] };
     }
   }
@@ -369,7 +376,7 @@ function macView(src: Source, inp: StatusInput): SourceView {
   const job = jobFor(src.id, jobs);
   if (job) return { ...v, section: 'working', ...jobStatus(job, now, src.connector), actions: [{ id: 'cancel-job', label: 'Stop' }] };
   if (st?.lastError && later(st.lastErrorAt ?? '1970-01-01T00:00:00Z', t.ranAt)) {
-    return { ...v, section: 'needs', priority: 12, status: 'Couldn\'t read it', detail: st.lastError, actions: [{ id: 'run', label: 'Try Again', primary: true }, skip] };
+    return { ...v, section: t.records > 0 ? 'done' : 'working', needsYou: true, priority: 12, status: 'Couldn\'t read it', detail: st.lastError, actions: [{ id: 'run', label: 'Try Again', primary: true }, skip] };
   }
   if (t.ranAt) {
     if (t.records === 0) {
@@ -384,14 +391,14 @@ function macView(src: Source, inp: StatusInput): SourceView {
     return v;
   }
   if (access === 'blocked') {
-    return { ...v, section: 'needs', priority: 1.5, blockedBy: 'fda', status: 'Needs Full Disk Access',
+    return { ...v, section: 'todo', priority: 1.5, blockedBy: 'fda', status: 'Needs Full Disk Access',
       detail: 'macOS keeps it behind Full Disk Access. Turn that on once and it\'s read straight away.', actions: [fdaFix, { id: 'recheck', label: 'Check Again' }] };
   }
   if (access === 'absent' || !probe) {
     return { ...v, section: 'unavailable', status: probe ? 'Not on this Mac' : 'Checking…',
       detail: probe ? `If you start using ${src.name} on this Mac, choose Check Again.` : undefined, actions: probe ? [{ id: 'recheck', label: 'Check Again' }] : [] };
   }
-  return { ...v, section: 'needs', priority: 13, status: 'Ready to read', actions: [{ id: 'run', label: 'Read It', primary: true }, skip] };
+  return { ...v, section: 'todo', priority: 13, status: 'Ready to read', actions: [{ id: 'run', label: 'Read It', primary: true }, skip] };
 }
 
 // ---------------------------------------------------------------- iPhone
@@ -460,7 +467,7 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
     notes: ['The first run decrypts the whole backup and runs iLEAPP over it: allow 20 to 40 minutes. Later backups only decrypt what changed.'] };
   if (!probe) return { ...v, section: 'working', status: 'Checking…' };
   if (probe.fda === false && !(probe.backups?.length)) {
-    return { ...v, section: 'needs', blockedBy: 'fda', status: 'Needs Full Disk Access to find backups', steps: undefined,
+    return { ...v, section: 'todo', blockedBy: 'fda', status: 'Needs Full Disk Access to find backups', steps: undefined,
       detail: 'Backups are kept where only apps with Full Disk Access can see them.', actions: [fdaFix, { id: 'recheck', label: 'Check Again' }] };
   }
   const b = latestBackup(probe, state.settings?.iphoneDevice);
@@ -469,7 +476,7 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
   const read: Action = { id: 'iphone-run', label: 'Read Backup', primary: true, ...(pw ? { input: 'password' as const } : {}) };
   if (!b) {
     if (inProgress) return { ...v, section: 'working', status: 'Backup in progress. Keep the iPhone connected.', actions: [{ id: 'recheck', label: 'Check Again' }] };
-    return { ...v, section: 'needs', priority: 30, status: 'No backup on this Mac yet', actions: [{ id: 'open-app', label: 'Open Finder', primary: true }, { id: 'recheck', label: 'Check Again' }, skip] };
+    return { ...v, section: 'todo', priority: 30, status: 'No backup on this Mac yet', actions: [{ id: 'open-app', label: 'Open Finder', primary: true }, { id: 'recheck', label: 'Check Again' }, skip] };
   }
   const desc = `${b.device ?? 'iPhone'}${b.ios ? `, iOS ${b.ios}` : ''}, backed up ${day(b.date)}`;
   // Several devices backed up here (a family's, an iPad): which one is yours is picked in Your Setup.
@@ -477,12 +484,12 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
   v.steps = undefined;
   v.detail = desc;
   if (!probe.python.cryptography) {
-    return { ...v, section: 'needs', priority: 15, blockedBy: 'python_env', status: 'Needs the cryptography package',
+    return { ...v, section: 'todo', priority: 15, blockedBy: 'python_env', status: 'Needs the cryptography package',
       detail: `${desc}. Reading it needs one more piece of Python: Python in Setup Checks has the line to paste into Terminal.`, actions: [{ id: 'recheck', label: 'Check Again' }] };
   }
   if (st?.lastError && later(st.lastErrorAt ?? '1970-01-01T00:00:00Z', t.ranAt)) {
     const wrong = /wrong password/i.test(st.lastError);
-    return { ...v, section: 'needs', priority: 14, status: wrong ? 'That password didn\'t work' : 'Couldn\'t read the backup', detail: wrong ? `${desc}. Use the password you set when you turned on "Encrypt local backup" in Finder.` : st.lastError,
+    return { ...v, section: t.records > 0 ? 'done' : 'working', needsYou: true, priority: 14, status: wrong ? 'That password didn\'t work' : 'Couldn\'t read the backup', detail: wrong ? `${desc}. Use the password you set when you turned on "Encrypt local backup" in Finder.` : st.lastError,
       actions: [{ ...read, label: 'Try Again' }, skip] };
   }
   const current = mirrorIsCurrent(probe, b);
@@ -491,7 +498,7 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
   }
   const warnings = b.encrypted ? [] : ['This backup isn\'t encrypted, so it has no call history, Health or Safari. In Finder, turn on "Encrypt local backup" and back up again.'];
   if (inProgress) warnings.push('A newer backup is still in progress.');
-  return { ...v, section: 'needs', priority: 14, warnings,
+  return { ...v, section: t.records > 0 ? 'done' : 'todo', priority: 14, warnings,
     status: t.records > 0 ? `A newer backup is ready (${day(b.date)})` : `Backup from ${day(b.date)} is ready to read`,
     detail: `${desc}.${pw ? ' Enter the password you set when you turned on "Encrypt local backup".' : ''}`,
     actions: [read, ...another, skip] };
@@ -505,7 +512,7 @@ export const CHROME_PERMISSION = /\b(permission|allow)\b.*\b(chrome|claude)\b|\b
 // Claude stopped for a sign-in (its needs_you note): once the session cookie turns up, it can carry on by itself.
 export const SIGN_IN_NOTE = /\b(sign|log)(ged)?[ -]?(in|into|on)\b/i;
 
-// Whether the browser Do It for Me works in (Chrome, or the one picked in Your Setup) is signed in to a web export
+// Whether the browser Do It for Me works in (Chrome, or the one picked in AI Settings) is signed in to a web export
 // (py/signins.py): in the profile Claude in Chrome works in (or in any, when none has it), and if not, where it is
 // signed in instead. Unknown with no cookie to go by.
 export function signInFor(src: Source, check: SignInCheck | null | undefined, browser = 'Chrome'): NonNullable<SourceView['signIn']> {
@@ -544,7 +551,7 @@ function foundView(v: SourceView, src: Source, found: { files: string[]; actions
   const why = skipped
     ? `You skipped ${src.name}. Importing ${one ? 'it' : 'them'} includes ${src.name} again, and moves ${one ? 'the file' : 'the files'} out of Downloads into your library.`
     : `You hadn't asked ${src.name} for your data in the app, so ${one ? 'it waits' : 'they wait'} for a yes. Importing moves ${one ? 'it' : 'them'} out of Downloads into your library.`;
-  return { ...v, section: 'needs', priority: 4.5, status: `Found ${one ? 'the export' : `${found.files.length} files`} in Downloads`,
+  return { ...v, section: 'working', needsYou: true, priority: 4.5, status: `Found ${one ? 'the export' : `${found.files.length} files`} in Downloads`,
     detail: `${found.files.join('\n')}\n${why}`, actions: found.actions };
 }
 
@@ -565,7 +572,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const isWeb = src.group === 'web';
   const set = state.settings ?? ({} as AppState['settings']);
   const watching = set.watchDownloads !== false;
-  const v: SourceView = { ...base(src, st), section: 'needs', status: '', priority: 40, records: t.records, first: t.first, last: t.last,
+  const v: SourceView = { ...base(src, st), section: 'todo', status: '', priority: 40, records: t.records, first: t.first, last: t.last,
     ranAt: t.ranAt ?? undefined, steps: stepsView(src, st, watching), tag: isWeb ? 'Web' : 'Manual', requestedAt: st?.requestedAt, accountName: st?.accountName };
   const addFile: Action = { id: 'add-file', label: 'Add the Download…', input: 'file' };
   // A service you added with no website has no page to open: its steps and a drafted request stand in.
@@ -598,7 +605,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const retry = ag?.mode === 'request' ? 'agent-request' : 'agent-download';
   // Claude is waiting in the browser for you: first of all, until it's done (it carries on by itself) or Claude stops asking.
   if (ag?.status === 'running' && ag.waiting) {
-    return { ...v, section: 'needs', priority: 2, steps: undefined, status: `Waiting for you: ${ag.waiting}`,
+    return { ...v, section: 'working', needsYou: true, priority: 2, steps: undefined, status: `Waiting for you: ${ag.waiting}`,
       detail: `Claude is waiting in ${B}, and carries on as soon as it's done. It waits a few minutes, then stops and asks here.`,
       actions: [{ id: 'open-chrome', label: `Open ${B}`, primary: true }, { id: 'agent-stop', label: 'Stop' }] };
   }
@@ -615,7 +622,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   // It needs Claude Code, and that isn't on this Mac (any more): setting it up is the next step, not trying again.
   if (ag && fresh(ag.at) && (ag.status === 'needs_you' || ag.status === 'failed') && inp.claudeCode === false) {
     const self: Action[] = ag.mode === 'request' ? opens(open) : [{ id: 'open-ready', label: 'Open the Download Page', primary: true }];
-    return { ...v, section: 'needs', priority: 12, status: 'Do It for Me needs Claude Code',
+    return { ...v, section: 'working', needsYou: true, priority: 12, status: 'Do It for Me needs Claude Code',
       detail: `Claude Code isn't on this Mac. Install it, sign in, and add the Claude in Chrome extension to ${B}, then Claude can do this for you. Or do it yourself with the steps below.`,
       actions: [...self, { id: 'get-claude-code', label: 'Get Claude Code…' }, ...(ag.mode === 'request' ? [{ id: 'mark-requested', label: 'I\'ve Requested It' }] : []), addFile,
         { id: 'agent-dismiss', label: 'Dismiss' }] };
@@ -624,7 +631,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   if (ag && fresh(ag.at) && ag.status === 'needs_you') {
     // Homecoming quit in the middle: carry on in the same session, or start again.
     if (ag.reason === 'quit') {
-      return { ...v, section: 'needs', priority: 3, status: 'Interrupted when Homecoming quit',
+      return { ...v, section: 'working', needsYou: true, priority: 3, status: 'Interrupted when Homecoming quit',
         detail: `Claude was ${doing} in ${B} when Homecoming quit. ${ag.session ? 'Carry On picks up where it stopped; Start Over begins again.' : 'Start it again, or do it yourself with the steps below.'}`,
         actions: ag.session
           ? [{ id: 'agent-continue', label: 'Carry On', primary: true, ai: true }, { id: retry, label: 'Start Over', ai: true }, myself]
@@ -632,7 +639,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     }
     // The Claude in Chrome extension isn't there: nothing to answer, just that to fix.
     if (ag.reason === 'chrome') {
-      return { ...v, section: 'needs', priority: 3, status: `Needs you: turn on Claude in ${B}`,
+      return { ...v, section: 'working', needsYou: true, priority: 3, status: `Needs you: turn on Claude in ${B}`,
         detail: `Claude works in your ${B} through the Claude in Chrome extension, and it isn't connected. Open ${B}, turn the extension on and sign in to it with your Claude account, then try again.`,
         actions: [{ id: 'open-chrome', label: `Open ${B}`, primary: true }, { id: retry, label: 'Try Again', ai: true }, myself] };
     }
@@ -640,7 +647,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     const signIn = !!src.signIn && SIGN_IN_NOTE.test(ag.note ?? '');
     // Claude in Chrome asks before it works on a site for the first time, and nobody was there to say yes.
     const allow = CHROME_PERMISSION.test(ag.note ?? '');
-    return { ...v, section: 'needs', priority: 3, status: `Needs you: ${ag.note || `have a look in ${B}`}`,
+    return { ...v, section: 'working', needsYou: true, priority: 3, status: `Needs you: ${ag.note || `have a look in ${B}`}`,
       detail: allow ? `Claude in Chrome asks before it works on a site for the first time. Click Continue with ${B} in view, and choose Allow in its Claude window when it asks (Always allow, if it offers that): it only asks once for a site.`
         : signIn ? `Sign in to ${src.name} in ${B}: your saved password or passkey fills it in. Once you're signed in, Claude carries on by itself (or click Continue).`
         : `Do it in ${B}, or answer below, then click Continue: Claude carries on from where it stopped.`,
@@ -649,7 +656,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   }
   // A look Claude made by itself that didn't finish isn't news: the page notes it below, and it looks again later.
   if (ag && fresh(ag.at) && ag.status === 'failed' && ag.auto !== 'check' && !(ag.mode === 'request' && st?.requestedAt && later(st.requestedAt, ag.at))) {
-    return { ...v, section: 'needs', priority: 12, status: `Claude couldn't finish: ${ag.note || 'something went wrong'}`,
+    return { ...v, section: 'working', needsYou: true, priority: 12, status: `Claude couldn't finish: ${ag.note || 'something went wrong'}`,
       actions: [{ id: retry, label: 'Try Again', primary: true, ai: true },
         ...(ag.mode === 'request' ? opens(open, { primary: false }) : [{ id: 'open-ready', label: 'Open the Download Page' }]), { id: 'agent-dismiss', label: 'Dismiss' }] };
   }
@@ -664,7 +671,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
 
   // Claude started the download a while ago and nothing came: say so, rather than quietly going back to waiting.
   if (downloading && fresh(ag!.at) && !later(st?.lastErrorAt, ag!.at)) {
-    return { ...v, section: 'needs', priority: 12, status: `Nothing arrived from ${B}`,
+    return { ...v, section: 'working', needsYou: true, priority: 12, status: `Nothing arrived from ${B}`,
       detail: `Claude started the download ${ago(ag!.at, now)}, but no file has reached Downloads. Look in ${B}'s downloads: if it's there, add it here; if it stopped, download it again.`,
       actions: [{ id: 'agent-download', label: 'Download It Again', primary: true, ai: true }, { id: 'open-ready', label: st?.readySignal?.link ? 'Open the Download Link' : 'Open the Download Page' },
         addFile, { id: 'agent-dismiss', label: 'Dismiss' }] };
@@ -674,9 +681,9 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     // A download that couldn't be used never went in: getting it again is the way on, not running the import.
     if (st.lastErrorKind === 'file') {
       const again: Action[] = st.requestedAt && src.downloadUrl ? [{ id: 'open-download', label: 'Open the Download Page' }] : opens(open, { primary: false });
-      return { ...v, section: 'needs', priority: 12, status: 'That download couldn\'t be used', detail: st.lastError, actions: [{ ...addFile, primary: true }, ...again, skip] };
+      return { ...v, section: t.records > 0 ? 'done' : 'working', needsYou: true, priority: 12, status: 'That download couldn\'t be used', detail: st.lastError, actions: [{ ...addFile, primary: true }, ...again, skip] };
     }
-    return { ...v, section: 'needs', priority: 12, status: 'The import failed', detail: st.lastError, actions: [{ id: 'reimport', label: 'Try Again', primary: true }, addFile, skip] };
+    return { ...v, section: t.records > 0 ? 'done' : 'working', needsYou: true, priority: 12, status: 'The import failed', detail: st.lastError, actions: [{ id: 'reimport', label: 'Try Again', primary: true }, addFile, skip] };
   }
 
   const imported = t.records > 0 && t.ranAt;
@@ -716,10 +723,10 @@ function exportView(src: Source, inp: StatusInput): SourceView {
       const ready: Action[] = [{ id: 'agent-download', label: 'Download It for Me', primary: true, ai: true },
         { id: 'open-ready', label: signal.link ? 'Open the Download Link' : 'Open the Download Page' }, addFile, unrequest];
       if (signal.sender) { // an email from the service, in Mail's index: surer than a notification
-        return { ...v, section: 'needs', priority: 4, onTheWay: 'ready', status: `Ready: ${signal.sender ?? src.name} emailed you ${ago(signal.at, now)}`,
+        return { ...v, section: 'working', needsYou: true, priority: 4, onTheWay: 'ready', status: `Ready: ${signal.sender ?? src.name} emailed you ${ago(signal.at, now)}`,
           detail: `"${signal.text}"`, actions: ready, steps: undefined };
       }
-      return { ...v, section: 'needs', priority: 4, onTheWay: 'ready', status: `Looks ready: a notification from ${signal.via} ${ago(signal.at, now)}`,
+      return { ...v, section: 'working', needsYou: true, priority: 4, onTheWay: 'ready', status: `Looks ready: a notification from ${signal.via} ${ago(signal.at, now)}`,
         detail: `"${signal.text}"\nThe app guessed this from a notification, so check your email or ${src.name} to be sure, then download it.`,
         actions: ready, steps: undefined };
     }
@@ -730,15 +737,15 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     }
     const expired = src.expiresDays && since > (hi * HOUR + src.expiresDays * DAY);
     if (expired) {
-      return { ...v, section: 'needs', priority: 11, onTheWay: 'expired', status: `${reqText}. The link has probably expired.`,
+      return { ...v, section: 'working', needsYou: true, priority: 11, onTheWay: 'expired', status: `${reqText}. The link has probably expired.`,
         detail: 'If you never downloaded it, ask for a new export, then choose I\'ve Requested a New One.',
         actions: [...opens(open), { id: 'mark-requested', label: 'I\'ve Requested a New One' }, addFile], warnings: [] };
     }
     if (since > hi * HOUR) {
-      return { ...v, section: 'needs', priority: 11, onTheWay: 'late', status: `${reqText}. It's taking longer than usual.`,
+      return { ...v, section: 'working', needsYou: true, priority: 11, onTheWay: 'late', status: `${reqText}. It's taking longer than usual.`,
         detail: `Check your email for a message from ${src.name}. If nothing came, request it again.`, actions: getIt };
     }
-    return { ...v, section: 'needs', priority: 10, onTheWay: 'due', status: `${reqText}. It should be ready.`,
+    return { ...v, section: 'working', needsYou: !looking, priority: 10, onTheWay: 'due', status: `${reqText}. It should be ready.`,
       detail: watching ? `Look for an email from ${src.name}. Download it here, or anywhere: the app picks it up from Downloads.`
         : `Look for an email from ${src.name}, download it, then add it here (Watch Downloads is off in Settings).`, actions: getIt, steps: undefined };
   }
@@ -746,7 +753,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   // A file went in and the import ran, but nothing usable came out (wrong options picked, an empty account).
   const m = stats?.manifest ?? {};
   if (!imported && st?.lastFileAt && keys.some((k) => m[k]) && later(t.ranAt, st.lastFileAt, -1000)) {
-    return { ...v, section: 'needs', priority: 12, status: 'The export had nothing the app could read',
+    return { ...v, section: 'working', needsYou: true, priority: 12, status: 'The export had nothing the app could read',
       detail: `It imported, but produced no records. Check the export options in the steps below${src.id === 'spotify' ? ' (Extended streaming history, not just Account data)' : ''}, then add the new download.`,
       actions: [...opens(open), addFile, skip] };
   }
@@ -852,7 +859,7 @@ export function computeSources(inp: StatusInput): SourceView[] {
     return v;
   });
   // A source that waits on a setup item that's already resolved isn't blocked.
-  const done = new Set(views.filter((v) => v.group === 'setup' && v.section !== 'needs').map((v) => v.id));
+  const done = new Set(views.filter((v) => v.group === 'setup' && v.section !== 'todo').map((v) => v.id));
   for (const v of views) if (v.blockedBy && done.has(v.blockedBy)) v.blockedBy = undefined;
   return views.sort((a, b) => a.priority - b.priority);
 }
@@ -862,14 +869,16 @@ export function summarize(views: SourceView[], stats: Stats | null): Summary {
   return {
     records,
     sourcesDone: views.filter((v) => v.group !== 'setup' && v.section === 'done').length,
-    needsYou: views.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional).length,
+    needsYou: views.filter((v) => v.needsYou && !v.blockedBy && !v.optional).length,
+    todo: views.filter((v) => v.group !== 'setup' && v.section === 'todo' && !v.blockedBy && !v.optional).length, // as To Do's badge counts
     working: views.filter((v) => v.section === 'working').length,
   };
 }
 
+// What to do next: of what needs you and what's still to do, the most pressing (priority says), the optional ones last.
 export function nextUp(views: SourceView[]): string | null {
-  const needs = views.filter((v) => v.section === 'needs' && !v.blockedBy).sort((a, b) => a.priority - b.priority);
-  return (needs.find((v) => !v.optional) ?? needs[0])?.id ?? null;
+  const next = views.filter((v) => !v.blockedBy && (v.needsYou || v.section === 'todo')).sort((a, b) => a.priority - b.priority);
+  return (next.find((v) => !v.optional) ?? next[0])?.id ?? null;
 }
 
 export function sourceById(id: string): Source | undefined {

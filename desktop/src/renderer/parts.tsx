@@ -441,7 +441,7 @@ export function SkipForm({ view, action, onSubmit, onCancel }: { view: SourceVie
   return (
     <Sheet onClose={onCancel} testId="skip-form">
       <h2>{action.id === 'cant-export' ? `Why can't ${view.name} export?` : `Skip ${view.name}?`}</h2>
-      <p>It moves to Not Collecting, under Skipped by You. You can include it again any time.</p>
+      <p>Not now keeps it in To Do, under Optional. Any other reason puts it away: it stays in All Sources, where you can include it again any time.</p>
       <div className="sheet-actions" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
         {reasons.map((r) => <Button key={r} onClick={() => onSubmit(r)}>{r}</Button>)}
         <Button kind="plain" onClick={onCancel}>Cancel</Button>
@@ -593,9 +593,10 @@ export function Detail({ snap, view, onActed, onExplore }: { snap: Snapshot; vie
   // A source that needs a single input (password, identity) shows the form right away.
   useEffect(() => {
     const p = view.actions.find((a) => a.primary);
-    if (p && (p.input === 'password' || p.input === 'identity') && view.section === 'needs') setForm(p);
+    // Not while it's running: once it's stopped for you (a password that didn't work), or before it starts.
+    if (p && (p.input === 'password' || p.input === 'identity') && view.section !== 'unavailable' && (view.section !== 'working' || view.needsYou)) setForm(p);
     else setForm(null);
-  }, [view.id, view.section, view.status]);
+  }, [view.id, view.section, view.status, view.needsYou]);
 
   const run = async (a: Action, payload?: unknown, optedIn = false) => {
     if (a.confirm && !(payload as { confirmed?: boolean })?.confirmed) return setConfirm(a);
@@ -631,11 +632,11 @@ export function Detail({ snap, view, onActed, onExplore }: { snap: Snapshot; vie
 
       <div className="group-box" data-testid="state">
         <div className="status-box">
-          <div style={{ marginTop: 1 }}>{view.waiting ? <WaitClock size={18} started={view.requestedAt} /> : <StatusGlyph section={view.section} size={18} />}</div>
+          <div style={{ marginTop: 1 }}>{view.waiting ? <WaitClock size={18} started={view.requestedAt} /> : <StatusGlyph section={view.section} needsYou={view.needsYou} size={18} />}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="big appear-soft" key={view.status} data-testid="status">{view.status}</div>
             {view.detail && <div className="pre" data-testid="state-detail">{view.detail}</div>}
-            {view.section === 'working' && !view.waiting && <ProgressBar value={view.progress} small />}
+            {view.section === 'working' && !view.waiting && !view.needsYou && <ProgressBar value={view.progress} small />}
           </div>
         </div>
         {/* Claude asked something: what you write here goes back to it with Continue. Only then: carrying on after a quit,

@@ -105,6 +105,7 @@ input[type=checkbox]:checked::after {
 .status-dot { display: inline-block; border-radius: 50%; flex: none; }
 .status-dot.needs { background: var(--orange); box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 22%, transparent); }
 .status-dot.off { background: var(--tertiary); }
+.status-dot.todo { box-shadow: inset 0 0 0 1.5px var(--tertiary); }
 
 .ring { position: relative; flex: none; }
 .ring-track { stroke: var(--fill-strong); }
@@ -1620,3 +1621,18 @@ button.superlative:hover { transform: translateY(-2px); box-shadow: var(--card-s
 .cw-row-main { flex: 1; min-width: 0; }
 .cw-row-name { font-size: 12px; font-weight: 500; }
 .cw-row-status { font-size: 11px; color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* In To Do's Needs you now, each row says which list it lives in. */
+.lrow .status .stage { color: var(--secondary); font-weight: 500; }
+.lrow.selected .status .stage { color: inherit; }
+
+/* A toolbar button's name, as soon as the pointer is over it (the title tooltip takes a second or two). */
+.icon-btn[data-tip] { position: relative; }
+.icon-btn[data-tip]:hover::after, .icon-btn[data-tip]:focus-visible::after {
+  content: attr(data-tip); position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; white-space: nowrap; pointer-events: none;
+  font-size: 11.5px; font-weight: 500; color: var(--label); background: var(--group-box); padding: 4px 8px; border-radius: 6px;
+  box-shadow: 0 0 0 0.5px var(--separator), 0 4px 14px rgba(0, 0, 0, 0.14);
+}
+
+/* Who you are, changed in Your Setup. */
+.setup-identity-form { padding: 12px 16px 16px; border-top: 0.5px solid var(--separator); }

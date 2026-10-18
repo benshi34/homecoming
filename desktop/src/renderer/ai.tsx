@@ -9,8 +9,10 @@ import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { AgentChoices, RetentionSheet } from './ask.tsx';
 import { Glyph, GlyphTile } from './icons.tsx';
-import { NotificationsRow } from './notifications.tsx';
+import { notifyWords } from './notifications.tsx';
 import { AiMark, Button, Group, GroupRow, Toggle } from './ui.tsx';
+import { Picker } from './your_setup.tsx';
+import { CLAUDE_BROWSER_NAMES } from '../shared/setup.ts';
 
 // Turning AI on (agreed to then, the first time) or not.
 export const decideAi = (snap: Snapshot, on: boolean) =>
@@ -39,8 +41,9 @@ export function AiAgreement({ snap, onDecided, actions = true }: { snap: Snapsho
   );
 }
 
-// only: just the choice of agent (the Setup Assistant and Ask, before AI is turned on).
-export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) {
+// only: just the choice of agent (the Setup Assistant and Ask, before AI is turned on). page: the AI Settings page, which
+// also has Do It for Me's own settings (the Setup Assistant's AI step leaves them for later).
+export function AiSettings({ snap, only, page, onGeneral }: { snap: Snapshot; only?: 'agents'; page?: boolean; onGeneral?: () => void }) {
   const s = snap.settings;
   const a = snap.ask.settings;
   const [sheet, setSheet] = useState<null | { retention: AskProvider }>(null);
@@ -61,12 +64,12 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
   };
   // Codex works in a browser only inside its own app (the ChatGPT app's in-app browser, or Chrome through its
   // extension), not when another app runs it from the command line, as Homecoming does: so this one is Claude's.
-  // Where Do It for Me works (Your Setup), and whether it can: Claude Code, a browser the extension works in, a claude.ai sign-in.
+  // Where Do It for Me works (picked below), and whether it can: Claude Code, a browser the extension works in, a claude.ai sign-in.
   const ready = snap.setup.agent;
   const B = snap.setup.agentBrowser?.name ?? 'Chrome';
   const doIt = !claudeCode ? 'Needs Claude Code and the Claude in Chrome extension. Codex can use a browser only inside its own app, not when Homecoming runs it.'
     : !ready.ok ? ready.why
-      : `Claude Code works in your ${B}, where you're signed in, through the Claude in Chrome extension (pick the browser in Your Setup).${p.harness === 'codex' ? ' It\'s Claude even with Codex picked above: Codex can use a browser only inside its own app.' : ''}${
+      : `Claude Code works in your ${B}, where you're signed in, through the Claude in Chrome extension.${p.harness === 'codex' ? ' It\'s Claude even with Codex picked above: Codex can use a browser only inside its own app.' : ''}${
         chrome === 'connected' ? ' The extension is connected.' : chrome === 'not connected' ? ` The extension isn't connected: open ${B} and turn it on.` : ''}`;
   const off = <span className="tag">Off</span>;
   // Ask and making sense of a download only ever run when you ask: no switch, just who answers.
@@ -100,19 +103,75 @@ export function AiSettings({ snap, only }: { snap: Snapshot; only?: 'agents' }) 
               <Toggle checked={!!s.agentExports} onChange={(v) => void api.settings({ agentExports: v })} label="Do It for Me" testId="toggle-agent" />
             </span>
           ) : off} />
-        {on && s.agentExports && <NotificationsRow snap={snap} />}
-        <GroupRow icon={<GlyphTile glyph="tray" color="indigo" />} title="Download exports when they're ready" chevron={false}
-          subtitle="When a service says your data is ready, or Claude finds it on a check, Claude downloads it and the app reads it."
-          trailing={on && claudeCode && ready.ok && s.agentExports ? <Toggle checked={s.agentDownloads !== false} onChange={(v) => void api.settings({ agentDownloads: v })} label="Download when ready" testId="toggle-agent-downloads" /> : off} />
+        {!page && <DownloadsRow snap={snap} />}
         <GroupRow icon={<GlyphTile glyph="layers" color="teal" />} title="Make sense of new downloads" chevron={false}
           subtitle="For a download in a format the app doesn't know, when you ask: the agent writes a mapping from a sample of its layout." trailing={who} />
       </Group>}
+
+      {page && !only && <DoItForMe snap={snap} onGeneral={onGeneral} />}
 
       {sheet && RETENTION[sheet.retention] && (
         <RetentionSheet provider={sheet.retention} confirmed={retentionOk(a, sheet.retention)} onClose={() => setSheet(null)}
           onConfirm={() => void api.ask({ op: 'confirm-retention', provider: sheet.retention }).then(() => setSheet(null))} />
       )}
     </div>
+  );
+}
+
+// Download exports when they're ready: Do It for Me's, so in its group on the AI Settings page.
+function DownloadsRow({ snap }: { snap: Snapshot }) {
+  const s = snap.settings;
+  const can = s.aiOn === true && snap.ask.installed['claude-code'] && snap.setup.agent.ok && !!s.agentExports;
+  return (
+    <GroupRow icon={<GlyphTile glyph="tray" color="indigo" />} title="Download exports when they're ready" chevron={false} testId="ai-downloads"
+      subtitle="When a service says your data is ready, or Claude finds it on a check, Claude downloads it and the app reads it."
+      trailing={can ? <Toggle checked={s.agentDownloads !== false} onChange={(v) => void api.settings({ agentDownloads: v })} label="Download when ready" testId="toggle-agent-downloads" />
+        : <span className="tag">Off</span>} />
+  );
+}
+
+// Do It for Me's own settings: the browser it works in, downloading when ready, looking for exports every few hours,
+// and the inboxes it may look in for the email saying one's ready. Notifications (how it tells you it needs you) are
+// in General: said here when macOS isn't showing them.
+function DoItForMe({ snap, onGeneral }: { snap: Snapshot; onGeneral?: () => void }) {
+  const s = snap.settings;
+  const su = snap.setup;
+  const claude = su.browsers.filter((b) => b.claude);
+  const on = s.aiOn === true && !!s.agentExports;
+  // Claude's checks need it to download what it finds, and Claude Code.
+  const checks = on && s.agentDownloads !== false && snap.agentInstalled !== false;
+  const offInbox = s.inboxesOff ?? [];
+  const browser = su.agentBrowser?.name ?? 'your browser';
+  const shown = notifyWords(snap.notifyCheck).on;
+  return (
+    <>
+      <Group title="Do It for Me" testId="ai-do-it" footer={on ? undefined : 'Turn on Do It for Me above to use these.'}>
+        <GroupRow icon={<GlyphTile glyph="compass" color="purple" />} title="Works in" chevron={false} testId="setup-agent-browser"
+          subtitle={claude.length ? 'The browser Claude requests and downloads your exports in, through the Claude in Chrome extension.'
+            : `Needs ${CLAUDE_BROWSER_NAMES}: the Claude in Chrome extension works only in those.`}
+          trailing={claude.length ? <Picker value={su.agentBrowser?.id ?? ''} onChange={(v) => void api.settings({ agentBrowser: v })} label="Do It for Me works in" testId="setup-agent-browser-pick"
+            options={claude.map((b) => ({ value: b.id, label: b.name }))} /> : <span className="tag">None here</span>} />
+        <DownloadsRow snap={snap} />
+        <GroupRow icon={<GlyphTile glyph="clock" color="orange" />} title="Look for exports every few hours" chevron={false} testId="settings-checks"
+          subtitle={checks ? `While an export is on its way, Claude opens ${browser} now and then to check the service's page, or your inbox for the email saying it's ready, and downloads it.`
+            : 'Needs Do It for Me, with downloads on.'}
+          trailing={checks ? <Toggle checked={s.agentChecks !== false} onChange={(v) => void api.settings({ agentChecks: v })} label="Look for exports every few hours" testId="toggle-checks" />
+            : <span className="tag">Off</span>} />
+        {on && shown === false && (
+          <GroupRow icon={<GlyphTile glyph="bell" color="orange" />} title="Notifications are off" testId="ai-notifications-off" onClick={onGeneral}
+            subtitle="You won't see when Claude needs you to sign in or confirm it's you. Turn them on in General." />
+        )}
+      </Group>
+      <Group title="Inboxes Claude may look in" testId="setup-inboxes"
+        footer={`With Do It for Me on, Claude looks in these, in ${browser}, for the one email saying an export is ready, and opens only that. Your addresses are in Your Setup, under who you are.`}>
+        {su.inboxes.map((x) => (
+          <GroupRow key={x.email} icon={<GlyphTile glyph="at" color={x.on ? 'blue' : 'gray'} />} title={x.email} subtitle={x.app} chevron={false} testId={`setup-inbox-${x.email}`}
+            trailing={<Toggle checked={x.on} label={`Claude may look in ${x.email}`} testId={`toggle-inbox-${x.email}`}
+              onChange={(v) => void api.settings({ inboxesOff: v ? offInbox.filter((e) => e !== x.email.toLowerCase()) : [...offInbox, x.email.toLowerCase()] })} />} />
+        ))}
+        {!su.inboxes.length && <GroupRow icon={<GlyphTile glyph="at" color="gray" />} title="No email addresses yet" subtitle="Add yours to who you are, in Your Setup." chevron={false} />}
+      </Group>
+    </>
   );
 }
 
@@ -145,7 +204,7 @@ export function AskAiGate({ snap, onSettings }: { snap: Snapshot; onSettings: ()
 }
 
 // The sidebar's AI Settings page.
-export function AiPage({ snap, toolbar }: { snap: Snapshot; toolbar?: ReactNode }) {
+export function AiPage({ snap, toolbar, onGeneral }: { snap: Snapshot; toolbar?: ReactNode; onGeneral?: () => void }) {
   return (
     <div className="column grouped" data-testid="ai-page">
       <div className="toolbar drag"><h1>AI Settings</h1><div className="spacer" />{toolbar}</div>
@@ -153,7 +212,7 @@ export function AiPage({ snap, toolbar }: { snap: Snapshot; toolbar?: ReactNode 
         <div className="ai-page">
           <div className="ai-hero"><AiMark size={40} /><h2>AI Settings</h2>
             <p>One agent does the AI work in Homecoming: pick it here, with its key or model. Ask and making sense of a download use it only when you ask; Do It for Me can be turned on or off.</p></div>
-          <AiSettings snap={snap} />
+          <AiSettings snap={snap} page onGeneral={onGeneral} />
         </div>
       </div>
     </div>

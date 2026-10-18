@@ -241,7 +241,7 @@ test('choosing accounts skips the rest and builds one page per account', async (
   assert.equal(await step(), 'export:discord');
   const s = await snap(run.page);
   assert.equal(find(s, 'spotify').status, 'Skipped: I don\'t use it');
-  assert.equal(find(s, 'discord').section, 'needs');
+  assert.equal(find(s, 'discord').section, 'todo');
   assert.match(await run.page.locator('[data-testid=sb-Exports]').innerText(), /Exports 1\/3/);
 });
 
@@ -260,7 +260,7 @@ test('an export page opens the site in your browser, and the download is picked 
   // On to the one not asked for yet, Reddit; skipping it, on past the exports.
   assert.equal(await step(), 'export:reddit');
   await go('button[data-action=skip-export]');
-  assert.equal(find(await snap(run.page), 'reddit').status, 'Set aside for now', 'for now: kept under Needs You, not put away');
+  assert.equal(find(await snap(run.page), 'reddit').status, 'Set aside for now', 'for now: kept in To Do, not put away');
 });
 
 test('Outlook and other email: an account with its own page, set up through Mail; no Extras section after', async () => {

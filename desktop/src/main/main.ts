@@ -391,6 +391,21 @@ async function refresh() {
   void recheckFound();
   maybeAutoRefresh();
   maybeReindex(); // unless a read was just queued, which builds the index last
+  maybeWarmExplore();
+}
+
+// Explore's home, built ahead (main/explore.ts) once nothing's being read or imported: as soon as there's a library,
+// and after each change to it, so Explore opens on it. Not in tests unless they ask (UMP_EXPLORE_WARM=1).
+let explore: ReturnType<typeof exploreRunner> | null = null;
+let warmTimer: NodeJS.Timeout | null = null;
+const WARM = process.env.UMP_EXPLORE_WARM === '1' || (process.env.UMP_EXPLORE_WARM !== '0' && !NO_AUTORUN);
+function maybeWarmExplore() {
+  if (!WARM || !explore || queue.busy()) return;
+  if (warmTimer) clearTimeout(warmTimer);
+  warmTimer = setTimeout(() => {
+    warmTimer = null;
+    if (!queue.busy()) explore?.warm();
+  }, Number(process.env.UMP_EXPLORE_WARM_MS || 5_000));
 }
 
 // A read killed after its connectors but before the index (a crash, a forced quit) leaves the data newer than the
@@ -498,7 +513,7 @@ function snapshot(): Snapshot {
   views = currentViews();
   if (probeError && !probe) {
     const fda = views.find((v) => v.id === 'python_env');
-    if (fda) Object.assign(fda, { section: 'needs', status: 'Couldn\'t run Python', detail: probeError, priority: 0 });
+    if (fda) Object.assign(fda, { section: 'todo', needsYou: true, status: 'Couldn\'t run Python', detail: probeError, priority: 0 });
   }
   for (const v of views) {
     const src = BY_ID[v.id];
@@ -1334,9 +1349,16 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       store.update(() => delete st().doneAt);
       break;
     case 'skip':
-    case 'cant-export':
-      store.update(() => (st().skipped = payload.reason || (action === 'cant-export' ? 'This account can\'t export' : 'Not using it')));
+    case 'cant-export': {
+      const reason = payload.reason || (action === 'cant-export' ? 'This account can\'t export' : 'Not using it');
+      store.update(() => (st().skipped = reason));
+      // Where it went, and the way back (setup checks stay in Setup Checks, under Not available).
+      if (src && src.group !== 'setup') {
+        toast(reason === 'Not now' ? `${src.name} is set aside, under Optional in To Do.` : `${src.name} is skipped. It's in All Sources if you want it back.`, 'info',
+          { sourceId, action: 'unskip' });
+      }
       break;
+    }
     case 'unskip':
       store.update(() => delete st().skipped);
       break;
@@ -2438,8 +2460,9 @@ function wireIpc() {
   // model anything: read that, and stop it.
   ipcMain.handle('ai-chrome', () => chromeStatus());
   ipcMain.handle('ask', (_e, a: AskOp) => askOp(a));
-  const explore = exploreRunner(P, app.getAppPath(), path.join(app.getPath('userData'), 'explore-cache'),
+  explore = exploreRunner(P, app.getAppPath(), path.join(app.getPath('userData'), 'explore-cache'),
     (key, data) => win?.webContents.send('explore-progress', { key, ...data }));
+  maybeWarmExplore();
   ipcMain.handle('explore', (_e, a: { op: string; args?: unknown[] }) => {
     // The stream's files (corpus/stream/): show one in Finder, or write them now.
     if (a.op === 'reveal-stream') {
@@ -2450,7 +2473,7 @@ function wireIpc() {
       return Promise.resolve({ ok: true });
     }
     if (a.op === 'stream-build' && READONLY) return Promise.resolve({ error: 'read-only' });
-    return explore(a.op, a.args);
+    return explore!(a.op, a.args);
   });
   // Export Your Library (library_export.ts): what it would take, then one export at a time to where the save dialog says.
   // It only reads the library, so read-only mode and the demo can export too.

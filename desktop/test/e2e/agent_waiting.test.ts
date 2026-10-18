@@ -1,6 +1,6 @@
 // Claude waiting in Chrome for the person (a passkey, a sign-in, Chrome asking to allow Claude on a site), with the
 // stand-in for Claude Code in Chrome: the app says so at once in a notification, even in the middle of Ask for
-// Everything, and the source is first in Needs You as "Waiting for you" until Claude carries on.
+// Everything, and the source is first in To Do (Needs you now) as "Waiting for you" until Claude carries on.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -63,8 +63,8 @@ function keptQuietly(title: string) {
 
 test('notifications: a test, macOS keeping it without showing it, the way to its settings, and the first one when Do It for Me is turned on', async () => {
   const p = run.page;
-  await act(p, '*', 'show-ai');
-  const row = p.locator('[data-testid=notifications-row]');
+  await p.locator('[data-testid=nav-general]').click();
+  const row = p.locator('[data-testid=general] [data-testid=notifications-row]');
   await row.waitFor();
   assert.match(await row.innerText(), /Send a test to make sure macOS shows them/);
   await row.locator('button[data-action=check-notifications]').click();
@@ -73,12 +73,10 @@ test('notifications: a test, macOS keeping it without showing it, the way to its
   await row.locator('.warn-text', { hasText: 'without showing them' }).waitFor({ timeout: 10_000 });
   assert.equal((await snap(p)).notifyCheck?.state, 'quiet');
   assert.equal(await row.locator('[data-testid=notifications-tag]').innerText(), 'Off');
-  // Settings says so too.
-  await p.click('[data-testid=nav-overview]');
-  await p.locator('button[aria-label=Settings]').first().click();
-  await p.locator('[data-testid=settings] [data-testid=settings-notifications] [data-testid=notifications-tag]', { hasText: 'Off' }).waitFor();
-  await p.keyboard.press('Escape');
+  // AI Settings says so, with Do It for Me on, and leads to General, where they're set.
   await act(p, '*', 'show-ai');
+  await p.locator('[data-testid=ai-notifications-off]').click();
+  await row.waitFor();
   await row.locator('button[data-action=open-app-notifications]').click();
   await until(p, 'its settings', () => /x-apple\.systempreferences:com\.apple\.Notifications-Settings\.extension\?id=com\.github\.Electron/.test(opened()), 5_000);
   // Ask for Everything says so before Claude starts.
@@ -103,8 +101,8 @@ function notificationSettings(flags: number) {
 test('notifications: Notification settings say they\'re on, though the test one has gone from Notification Center; and off, on coming back', async () => {
   const p = run.page;
   notificationSettings((1 << 25) | (1 << 3) | 0b110);
-  await act(p, '*', 'show-ai');
-  const row = p.locator('[data-testid=notifications-row]');
+  await p.locator('[data-testid=nav-general]').click();
+  const row = p.locator('[data-testid=general] [data-testid=notifications-row]');
   await row.locator('button[data-action=check-notifications]').click();
   await until(p, 'on', (x) => x.notifyCheck?.state === 'shown', 10_000);
   await row.locator('[data-testid=notifications-tag]', { hasText: /^On$/ }).waitFor({ timeout: 5_000 });
@@ -116,18 +114,18 @@ test('notifications: Notification settings say they\'re on, though the test one 
   fs.rmSync(file('usernoted.plist'));
 });
 
-test('waiting for you: a notification at once, first in Needs You, then Claude carries on by itself', async () => {
+test('waiting for you: a notification at once, first in To Do, then Claude carries on by itself', async () => {
   const p = run.page;
   await act(p, '*', 'request-all', { ids: ['spotify', 'instagram'] });
   let s = await until(p, 'Spotify waiting', (x) => find(x, 'spotify').status.startsWith('Waiting for you'), 20_000);
   const v = find(s, 'spotify');
   assert.equal(v.status, 'Waiting for you: Confirm it\'s you with your passkey in Chrome.');
-  assert.equal(v.section, 'needs');
+  assert.deepEqual([v.section, v.needsYou], ['working', true], 'still in progress, and it needs you');
   assert.equal(s.next, 'spotify', 'first of all');
   assert.equal(v.actions.find((a) => a.primary)?.id, 'open-chrome');
   assert.match(opened(), /notify: Spotify: Claude is waiting for you → spotify/, 'said at once, in the middle of Ask for Everything');
   s = await until(p, 'both requested', (x) => !!find(x, 'spotify').requestedAt && !!find(x, 'instagram').requestedAt, 30_000);
-  assert.notEqual(find(s, 'spotify').section, 'needs');
+  assert.ok(!find(s, 'spotify').needsYou, 'carried on: it doesn\'t need you any more');
   await until(p, 'one notification at the end', () => /notify: Claude asked for 2 of your exports/.test(opened()), 10_000);
   assert.deepEqual(run.errors, []);
   assert.ok((await snap(p)).log.some((l) => /Spotify: Claude is waiting for you\. Confirm it's you with your passkey in Chrome\. Claude carries on as soon as it's done\./.test(l.line)));

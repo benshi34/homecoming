@@ -55,7 +55,7 @@ after(async () => {
 test('a finished encrypted backup asks for its password', async () => {
   const s = await snap(run.page);
   const v = find(s, 'iphone_backup');
-  assert.equal(v.section, 'needs');
+  assert.equal(v.section, 'todo');
   assert.equal(v.status, 'Backup from Sep 1, 2026 is ready to read');
   assert.match(v.detail!, /Test iPhone, iOS 26\.0/);
   await selectSource(run.page, 'iphone_backup');
@@ -117,7 +117,7 @@ test('a newer backup asks again', async () => {
   await run.page.locator('[data-testid=detail] button[data-action=iphone-run]').waitFor();
   const s = await (async () => {
     await run.page.evaluate(() => (window as unknown as { api: { action(a: string, b: string): Promise<unknown> } }).api.action('iphone_backup', 'recheck'));
-    return until(run.page, 'newer backup', (x) => find(x, 'iphone_backup').section === 'needs');
+    return until(run.page, 'newer backup', (x) => find(x, 'iphone_backup').status.startsWith('A newer backup'));
   })();
   assert.match(find(s, 'iphone_backup').status, /^A newer backup is ready \(Oct 9, 2026\)/);
 });

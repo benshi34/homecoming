@@ -52,7 +52,8 @@ test('describeNew', () => {
 test('the identity row asks about new finds, and only new ones', () => {
   const cands = [c('email', 'ada@example.com'), c('email', 'ada.work@example.com', true, 'LinkedIn export')];
   const asked = view('identity', { probe: probe({ identity: ADA }), candidates: cands });
-  assert.equal(asked.section, 'needs');
+  assert.equal(asked.section, 'todo', 'new finds to look at: to do in Setup Checks');
+  assert.ok(!asked.needsYou, 'nothing waits on it');
   assert.equal(asked.status, '1 new email address found');
   assert.match(asked.detail!, /ada\.work@example\.com \(LinkedIn export\)/);
   assert.equal(asked.actions[0].label, 'Review');

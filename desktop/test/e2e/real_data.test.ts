@@ -53,7 +53,7 @@ describe('read-only on the real corpus', { skip: SKIP }, () => {
     const has = (k: string) => (manifest[k]?.count ?? 0) > 0;
     for (const src of CATALOG.filter((x) => x.group !== 'setup' && x.group !== 'iphone' && (x.produces ?? []).some(has))) {
       const v = find(s, src.id);
-      assert.ok(v.section === 'done' || v.section === 'needs', `${src.id}: ${v.section}`);
+      assert.ok(v.section === 'done' || !!v.needsYou, `${src.id}: ${v.section}`);
       assert.equal(v.records, (src.produces ?? []).reduce((n, k) => n + (manifest[k]?.count ?? 0), 0), src.id);
     }
     if (Object.keys(manifest).some((k) => k.startsWith('phone_'))) assert.ok(find(s, 'iphone_backup').records > 0);

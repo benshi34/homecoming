@@ -52,7 +52,9 @@ const G: Record<string, ReactNode> = {
   search: <><circle cx="11" cy="11" r="6.5" /><path d="m20 20-4.4-4.4" /></>,
   checkCircle: <><circle cx="12" cy="12" r="8.5" /><path d="m8 12.3 2.8 2.8L16.2 9.5" /></>,
   minusCircle: <><circle cx="12" cy="12" r="8.5" /><path d="M8 12h8" /></>,
-  gear: <><circle cx="12" cy="12" r="3" /><path d="M12 3.5v2.3M12 18.2v2.3M3.5 12h2.3M18.2 12h2.3M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6" /></>,
+  gear: <><path d="M18.79 10.31 L21.10 10.63 L21.10 13.37 L18.79 13.69 L18.00 15.61 L19.40 17.47 L17.47 19.40 L15.61 18.00 L13.69 18.79 L13.37 21.10 L10.63 21.10 L10.31 18.79 L8.39 18.00 L6.53 19.40 L4.60 17.47 L6.00 15.61 L5.21 13.69 L2.90 13.37 L2.90 10.63 L5.21 10.31 L6.00 8.39 L4.60 6.53 L6.53 4.60 L8.39 6.00 L10.31 5.21 L10.63 2.90 L13.37 2.90 L13.69 5.21 L15.61 6.00 L17.47 4.60 L19.40 6.53 L18.00 8.39Z" strokeLinejoin="round" /><circle cx="12" cy="12" r="3" /></>,
+  // The Setup Assistant: a signpost, the way through setup (the sparkle is AI's).
+  signpost: <><path d="M12 21V3.5M12 5h6l2.2 2.2L18 9.4h-6M12 11.6H6l-2.2 2.2L6 16h6" /></>,
   layers: <><path d="m12 4 8.5 4.5L12 13 3.5 8.5Z" /><path d="m3.5 12.5 8.5 4.5 8.5-4.5M3.5 16l8.5 4.5 8.5-4.5" /></>,
   heart: <><path d="M12 19.5s-7.5-4.6-7.5-10A4.2 4.2 0 0 1 12 7.1a4.2 4.2 0 0 1 7.5 2.4c0 5.4-7.5 10-7.5 10Z" /></>,
   stream: <><circle cx="6" cy="6" r="1.6" /><circle cx="6" cy="12" r="1.6" /><circle cx="6" cy="18" r="1.6" /><path d="M10.5 6h8M10.5 12h8M10.5 18h5M6 7.6v2.8M6 13.6v2.8" /></>,

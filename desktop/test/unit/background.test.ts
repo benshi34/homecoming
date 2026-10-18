@@ -10,7 +10,7 @@ test('the menu bar lists what needs you, most pressing first, Claude\'s question
     s.found.push({ path: '/d/package.zip', name: 'package.zip', kind: 'discord', valid: true, size: 6e6, foundAt: hoursAgo(0), sourceId: 'discord' });
   }) });
   const needs = trayNeeds(vs);
-  const summary = vs.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional).length;
+  const summary = vs.filter((v) => v.needsYou && !v.blockedBy && !v.optional).length;
   assert.equal(needs.length, summary, 'as many as the Dock badge counts');
   assert.deepEqual(needs.slice(0, 2), [{ id: 'linkedin', label: 'Claude needs you for LinkedIn' }, { id: 'discord', label: 'Discord: Found the export in Downloads' }]);
   assert.ok(needs.every((n) => n.label.length <= 60));

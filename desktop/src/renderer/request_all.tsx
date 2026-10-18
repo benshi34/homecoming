@@ -1,5 +1,5 @@
 // Ask for Everything: every export still to ask for, in one sheet, by who does it. Claude asks for the ones its browser
-// (Chrome, or the one picked in Your Setup) is signed in to, one after another, without you, and says what needs you
+// (Chrome, or the one picked in AI Settings) is signed in to, one after another, without you, and says what needs you
 // once, at the end. The ones it isn't signed in to, you sign in to first (your saved password or passkey fills it in;
 // the app never sees it), and Claude does them too. Then what's yours: a site Claude in Chrome isn't allowed on, a service's own page, and requests by email.
 
@@ -27,7 +27,7 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
   useEffect(check, []);
   const ask = () => void api.action('*', 'request-all', { ids: plan.claude.map((v) => v.id) }).then((r) => r.ok && (onAsked ? onAsked() : onClose()));
   const agentOn = snap.settings.aiOn === true && !!snap.settings.agentExports;
-  const B = snap.setup?.agentBrowser?.name ?? 'Chrome'; // where Claude works (Your Setup)
+  const B = snap.setup?.agentBrowser?.name ?? 'Chrome'; // where Claude works (AI Settings)
   const icon = (v: SourceView) => <SourceIcon id={v.id} group={v.group} size={24} />;
   const total = plan.claude.length + plan.signIn.length + plan.yourself.length + plan.email.length;
   // Sites Claude hasn't worked on yet: it opens them first, while you're there to allow each (main.ts visitSites).

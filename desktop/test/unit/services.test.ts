@@ -60,7 +60,8 @@ test('its status: not asked yet, asked, then collected', () => {
     fn?.(s);
   });
   const fresh = view('svc_wattpad', { state: st() });
-  assert.equal(fresh.section, 'needs');
+  assert.equal(fresh.section, 'todo', 'not asked yet: to do, not something that needs you');
+  assert.ok(!fresh.needsYou);
   assert.equal(fresh.status, 'Not requested yet');
   assert.deepEqual(actionIds(fresh), ['open', 'mark-requested', 'add-file', 'draft-request', 'skip', 'remove-service']);
   const asked = view('svc_wattpad', { state: st((s) => (s.sources.svc_wattpad = { requestedAt: hoursAgo(2) })) });

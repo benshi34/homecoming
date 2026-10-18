@@ -607,7 +607,7 @@ function ProviderDetail({ snap, focusKey }: { snap: Snapshot; focusKey: boolean 
         <div className="provider-detail-banner">
           <Banner kind="warning">
             {info.harness === 'codex' ? 'Codex comes with the ChatGPT app, or install it on its own.' : 'Install Claude Code.'}
-            {info.auth.startsWith('Your') ? ' Then sign in to it once in Terminal.' : ''}
+            {info.auth.startsWith('Your') ? ' Then Sign In here: its sign-in opens in your browser.' : ''}
             <div className="banner-actions">
               <Button size="small" onClick={() => openLink(LINKS[info.harness].url)}>{LINKS[info.harness].label}…</Button>
               <Button size="small" onClick={check} disabled={checking}>{checking ? 'Checking…' : 'Check Again'}</Button>

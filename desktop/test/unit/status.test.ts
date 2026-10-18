@@ -4,6 +4,8 @@ import { CATALOG } from '../../src/shared/catalog.ts';
 import { computeSources, gapYears, LAW_HINT, latestBackup, mirrorIsCurrent, nextUp, otherPhoneRead, phoneDevices, READ_ONLY_OK, robustFirst, summarize, totals } from '../../src/shared/status.ts';
 import type { Backup, JobView } from '../../src/shared/types.ts';
 import { actionIds, H, hoursAgo, input, NOW, probe, state, stats, view, views } from './helpers.ts';
+// Where it lives (its stage), and whether it needs you there.
+const place = (v: { section: string; needsYou?: boolean }) => [v.section, !!v.needsYou];
 
 const backup = (over: Partial<Backup> = {}): Backup => ({
   dir: '/b/1', id: '00008120-TEST', device: 'Test iPhone', product: 'iPhone99,1', ios: '26.0',
@@ -28,8 +30,9 @@ describe('every source', () => {
   test('a fresh Mac starts with Full Disk Access and identity', () => {
     const vs = views({ probe: probe({ fda: false, identity: null, sources: { imessage: 'blocked', ai_coding: 'ok' } }) });
     assert.equal(nextUp(vs), 'fda');
-    const needs = vs.filter((v) => v.section === 'needs' && !v.blockedBy).map((v) => v.id);
-    assert.ok(needs.indexOf('fda') < needs.indexOf('identity'));
+    const needs = vs.filter((v) => v.needsYou && !v.blockedBy).map((v) => v.id);
+    assert.ok(needs.includes('fda'), 'Full Disk Access holds the rest up: it needs you');
+    assert.deepEqual(place(vs.find((v) => v.id === 'identity')!), ['todo', false], 'who you are is to do: nothing waits on it');
     assert.equal(vs.find((v) => v.id === 'ai_coding')!.blockedBy, undefined, 'collection never waits for identity');
     assert.ok(vs.find((v) => v.id === 'identity')!.priority > vs.find((v) => v.id === 'discord')!.priority, 'identity is a final check');
     assert.equal(vs.find((v) => v.id === 'imessage')!.blockedBy, 'fda');
@@ -39,11 +42,11 @@ describe('every source', () => {
 describe('setup', () => {
   test('identity', () => {
     const missing = view('identity', { probe: probe({ identity: null }) });
-    assert.equal(missing.section, 'needs');
+    assert.deepEqual(place(missing), ['todo', false]);
     assert.equal(missing.priority, 65);
     assert.equal(missing.actions[0].input, 'identity');
     const partial = view('identity', { probe: probe({ identity: { names: ['Ada'], emails: [], usernames: [], phones: [] } }) });
-    assert.equal(partial.section, 'needs', 'a name without an email is not enough');
+    assert.deepEqual(place(partial), ['todo', false], 'a name without an email is not enough');
     const ok = view('identity');
     assert.equal(ok.section, 'done');
     assert.match(ok.status, /Ada Lovelace, 1 email$/);
@@ -51,7 +54,7 @@ describe('setup', () => {
 
   test('Full Disk Access', () => {
     const no = view('fda', { probe: probe({ fda: false, sources: { imessage: 'blocked', photos: 'blocked', ai_coding: 'ok' } }) });
-    assert.equal(no.section, 'needs');
+    assert.deepEqual(place(no), ['todo', true]);
     assert.equal(no.status, 'Needed for 3 sources on this Mac', 'and the iPhone backup it can\'t see yet');
     assert.equal(view('fda', { probe: probe({ fda: false, backups: [backup()], sources: { imessage: 'blocked', photos: 'blocked', ai_coding: 'ok' } }) }).status, 'Needed for 2 sources on this Mac');
     assert.deepEqual(actionIds(no), ['open-fda-settings', 'recheck']);
@@ -61,7 +64,7 @@ describe('setup', () => {
 
   test('Python packages', () => {
     const v = view('python_env', { probe: probe({ python: { path: '/usr/local/bin/python3', version: '3.14', cryptography: false, pypdf: false } }) });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', true]);
     assert.equal(v.status, 'Missing cryptography and pypdf');
     assert.match(v.detail!, /\/usr\/local\/bin\/python3 -m pip install cryptography pypdf/);
     assert.equal(view('python_env').section, 'done');
@@ -71,7 +74,7 @@ describe('setup', () => {
     const p = probe();
     p.corpus.in_icloud = true;
     const v = view('corpus_location', { probe: p });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', true]);
     const a = v.actions.find((x) => x.id === 'exclude-icloud')!;
     assert.match(a.confirm!, /corpus\.nosync/);
     assert.equal(view('corpus_location').section, 'done');
@@ -80,7 +83,7 @@ describe('setup', () => {
   test('disk space', () => {
     const p = probe();
     p.corpus.free_bytes = 5e9;
-    assert.equal(view('disk_space', { probe: p }).section, 'needs');
+    assert.deepEqual(place(view('disk_space', { probe: p })), ['todo', false], 'worth doing; nothing waits on it');
     const ok = view('disk_space', { probe: p, state: state((s) => (s.sources.disk_space = { doneAt: hoursAgo(1) })) });
     assert.equal(ok.section, 'done');
     assert.equal(ok.warnings.length, 1);
@@ -91,7 +94,7 @@ describe('setup', () => {
     const retention = (claude: object) => ({ ...probe().retention, claude: claude as never });
     assert.equal(view('retention_claude', { probe: probe({ retention: retention({ present: false }) }) }).section, 'unavailable');
     const short = view('retention_claude', { probe: probe({ retention: retention({ present: true, days: 7 }) }) });
-    assert.equal(short.section, 'needs');
+    assert.deepEqual(place(short), ['todo', false]);
     assert.equal(short.status, 'Transcripts are deleted after 7 days');
     assert.deepEqual(actionIds(short), ['fix-claude-retention']);
     assert.equal(view('retention_claude', { probe: probe({ retention: retention({ present: true, days: null }) }) }).status, 'Transcripts are deleted after 30 days');
@@ -101,7 +104,7 @@ describe('setup', () => {
   test('Terminal history retention', () => {
     const shell = (s: object | undefined) => probe({ retention: { ...probe().retention, shell: s as never } });
     const def = view('retention_shell', { probe: shell({ shell: 'zsh', savehist: 1000, extended: false }) });
-    assert.equal(def.section, 'needs');
+    assert.deepEqual(place(def), ['todo', false]);
     assert.equal(def.status, 'Keeps only your last 1,000 commands, without times');
     assert.deepEqual(actionIds(def), ['fix-shell-retention']);
     assert.equal(view('retention_shell', { probe: shell({ shell: 'zsh', savehist: 10000, extended: true }) }).status, 'Keeps only your last 10,000 commands');
@@ -112,10 +115,10 @@ describe('setup', () => {
 
   test('Messages retention', () => {
     const with_ = (messages: object) => probe({ retention: { ...probe().retention, messages: messages as never } });
-    assert.equal(view('retention_messages', { probe: with_({ readable: true, value: 30 }) }).section, 'needs');
+    assert.deepEqual(place(view('retention_messages', { probe: with_({ readable: true, value: 30 }) })), ['todo', false]);
     assert.equal(view('retention_messages', { probe: with_({ readable: true, value: null }) }).section, 'done', 'unset means the default, Forever');
     const unknown = view('retention_messages', { probe: with_({ readable: false, value: null }) });
-    assert.equal(unknown.section, 'needs');
+    assert.deepEqual(place(unknown), ['todo', false]);
     assert.ok(actionIds(unknown).includes('mark-done'));
     assert.equal(view('retention_messages', { probe: with_({ readable: false, value: null }), state: state((s) => (s.sources.retention_messages = { doneAt: hoursAgo(1) })) }).section, 'done');
   });
@@ -124,7 +127,7 @@ describe('setup', () => {
     const with_ = (m?: object, over = {}) => probe({ retention: { ...probe().retention, iphone_messages: m as never }, ...over });
     assert.equal(view('retention_iphone_messages', { probe: with_({ readable: true, value: null }) }).status, 'Forever (from your iPhone backup)');
     const short = view('retention_iphone_messages', { probe: with_({ readable: true, value: 365 }) });
-    assert.equal(short.section, 'needs');
+    assert.deepEqual(place(short), ['todo', false]);
     assert.equal(short.status, 'The iPhone deletes messages after 365 days');
     const unknown = view('retention_iphone_messages', { probe: with_(undefined) });
     assert.match(unknown.detail!, /once one has been read/);
@@ -137,7 +140,7 @@ describe('setup', () => {
     assert.equal(view('retention_codex', { probe: probe({ retention: { ...r, codex: { present: true } } }) }).status, 'Keeps every session until you delete it');
     assert.equal(view('retention_codex').section, 'unavailable');
     const g = view('retention_google');
-    assert.equal(g.section, 'needs');
+    assert.deepEqual(place(g), ['todo', false]);
     assert.deepEqual(actionIds(g), ['open-external', 'mark-done', 'skip'], 'with "I Don\'t Use Google"');
     assert.equal(view('retention_google', { state: state((s) => (s.sources.google_takeout = { skipped: 'I don\'t use it' })) }).section, 'unavailable');
     assert.equal(view('retention_maps').status, 'Timeline deletes visits older than 3 months by default');
@@ -147,7 +150,7 @@ describe('setup', () => {
   test('Safari retention', () => {
     const with_ = (safari: object, over = {}) => probe({ retention: { ...probe().retention, safari: safari as never }, ...over });
     const dflt = view('retention_safari', { probe: with_({ readable: true, value: null }) });
-    assert.equal(dflt.section, 'needs');
+    assert.deepEqual(place(dflt), ['todo', false]);
     assert.equal(dflt.status, 'Safari removes history after a year');
     assert.equal(view('retention_safari', { probe: with_({ readable: false, value: null }, { fda: false }) }).blockedBy, 'fda');
     assert.equal(view('retention_safari').section, 'done');
@@ -164,7 +167,7 @@ describe('Mac sources', () => {
 
   test('present but never read', () => {
     const v = view('apple_notes');
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', false]);
     assert.equal(v.status, 'Ready to read');
     assert.equal(v.actions[0].id, 'run');
   });
@@ -200,7 +203,7 @@ describe('Mac sources', () => {
   test('errors show until a later successful run', () => {
     const err = state((s) => (s.sources.calls = { lastError: 'database is locked', lastErrorAt: hoursAgo(0.5) }));
     const failed = view('calls', { state: err, stats: stats({ calls: { count: 3, ran_at: hoursAgo(5) } }) });
-    assert.equal(failed.section, 'needs');
+    assert.deepEqual(place(failed), ['done', true], 'read before: still collected, and the failed read needs you');
     assert.equal(failed.detail, 'database is locked');
     const recovered = view('calls', { state: err, stats: stats({ calls: { count: 3, ran_at: hoursAgo(0.1) } }) });
     assert.equal(recovered.section, 'done');
@@ -240,7 +243,7 @@ describe('Mac sources', () => {
 describe('iPhone backup', () => {
   test('no backup yet: steps to make one', () => {
     const v = view('iphone_backup');
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', false]);
     assert.equal(v.status, 'No backup on this Mac yet');
     assert.equal(v.steps!.length, 5);
   });
@@ -252,7 +255,7 @@ describe('iPhone backup', () => {
 
   test('encrypted backup ready: asks for the password', () => {
     const v = view('iphone_backup', { probe: probe({ backups: [backup()] }) });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', false]);
     assert.equal(v.status, 'Backup from Sep 1, 2026 is ready to read');
     assert.equal(v.actions[0].id, 'iphone-run');
     assert.equal(v.actions[0].input, 'password');
@@ -293,7 +296,7 @@ describe('iPhone backup', () => {
   test('a newer backup than the mirror', () => {
     const s = stats({ phone_whatsapp: { count: 50 } });
     const v = view('iphone_backup', { probe: probe({ backups: [backup({ date: '2026-10-09T10:00:00+00:00' })], mirror: { backup: '00008120-TEST', backed_up: '2026-09-01 10:00:00' } }), stats: s });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['done', false]);
     assert.match(v.status, /^A newer backup is ready/);
   });
 
@@ -354,7 +357,7 @@ describe('iPhone backup', () => {
 describe('web exports', () => {
   test('not requested: Claude does it for you, or open the page in your browser, or say it is already requested', () => {
     const v = view('discord');
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', false]);
     assert.equal(v.status, 'Not requested yet');
     assert.deepEqual(actionIds(v), ['agent-request', 'open', 'mark-requested', 'add-file', 'skip']);
     assert.deepEqual(v.actions.filter((a) => a.primary).map((a) => a.id), ['agent-request']);
@@ -378,7 +381,7 @@ describe('web exports', () => {
   test('a notification that looks like the service saying it is ready: "looks ready", with its words, never certain', () => {
     const asked = (signalAt: string) => state((s) => (s.sources.spotify = { requestedAt: hoursAgo(5), readySignal: { at: signalAt, via: 'Mail', text: 'Your Spotify data is ready to download' } }));
     const v = view('spotify', { state: asked(hoursAgo(1)) });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['working', true]);
     assert.equal(v.status, 'Looks ready: a notification from Mail 1 h ago');
     assert.match(v.detail!, /"Your Spotify data is ready to download"/);
     assert.match(v.detail!, /check your email or Spotify to be sure/);
@@ -395,7 +398,7 @@ describe('web exports', () => {
 
   test('iPhone notifications on this Mac: why to turn them on, and whether they are', () => {
     const off = view('iphone_notifications', { probe: probe({ notifications: { readable: true, iphone: false } }) });
-    assert.equal(off.section, 'needs');
+    assert.deepEqual(place(off), ['todo', false], 'optional: to do, without needing you');
     assert.ok(off.optional);
     assert.deepEqual(actionIds(off), ['open-notification-settings', 'mark-done', 'skip']);
     assert.match(off.detail!, /Many services tell you on your iPhone/);
@@ -422,7 +425,8 @@ describe('web exports', () => {
     const working = with_({ mode: 'request', status: 'running', at: hoursAgo(0), step: 'Opening Instagram\'s export page' });
     assert.deepEqual([working.section, working.status, actionIds(working)], ['working', 'Opening Instagram\'s export page', ['agent-stop']]);
     const needs = with_({ mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Sign in to Instagram in Chrome.', session: 's1' });
-    assert.deepEqual([needs.section, needs.status, actionIds(needs)], ['needs', 'Needs you: Sign in to Instagram in Chrome.', ['agent-continue', 'open-chrome', 'agent-dismiss']]);
+    assert.deepEqual([needs.section, needs.status, actionIds(needs)], ['working', 'Needs you: Sign in to Instagram in Chrome.', ['agent-continue', 'open-chrome', 'agent-dismiss']]);
+    assert.equal(needs.needsYou, true, 'still in progress, and it needs you');
     assert.equal(needs.actions[0].input, 'reply', 'its answer box goes with Continue');
     assert.ok(needs.steps?.length, 'the steps stay, to do it yourself');
     const failed = with_({ mode: 'request', status: 'failed', at: hoursAgo(0), note: 'The page never loaded.' });
@@ -506,7 +510,7 @@ describe('web exports', () => {
 
   test('a download that never arrived says so, instead of quietly going back to waiting', () => {
     const v = view('instagram', { state: state((s) => (s.sources.instagram = { requestedAt: hoursAgo(30), agent: { mode: 'download', status: 'downloading', at: hoursAgo(1) } })) });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['working', true]);
     assert.equal(v.status, 'Nothing arrived from Chrome');
     assert.match(v.detail!, /Look in Chrome's downloads/);
     assert.equal(v.actions[0].id, 'agent-download');
@@ -562,7 +566,7 @@ describe('web exports', () => {
     assert.equal(waiting.status, 'Requested 1 h ago. Usually ready in 8 hours to 2 days.');
     assert.equal(waiting.waiting, true, 'waiting on the service: its clock shows, not a progress bar');
     const ready = view('google_takeout', { state: at(10) });
-    assert.equal(ready.section, 'needs');
+    assert.deepEqual(place(ready), ['working', true], 'still in progress; looking for it is yours (Claude doesn\'t check)');
     assert.equal(ready.waiting, undefined);
     assert.equal(ready.status, 'Requested 10 h ago. It should be ready.');
     assert.equal(ready.actions[0].id, 'open-download');
@@ -588,7 +592,7 @@ describe('web exports', () => {
   test('a file found in Downloads', () => {
     const st = state((s) => s.found.push({ path: '/d/package.zip', name: 'package.zip', kind: 'discord', valid: true, size: 6e6, foundAt: hoursAgo(0), sourceId: 'discord' }));
     const v = view('discord', { state: st });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['working', true]);
     assert.equal(v.priority, 4.5, 'a file waiting in Downloads comes before settings to change');
     assert.match(v.detail!, /^package\.zip \(6\.0 MB\)\n/);
     assert.match(v.detail!, /You hadn't asked Discord for your data in the app, so it waits for a yes\. Importing moves it out of Downloads/, 'why it asks');
@@ -601,7 +605,7 @@ describe('web exports', () => {
       s.found.push({ path: '/d/package.zip', name: 'package.zip', kind: 'discord', valid: true, size: 6e6, foundAt: hoursAgo(0), sourceId: 'discord' });
     });
     const v = view('discord', { state: st });
-    assert.deepEqual([v.section, v.status, actionIds(v)], ['needs', 'Found the export in Downloads', ['import-found', 'ignore-found']]);
+    assert.deepEqual([v.section, v.status, actionIds(v)], ['working', 'Found the export in Downloads', ['import-found', 'ignore-found']]);
     assert.match(v.detail!, /You skipped Discord\. Importing it includes Discord again/);
     assert.equal(view('discord', { state: state((s) => (s.sources.discord = { skipped: 'I don\'t use it' })) }).section, 'unavailable', 'nothing found: still skipped');
     assert.equal(view('discord', { state: state((s) => (s.sources.discord = { skipped: 'Not now' })) }).status, 'Set aside for now', 'or set aside for now');
@@ -625,7 +629,7 @@ describe('web exports', () => {
     assert.equal(done.status, '1,234 records, 2018 to now');
     assert.ok(done.notes!.some((n) => n.includes('only your own messages')));
     const err = view('discord', { stats: s, state: state((x) => (x.sources.discord = { lastError: 'BadZipFile', lastErrorAt: hoursAgo(0.5) })) });
-    assert.equal(err.section, 'needs');
+    assert.deepEqual(place(err), ['done', true], 'imported before: still collected, and the failed import needs you');
     assert.equal(err.status, 'The import failed');
   });
 
@@ -646,7 +650,7 @@ describe('web exports', () => {
   test('an export that imports to nothing says so', () => {
     const st = state((x) => (x.sources.spotify = { lastFileAt: hoursAgo(0.2), importedAt: hoursAgo(0.1) }));
     const v = view('spotify', { stats: stats({ spotify: { count: 0, ran_at: hoursAgo(0.1) } }), state: st });
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['working', true]);
     assert.equal(v.status, 'The export had nothing the app could read');
     assert.match(v.detail!, /Extended streaming history/);
     assert.equal(view('spotify', { stats: stats({ spotify: { count: 0, ran_at: hoursAgo(0.1) } }) }).status, 'Not requested yet', 'no file added: nothing to report');
@@ -668,7 +672,7 @@ describe('web exports', () => {
   test('Google Photos and Drive is optional and not done by other documents', () => {
     const v = view('google_photos_drive', { stats: stats({ imported_documents: { count: 400 } }) });
     assert.equal(v.optional, true);
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', false]);
     assert.ok(v.priority >= 70);
   });
 });
@@ -688,7 +692,7 @@ describe('guided sources', () => {
 
   test('a guided source waits for its file', () => {
     const v = view('maps_timeline');
-    assert.equal(v.section, 'needs');
+    assert.deepEqual(place(v), ['todo', false]);
     assert.equal(v.actions[0].id, 'add-file');
     assert.equal(v.priority, 40);
     assert.equal(view('zoom').priority, 90);
@@ -715,11 +719,11 @@ describe('summary and next step', () => {
     const sum = summarize(vs, s);
     assert.equal(sum.records, 157);
     assert.equal(sum.sourcesDone, vs.filter((v) => v.group !== 'setup' && v.section === 'done').length);
-    assert.equal(sum.needsYou, vs.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional).length);
+    assert.equal(sum.needsYou, vs.filter((v) => v.needsYou && !v.blockedBy && !v.optional).length);
   });
 
   test('optional items come last; nothing left means no next step', () => {
-    const vs = views().map((v) => ({ ...v, section: v.optional ? v.section : ('done' as const) }));
+    const vs = views().map((v) => (v.optional ? v : { ...v, section: 'done' as const, needsYou: false }));
     const next = nextUp(vs);
     assert.ok(next && vs.find((v) => v.id === next)!.optional);
     assert.equal(nextUp(vs.map((v) => ({ ...v, section: 'done' as const }))), null);
@@ -759,7 +763,7 @@ describe('helpers', () => {
     const st = state((s) => (s.sources.notion = { requestedAt: NOW.toISOString() }));
     assert.equal(computeSources(input({ state: st })).find((v) => v.id === 'notion')!.section, 'working');
     const later = new Date(NOW.getTime() + 2 * H);
-    assert.equal(computeSources(input({ state: st, now: later })).find((v) => v.id === 'notion')!.section, 'needs');
+    assert.equal(computeSources(input({ state: st, now: later })).find((v) => v.id === 'notion')!.section, 'working', 'still in progress');
   });
 });
 
@@ -793,10 +797,10 @@ describe('ways back and plain next steps (the UX audit)', () => {
     assert.deepEqual(actionIds(phone), ['open-fda-settings', 'recheck'], 'not Open Finder');
   });
 
-  test('"Not now" sets it aside under Needs You, not away in Not Collecting', () => {
+  test('"Not now" sets it aside in To Do, not away with the skipped ones', () => {
     for (const id of ['discord', 'photos']) {
       const v = view(id, { state: state((s) => (s.sources[id] = { skipped: 'Not now' })) });
-      assert.equal(v.section, 'needs', id);
+      assert.deepEqual(place(v), ['todo', false], id);
       assert.equal(v.optional, true);
       assert.equal(v.deferred, true);
       assert.equal(v.status, 'Set aside for now');

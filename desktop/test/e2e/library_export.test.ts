@@ -60,11 +60,10 @@ after(async () => {
 
 async function openFromSettings() {
   const p = run.page;
-  await p.locator('button[aria-label=Settings]').first().click();
-  const settings = p.locator('[data-testid=settings]');
+  await p.locator('[data-testid=nav-general]').click();
+  const settings = p.locator('[data-testid=general]');
   await settings.waitFor();
   await settings.locator('button[data-action=settings-export]').click();
-  await settings.waitFor({ state: 'detached' });
   const sheet = p.locator('[data-testid=export]');
   await sheet.waitFor();
   await sheet.locator('[data-testid=export-estimate]', { hasText: /About .* as a \.zip/ }).waitFor();

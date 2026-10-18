@@ -109,7 +109,7 @@ test('Downloads watcher: an expected export is imported on arrival', async () =>
 test('an export that reveals another of your addresses asks, then re-labels', async () => {
   // The LinkedIn archive just imported lists ada.work@example.com; the fake Mac knows an iCloud address and a phone.
   let s = await until(run.page, 'new identity found', (x) => /new .* found/.test(find(x, 'identity').status), 60_000);
-  assert.equal(find(s, 'identity').section, 'needs');
+  assert.deepEqual([find(s, 'identity').section, !!find(s, 'identity').needsYou], ['todo', false], 'to do, in Your Setup');
   await selectSource(run.page, 'identity');
   // The form is open already: no Review button above it that would only open it again.
   const form = run.page.locator('[data-testid=identity-form]');
@@ -135,8 +135,8 @@ test('Downloads watcher: an unexpected export waits for a yes', async () => {
   fs.copyFileSync(sb.exports.broken, path.join(sb.downloads, 'package-broken.zip'));
   let s = await until(run.page, 'found two', (x) => x.sources.filter((v) => v.status.startsWith('Found')).length === 2);
   const ig = find(s, 'instagram');
-  assert.equal(ig.section, 'needs');
-  const firstSourceNeed = s.sources.filter((v) => v.section === 'needs' && v.group !== 'setup' && !v.blockedBy).sort((a, b) => a.priority - b.priority)[0];
+  assert.deepEqual([ig.section, ig.needsYou], ['working', true], 'its file is here: in progress, waiting for your yes');
+  const firstSourceNeed = s.sources.filter((v) => v.needsYou && v.group !== 'setup' && !v.blockedBy).sort((a, b) => a.priority - b.priority)[0];
   assert.ok(['instagram', 'facebook'].includes(firstSourceNeed.id), 'a found file comes before anything else a source needs');
   assert.ok(fs.existsSync(path.join(sb.downloads, path.basename(sb.exports.instagram))), 'not moved without asking');
   await selectSource(run.page, 'instagram');
@@ -178,7 +178,7 @@ test('a download for a source you skipped is shown, and importing it includes th
   await until(run.page, 'skipped', (x) => find(x, 'claude_ai').section === 'unavailable');
   fs.copyFileSync(sb.exports.claude_ai, path.join(sb.downloads, path.basename(sb.exports.claude_ai)));
   let s = await until(run.page, 'found', (x) => find(x, 'claude_ai').status === 'Found the export in Downloads');
-  assert.equal(find(s, 'claude_ai').section, 'needs');
+  assert.deepEqual([find(s, 'claude_ai').section, find(s, 'claude_ai').needsYou], ['working', true]);
   assert.match(find(s, 'claude_ai').detail!, /You skipped Claude\.ai\. Importing it includes Claude\.ai again/);
   await selectSource(run.page, 'claude_ai');
   await shot(run.page, 'skipped-found');
@@ -196,8 +196,8 @@ test('with Watch Downloads off, an export waits in Downloads; turned back on, it
   await new Promise((r) => setTimeout(r, 2500));
   assert.ok(fs.existsSync(path.join(sb.downloads, name)), 'left alone while it\'s off');
   assert.equal(readJson(path.join(sb.userData, 'state.json')).sources.notion.lastFileAt, undefined);
-  await run.page.click('button[aria-label=Settings]');
-  await run.page.locator('[data-testid=settings]', { hasText: 'Off: add each download on its page' }).waitFor();
+  await run.page.click('[data-testid=nav-general]');
+  await run.page.locator('[data-testid=general]', { hasText: 'Off: add each download on its page' }).waitFor();
   await shot(run.page, 'settings-watch-off');
   await run.page.locator('[data-testid=toggle-watch]').click();
   await until(run.page, 'picked up once it is on', () => !fs.existsSync(path.join(sb.downloads, name)) && !!readJson(path.join(sb.userData, 'state.json')).sources.notion?.lastFileAt, 30_000);
@@ -381,7 +381,7 @@ test('a malformed export fails on its own row and blocks nothing else', async ()
   fs.renameSync(path.join(sb.corpus, 'imports/x/twitter-2025-03-01-abc.zip'), good); // only the malformed archive this time
   await act(run.page, 'x', 'add-file', { paths: [sb.exports.x_malformed] });
   await act(run.page, 'spotify', 'add-file', { paths: [sb.exports.spotify] });
-  const s = await until(run.page, 'imports settled', (x) => !x.jobs.length && find(x, 'x').section === 'needs' && find(x, 'spotify').section === 'done', 90_000);
+  const s = await until(run.page, 'imports settled', (x) => !x.jobs.length && !!find(x, 'x').needsYou && find(x, 'spotify').section === 'done', 90_000);
   assert.equal(find(s, 'x').status, 'The import failed');
   assert.match(find(s, 'x').detail!, /KeyError/);
   assert.equal(find(s, 'spotify').records, 1);
@@ -415,7 +415,7 @@ test('a notification on this Mac that sounds like Spotify saying it is ready: "l
   await selectSource(run.page, 'spotify');
   await shot(run.page, 'looks-ready');
   // The setting that lets the iPhone's notifications in, with why.
-  assert.equal(find(s, 'iphone_notifications').section, 'needs');
+  assert.equal(find(s, 'iphone_notifications').section, 'todo');
   await act(run.page, 'iphone_notifications', 'open-notification-settings');
   assert.ok(opened().includes('x-apple.systempreferences:com.apple.Notifications-Settings.extension'));
 });

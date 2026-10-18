@@ -50,7 +50,7 @@ test('Not Now on Ask\'s first page: AI is off, and turning it on there goes thro
 test('AI is agreed to once, its agent picked, and turned off and on', async () => {
   const p = run.page;
   // AI Settings, so it isn't taken for a place to talk to an AI: in a Settings section of its own (after Your Setup), last.
-  assert.match(await p.locator('[data-testid=sidebar]').innerText(), /Setup Checks[\s\S]*\bSettings\s+Your Setup\s+AI Settings\s+[\d,]+ of [\d,]+ sources collected/);
+  assert.match(await p.locator('[data-testid=sidebar]').innerText(), /Setup Checks[\s\S]*\bSettings\s+General\s+Your Setup\s+(\d+\s+)?AI Settings\s+[\d,]+ of [\d,]+ sources collected/);
   await p.locator('[data-testid=nav-ai]').click();
   const page = p.locator('[data-testid=ai-page]');
   await page.waitFor();

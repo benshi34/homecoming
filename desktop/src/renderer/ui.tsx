@@ -82,10 +82,12 @@ export function Checkmark({ size = 18, color = 'var(--green)' }: { size?: number
   );
 }
 
-export function StatusGlyph({ section, size = 16 }: { section: string; size?: number }) {
+// Needs you (orange), whatever its stage; otherwise its stage: collected, under way, not started, not collected.
+export function StatusGlyph({ section, needsYou, size = 16 }: { section: string; needsYou?: boolean; size?: number }) {
+  if (needsYou) return <span className="status-dot needs" style={{ width: size * 0.55, height: size * 0.55 }} aria-label="Needs you" />;
   if (section === 'done') return <Checkmark size={size} />;
   if (section === 'working') return <Spinner size={size - 2} />;
-  if (section === 'needs') return <span className="status-dot needs" style={{ width: size * 0.55, height: size * 0.55 }} aria-label="Needs you" />;
+  if (section === 'todo') return <span className="status-dot todo" style={{ width: size * 0.55, height: size * 0.55 }} aria-label="To do" />;
   return <span className="status-dot off" style={{ width: size * 0.55, height: size * 0.55 }} aria-label="Not available" />;
 }
 

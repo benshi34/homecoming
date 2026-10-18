@@ -57,7 +57,7 @@ export function NotificationsBox({ snap }: { snap: Snapshot }) {
   return (
     <div className="group-box" style={{ marginTop: 22 }} data-testid="notifications-status">
       <div className="status-box">
-        <div style={{ marginTop: 1 }}>{testing ? <Spinner size={20} /> : w.on ? <Checkmark size={20} /> : <StatusGlyph section="needs" size={20} />}</div>
+        <div style={{ marginTop: 1 }}>{testing ? <Spinner size={20} /> : w.on ? <Checkmark size={20} /> : <StatusGlyph section="todo" needsYou size={20} />}</div>
         <div style={{ flex: 1 }}>
           <div className="big">{testing ? 'Sending one…' : w.on ? 'Notifications are on' : w.on === false ? 'macOS isn\'t showing them' : c ? 'Did it show?' : 'Not allowed yet'}</div>
           {(c || !testing) && <div className="pre">{c ? w.say : 'Choose Allow when macOS asks. Then Alerts, in Notification settings, keeps them on screen until you look.'}</div>}

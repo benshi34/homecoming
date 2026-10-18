@@ -21,7 +21,6 @@ function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string; undo?: { sourceId: string; action: string } }[]>([]);
   const [assistant, setAssistant] = useState<boolean | null>(null); // null: follow onboarding.done
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false); // Export Your Library
   const [adding, setAdding] = useState(false);
   const [nav, setNav] = useState<Nav>('overview');
@@ -61,7 +60,7 @@ function App() {
       setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), t.kind === 'error' || t.undo ? 9000 : 5000);
     });
     const offM = api.onMenu((cmd) => {
-      if (cmd === 'show-settings') setSettingsOpen(true);
+      if (cmd === 'show-settings') animate(() => { toMain(); setNav('general'); });
       if (cmd === 'show-export') setExportOpen(true);
       if (cmd === 'add-service') animate(() => { toMain(); setAdding(true); });
       if (cmd === 'show-hub') animate(() => { toMain(); setNav('hub'); });
@@ -128,7 +127,7 @@ function App() {
     <div style={{ height: '100%', ...style }} data-testid="app" data-mode={showAssistant ? 'assistant' : 'main'}>
       {showAssistant
         ? <Assistant snap={snap} onFinish={finish} onExit={exit} />
-        : <MainWindow snap={snap} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen} nav={nav} setNav={setNav} focus={focus}
+        : <MainWindow snap={snap} nav={nav} setNav={setNav} focus={focus}
           adding={adding} setAdding={setAdding} onAssistant={() => animate(() => openAssistant())} onExport={() => setExportOpen(true)} />}
       {exportOpen && <ExportSheet snap={snap} onClose={() => setExportOpen(false)} />}
       <div className="toasts" data-testid="toasts">

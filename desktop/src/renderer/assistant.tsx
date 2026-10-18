@@ -158,7 +158,7 @@ function renderStep(step: Step, ctx: Ctx): PageSpec {
     case 'keep': return { body: <KeepPage ctx={ctx} />, primary: { label: 'Continue', onClick: ctx.next } };
     case 'mac': return mac(ctx);
     // While the page has something to do (read it, unlock it, allow access), that's its blue button.
-    case 'iphone': return { body: <IphonePage ctx={ctx} />, primary: { label: 'Continue', onClick: ctx.next, quiet: ctx.v('iphone_backup').section === 'needs' } };
+    case 'iphone': return { body: <IphonePage ctx={ctx} />, primary: { label: 'Continue', onClick: ctx.next, quiet: iphoneToDo(ctx.v('iphone_backup')) } };
     case 'accounts': {
       // Found services you ticked become sources first, so their export pages join the steps. What you chose is then
       // those sources, so going Back shows them under Your accounts (not as found ones to add again).
@@ -193,7 +193,7 @@ function welcome(ctx: Ctx): PageSpec {
 function identity(ctx: Ctx): PageSpec {
   return {
     primary: { label: 'Continue', onClick: () => (document.getElementById('identity-step') as HTMLFormElement | null)?.requestSubmit() },
-    // Not now is fine: it's asked again under Needs You, and collecting doesn't wait for it.
+    // Not now is fine: it's asked again at the top of To Do, and collecting doesn't wait for it.
     secondary: ctx.v('identity').section !== 'done' ? <Button onClick={ctx.next} testAction="identity-later">Skip for Now</Button> : undefined,
     body: <IdentityPage ctx={ctx} />,
   };
@@ -227,7 +227,7 @@ function access(ctx: Ctx): PageSpec {
   const view = ctx.v('fda');
   const granted = view.section === 'done';
   const unlocks = ctx.snap.sources.filter((s) => s.blockedBy === 'fda' && s.group !== 'setup');
-  const missing = !granted && view.section === 'needs';
+  const missing = !granted && view.section === 'todo';
   return {
     // Going on without it is allowed, and said plainly: its button is the blue one until then.
     primary: missing ? { label: 'Continue Without It', onClick: ctx.next, quiet: true } : { label: 'Continue', onClick: ctx.next },
@@ -238,13 +238,13 @@ function access(ctx: Ctx): PageSpec {
         </Hero>
         <div className="group-box" style={{ marginTop: 22 }} data-testid="fda-status">
           <div className="status-box">
-            <div style={{ marginTop: 1 }}>{granted ? <Checkmark size={20} /> : <StatusGlyph section={view.section} size={20} />}</div>
+            <div style={{ marginTop: 1 }}>{granted ? <Checkmark size={20} /> : <StatusGlyph section={view.section} needsYou={view.needsYou} size={20} />}</div>
             <div style={{ flex: 1 }}>
               <div className="big">{granted ? 'Full Disk Access is on' : view.section === 'unavailable' ? 'Nothing on this Mac needs it' : 'Not allowed yet'}</div>
               {!granted && unlocks.length > 0 && <div className="pre">Waiting on it: {unlocks.map((u) => u.name).join(', ')}.</div>}
             </div>
           </div>
-          {!granted && view.section === 'needs' && (
+          {missing && (
             <div className="actions">
               <Button kind="primary" onClick={() => void api.action('fda', 'open-fda-settings')}>Open System Settings…</Button>
               <Button onClick={() => void api.action('fda', 'recheck')} testAction="recheck">Check Again</Button>
@@ -252,7 +252,7 @@ function access(ctx: Ctx): PageSpec {
           )}
         </div>
         {!granted && view.steps && <Group title="How"><Steps view={view} /></Group>}
-        {missing && <div className="note"><Glyph name="info" size={13} /><span>You can go on without it: {unlocks.length ? unlocks.map((u) => u.name).join(', ') : 'those sources'} wait under Needs You until it's on, and Full Disk Access in Setup Checks turns it on any time.</span></div>}
+        {missing && <div className="note"><Glyph name="info" size={13} /><span>You can go on without it: {unlocks.length ? unlocks.map((u) => u.name).join(', ') : 'those sources'} wait in To Do until it's on, and Full Disk Access in Setup Checks turns it on any time.</span></div>}
       </>
     ),
   };
@@ -297,7 +297,7 @@ function LibraryPage({ ctx }: { ctx: Ctx }) {
               subtitle={<>{x.section === 'done' ? x.status : <span style={{ color: 'var(--orange)' }}>{x.status}</span>}<br />{ABOUT[x.id]}
                 {x.section !== 'done' && x.detail && <div className="pre selectable" style={{ marginTop: 4 }}>{x.detail}</div>}
                 {x.section !== 'done' && x.notes?.map((n) => <div key={n} style={{ marginTop: 4 }}>{n}</div>)}</>}
-              trailing={x.section === 'done' ? <Checkmark size={18} /> : a ? <Button kind={a.primary ? 'primary' : 'default'} onClick={() => run(x.id, a)} testAction={a.id}>{a.label}</Button> : <StatusGlyph section={x.section} />} />
+              trailing={x.section === 'done' ? <Checkmark size={18} /> : a ? <Button kind={a.primary ? 'primary' : 'default'} onClick={() => run(x.id, a)} testAction={a.id}>{a.label}</Button> : <StatusGlyph section={x.section} needsYou={x.needsYou} />} />
           );
         })}
       </div>
@@ -331,7 +331,7 @@ function KeepRow({ x, run }: { x: SourceView; run: (id: string, a: Action) => vo
           {a && <Button onClick={() => run(x.id, a)} testAction={a.id}>{a.label}</Button>}
           {a?.id !== 'mark-done' && x.actions.some((y) => y.id === 'mark-done') && <Button onClick={() => void api.action(x.id, 'mark-done')} testAction="mark-done">I've Done It</Button>}
           {x.actions.filter((y) => y.id === 'skip').map((y) => <Button key={y.id} kind="plain" onClick={() => void api.action(x.id, 'skip')} testAction="skip">{y.label}</Button>)}
-          {!a && <StatusGlyph section={x.section} />}
+          {!a && <StatusGlyph section={x.section} needsYou={x.needsYou} />}
         </>
       )} />
   );
@@ -399,7 +399,7 @@ function mac(ctx: Ctx): PageSpec {
         <div className="group-box" data-testid="mac-sources">
           {list.map((s) => (
             <GroupRow key={s.id} testId={`mac-${s.id}`} icon={<SourceIcon id={s.id} size={26} />} title={s.name}
-              subtitle={<>{s.status}<ContentsLines view={s} /></>} trailing={isRead(s) ? <Checkmark size={17} /> : s.stage === 'waiting' ? <Glyph name="clock" size={15} className="waiting-glyph" /> : <StatusGlyph section={s.section} />} />
+              subtitle={<>{s.status}<ContentsLines view={s} /></>} trailing={isRead(s) ? <Checkmark size={17} /> : s.stage === 'waiting' ? <Glyph name="clock" size={15} className="waiting-glyph" /> : <StatusGlyph section={s.section} needsYou={s.needsYou} />} />
           ))}
         </div>
       </>
@@ -407,10 +407,14 @@ function mac(ctx: Ctx): PageSpec {
   };
 }
 
+// The iPhone page has something for you to do: not read yet, a newer backup to read, or a read to try again.
+const iphoneToDo = (v: SourceView) => v.section === 'todo' || !!v.needsYou || (v.section === 'done' && !!v.actions.find((a) => a.id === 'iphone-run')?.primary);
+
 function IphonePage({ ctx }: { ctx: Ctx }) {
   const view = ctx.v('iphone_backup');
   const [busy, setBusy] = useState(false);
   const pw = view.actions.find((a) => a.id === 'iphone-run');
+  const act = iphoneToDo(view); // something to do on this page: read it, unlock it, make a backup, allow access
   const read = (password?: string) => {
     setBusy(true);
     void api.action('iphone_backup', 'iphone-run', password ? { password } : undefined).finally(() => setBusy(false));
@@ -420,16 +424,16 @@ function IphonePage({ ctx }: { ctx: Ctx }) {
       <Hero icon={<SourceIcon id="iphone_backup" size={64} />} title="Add your iPhone" badge="Highly Recommended">{view.blurb}</Hero>
       <div className="group-box" style={{ marginTop: 22 }} data-testid="iphone-status">
         <div className="status-box">
-          <div style={{ marginTop: 1 }}>{view.section === 'done' ? <Checkmark size={20} /> : <StatusGlyph section={view.section} size={20} />}</div>
+          <div style={{ marginTop: 1 }}>{view.section === 'done' ? <Checkmark size={20} /> : <StatusGlyph section={view.section} needsYou={view.needsYou} size={20} />}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="big" data-testid="status">{view.status}</div>
             {view.detail && <div className="pre">{view.detail}</div>}
-            {view.section === 'working' && <ProgressBar />}
+            {view.section === 'working' && !view.needsYou && <ProgressBar />}
           </div>
         </div>
-        {view.section === 'needs' && pw && !pw.input && <div className="actions"><Button kind="primary" onClick={() => read()} disabled={busy}>Read Backup</Button></div>}
+        {act && pw && !pw.input && <div className="actions"><Button kind="primary" onClick={() => read()} disabled={busy}>Read Backup</Button></div>}
         {/* Waiting on something else (Full Disk Access, a Python package): its own buttons, from the status. */}
-        {view.section === 'needs' && !pw && (
+        {act && !pw && (
           <div className="actions">
             {view.actions.filter((a) => a.id !== 'skip').map((a) => (
               <Button key={a.id} kind={a.primary ? 'primary' : 'default'} onClick={() => void api.action(a.id === 'open-fda-settings' ? 'fda' : 'iphone_backup', a.id)} testAction={a.id}>{a.label}</Button>
@@ -438,13 +442,13 @@ function IphonePage({ ctx }: { ctx: Ctx }) {
         )}
         {view.section === 'unavailable' && <div className="actions"><Button onClick={() => void api.action('iphone_backup', 'unskip')}>Include It Again</Button></div>}
       </div>
-      {view.section === 'needs' && pw?.input === 'password' && <Group title="Unlock the backup"><PasswordForm onSubmit={read} busy={busy} /></Group>}
+      {act && pw?.input === 'password' && <Group title="Unlock the backup"><PasswordForm onSubmit={read} busy={busy} /></Group>}
       {view.warnings.map((w, k) => <div key={k} style={{ marginTop: 12 }}><Banner kind="warning">{w}</Banner></div>)}
-      {view.steps && view.section === 'needs' && <Group title="Make a backup"><Steps view={view} /></Group>}
+      {view.steps && act && <Group title="Make a backup"><Steps view={view} /></Group>}
       {view.section === 'done' && <PhoneParts view={view} />}
       {view.section === 'working' && view.notes?.map((n) => <div key={n} className="note"><Glyph name="info" size={13} /><span>{n}</span></div>)}
       {view.section === 'working' && <div className="note"><Glyph name="info" size={13} /><span>This keeps going in the background. Continue whenever you like.</span></div>}
-      {view.section === 'needs' && <div style={{ textAlign: 'center', marginTop: 12 }}><Button kind="plain" onClick={() => void api.action('iphone_backup', 'skip', { reason: 'No iPhone backup for now' }).then(ctx.next)}>I don't have an iPhone backup</Button></div>}
+      {act && view.section !== 'done' && <div style={{ textAlign: 'center', marginTop: 12 }}><Button kind="plain" onClick={() => void api.action('iphone_backup', 'skip', { reason: 'No iPhone backup for now' }).then(ctx.next)}>I don't have an iPhone backup</Button></div>}
     </>
   );
 }
@@ -615,7 +619,7 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
   const view = ctx.v(id);
   const src = BY_ID[id];
   if (src.group === 'guided') return guidedPage(ctx, id);
-  const asked = !!view.requestedAt || view.section === 'done' || view.section === 'working';
+  const asked = !!view.requestedAt || view.section === 'done' || (view.section === 'working' && !view.needsYou);
   // This one is passed over even before the snapshot shows it asked for.
   const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id, ctx.seen));
   const markAndNext = () => void api.action(id, 'mark-requested').then(() => ctx.confirmed(id, onward));
@@ -625,7 +629,7 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
   // new one after the link ran out); otherwise the footer just moves on, quietly when the page has its own next step.
   const mark = view.actions.find((a) => a.id === 'mark-requested');
   const sayAsked = mark && (!asked || view.onTheWay === 'expired');
-  const pageHasStep = view.section === 'needs' && view.actions.some((a) => a.primary && a.id !== 'mark-requested');
+  const pageHasStep = (view.section === 'todo' || !!view.needsYou) && view.actions.some((a) => a.primary && a.id !== 'mark-requested');
   const primary = agent && ctx.justAsked !== id ? { label: agent.label, onClick: () => ctx.doIt(id, onward), ai: true }
     : sayAsked && ctx.justAsked !== id
       ? { label: mark.label, onClick: markAndNext, quiet: pageHasStep }
@@ -640,11 +644,11 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
   const statusBox = (
     <div className="group-box" data-testid="export-status">
       <div className="status-box">
-        <div style={{ marginTop: 1 }}>{view.section === 'done' ? <Checkmark size={20} /> : view.waiting ? <WaitClock size={20} started={view.requestedAt} /> : <StatusGlyph section={view.section} size={20} />}</div>
+        <div style={{ marginTop: 1 }}>{view.section === 'done' ? <Checkmark size={20} /> : view.waiting ? <WaitClock size={20} started={view.requestedAt} /> : <StatusGlyph section={view.section} needsYou={view.needsYou} size={20} />}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="big appear-soft" key={view.status} data-testid="status">{view.status}</div>
           {view.detail && <div className="pre">{view.detail}</div>}
-          {view.section === 'working' && !view.waiting && <ProgressBar value={view.progress} small />}
+          {view.section === 'working' && !view.waiting && !view.needsYou && <ProgressBar value={view.progress} small />}
         </div>
       </div>
       {view.section !== 'done' && <ExportActions ctx={ctx} view={view} skip={['skip', ...(agent ? ['agent-request'] : sayAsked ? ['mark-requested'] : [])]} />}
@@ -740,11 +744,11 @@ function guidedPage(ctx: Ctx, id: string): PageSpec {
         <Hero icon={<SourceIcon id={id} size={64} />} title={view.name}>{view.blurb}</Hero>
         <div className="group-box" style={{ marginTop: 22 }} data-testid="export-status">
           <div className="status-box">
-            <div style={{ marginTop: 1 }}>{done ? <Checkmark size={20} /> : <StatusGlyph section={view.section} size={20} />}</div>
+            <div style={{ marginTop: 1 }}>{done ? <Checkmark size={20} /> : <StatusGlyph section={view.section} needsYou={view.needsYou} size={20} />}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="big appear-soft" key={view.status} data-testid="status">{view.status}</div>
               {view.detail && <div className="pre">{view.detail}</div>}
-              {view.section === 'working' && <ProgressBar value={view.progress} small />}
+              {view.section === 'working' && !view.needsYou && <ProgressBar value={view.progress} small />}
             </div>
           </div>
           {!done && acts.length > 0 && (
@@ -804,8 +808,11 @@ function ai(ctx: Ctx): PageSpec {
 function done(ctx: Ctx): PageSpec {
   const now = new Date();
   const prog = progress(ctx.snap.sources, now);
-  // What's left for you, every one of it: each opens its page in the main window.
-  const left = ctx.snap.sources.filter((v) => v.section === 'needs' && !v.blockedBy && !v.optional);
+  // What's left for you, every one of it: what needs you, then what's still to start. Each opens its page in the main window.
+  const free = ctx.snap.sources.filter((v) => !v.blockedBy && !v.optional);
+  const needs = free.filter((v) => v.needsYou);
+  const todo = free.filter((v) => !v.needsYou && v.section === 'todo');
+  const left = [...needs, ...todo];
   return {
     primary: { label: 'Open Overview', onClick: () => ctx.onFinish() },
     wide: false,
@@ -813,14 +820,15 @@ function done(ctx: Ctx): PageSpec {
       <>
         <Hero icon={<Checkmark size={72} />} title={left.length ? 'That\'s the setup done' : 'You\'re all set for now'}>
           The app keeps going on its own: it reads this Mac every day, imports each export as it lands in Downloads, and lets you know when one should be ready.
-          {left.length ? ` ${left.length === 1 ? 'One thing still needs' : `${left.length} things still need`} you: they're under Needs You.` : ''}
+          {needs.length ? ` ${needs.length === 1 ? 'One thing needs' : `${needs.length} things need`} you: they're at the top of To Do.` : ''}
+          {todo.length ? ` ${todo.length === 1 ? 'One source hasn\'t' : `${todo.length} sources haven't`} started yet: ${todo.length === 1 ? 'it\'s' : 'they\'re'} in To Do.` : ''}
         </Hero>
         <Group title={`${Math.round(prog.percent * 100)}% collected · ${prog.collected} of ${prog.applicable} sources`}><Timeline phases={prog.phases} /></Group>
-        {left.length > 0 && (
-          <Group title="Still needs you" testId="done-left">
-            {left.map((v) => <GroupRow key={v.id} testId={`left-${v.id}`} icon={<SourceIcon id={v.id} group={v.group} size={24} />} title={v.name} subtitle={v.status} onClick={() => ctx.onFinish(v.id)} />)}
+        {([['Needs you', needs, 'done-needs'], ['Still to do', todo, 'done-todo']] as const).filter(([, rows]) => rows.length).map(([title, rows, id]) => (
+          <Group key={id} title={title} testId={id}>
+            {rows.map((v) => <GroupRow key={v.id} testId={`left-${v.id}`} icon={<SourceIcon id={v.id} group={v.group} size={24} />} title={v.name} subtitle={v.status} onClick={() => ctx.onFinish(v.id)} />)}
           </Group>
-        )}
+        ))}
         {prog.waiting.length > 0 && (
           <Group title="On the way">
             {prog.waiting.map((w) => <GroupRow key={w.id} icon={<SourceIcon id={w.id} size={24} />} title={w.name} subtitle={readyIn(w, now)} />)}

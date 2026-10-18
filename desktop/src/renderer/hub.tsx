@@ -59,7 +59,7 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
     const kind = withKind ? CATEGORIES.find((c) => c.id === r.category)?.label : undefined;
     const sub = [r.domain, kind, r.found ? evidenceLine(r.found) : '', r.state !== 'available' ? r.status : ''].filter(Boolean).join(' · ');
     return (
-      <GroupRow key={r.key} testId={`hub-${r.key}`} icon={r.sourceId ? <SourceIcon id={r.sourceId} group="web" size={24} /> : <SourceIcon id={r.key} group="web" size={24} />}
+      <GroupRow key={r.key} testId={`hub-${r.key}`} icon={r.sourceId ? <SourceIcon id={r.sourceId} group={r.group ?? 'web'} size={24} /> : <SourceIcon id={r.key} group="web" size={24} />}
         title={<>{r.name}{r.state === 'built-in' && <span className="tag">Built in</span>}{r.state === 'added' && <span className="tag">Added</span>}
           {r.state === 'available' && r.exportKnown && <span className="tag">Export steps</span>}{r.found && r.state === 'available' && <span className="tag new">In your data</span>}</>}
         subtitle={sub || undefined}
@@ -68,7 +68,7 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
           ? (adding.has(r.slug!) ? <Spinner size={14} /> : <Button size="small" onClick={() => add([r.slug!])} testAction="hub-add">Add</Button>)
           : r.sourceId && chosen && onChoose ? (chosen.has(r.sourceId) ? <span className="where">On your list</span>
             : <Button size="small" onClick={() => onChoose(r.sourceId!)} testAction="hub-choose">Add</Button>)
-          : r.section ? <StatusGlyph section={r.section} /> : undefined} />
+          : r.section ? <StatusGlyph section={r.section} needsYou={r.needsYou} /> : undefined} />
     );
   };
 
@@ -80,8 +80,9 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
         {filter === 'found'
           ? <p className="lede">Services that turned up on this Mac: in your mail, in the sites you visit, and in the apps you have. Add the ones you use,
             {' '}and each one gets its own page with the steps to get your data out. Nothing is sent anywhere to find them.</p>
-          : <p className="lede">Every service the app can collect your data from: {count(counts.here)} already in the app and {count(rows.length - counts.here)} more,
-            {' '}by kind. The ones your mail, browsing and apps point to come first. Add one and it gets the steps to get your data out.</p>}
+          : <p className="lede">Every source the app can collect your data from: {count(counts.here)} already in the app (this Mac's and your iPhone's among them)
+            {' '}and {count(rows.length - counts.here)} more services, by kind. The ones your mail, browsing and apps point to come first. Skipped ones are here
+            {' '}too, with what's not on this Mac: open one to include it again.</p>}
         {/* One that isn't listed, by name: added from where everything else is. */}
         <Button onClick={() => onAddOther(q.trim())} testAction="hub-add-source"><Glyph name="plus" size={13} strokeWidth={2.2} />Add a Source…</Button>
       </div>

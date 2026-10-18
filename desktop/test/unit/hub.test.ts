@@ -41,7 +41,7 @@ test('within a kind: in the app first, then found in your data, then popular, th
 
 test('search: whole names first, then words, then anywhere in the name or domain', () => {
   const rows = hubRows(dir, views(), [], null);
-  assert.deepEqual(searchRows(rows, 'notes').map((r) => r.name), ['Kindle Notes']);
+  assert.deepEqual(searchRows(rows, 'notes').map((r) => r.name), ['Notes', 'Kindle Notes'], 'this Mac\'s Notes too: every source is here');
   assert.deepEqual(searchRows(rows, 'read').map((r) => r.name), ['Goodreads', 'Kindle Notes'], 'goodreads.com, read.amazon.com');
   assert.deepEqual(searchRows(rows, 'wattpad').map((r) => r.name), ['Wattpad']);
   assert.deepEqual(searchRows(rows, 'zzz'), []);

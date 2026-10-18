@@ -82,7 +82,7 @@ export async function launch(env: Record<string, string>, opts: { assistant?: bo
 export function sandboxEnv(sb: Sandbox, extra: Record<string, string> = {}): Record<string, string> {
   return { HOME: sb.home, CORPUS_DIR: sb.corpus, UMP_DOWNLOADS: sb.downloads, UMP_USER_DATA: sb.userData,
     UMP_EXTERNAL_LOG: path.join(sb.userData, 'opened.txt'), UMP_APPLICATIONS: path.join(sb.home, 'Applications'),
-    UMP_MAPPING_LIBRARY: path.join(sb.home, 'mapping-library'), ...extra };
+    UMP_MAPPING_LIBRARY: path.join(sb.home, 'mapping-library'), UMP_EXPLORE_WARM: '0', ...extra };
 }
 
 export function snap(page: Page): Promise<Snapshot> {
@@ -119,9 +119,26 @@ export async function shot(page: Page, name: string) {
 }
 
 export async function selectSource(page: Page, id: string) {
+  // Who you are is seen and changed in Your Setup: opened there, its form shows.
+  if (id === 'identity') {
+    await page.locator('[data-testid=nav-yoursetup]').click();
+    await page.locator('[data-testid=setup-identity]').waitFor({ timeout: 10_000 });
+    const change = page.locator('button[data-action=setup-identity-change]');
+    if (await change.count()) await change.click();
+    await page.locator('[data-testid=setup-identity-form]').waitFor({ timeout: 10_000 });
+    return;
+  }
   const s = await snap(page);
   const v = find(s, id);
-  const nav = v.group === 'setup' && v.section !== 'needs' ? 'setup' : v.blockedBy ? 'needs' : v.section;
+  // Where it lives (shared/lists.ts navOf): one not collected is in All Sources, its page over it.
+  if (v.group !== 'setup' && v.section === 'unavailable') {
+    await page.locator('[data-testid=nav-hub]').click();
+    await page.locator('[data-testid=hub-search]').fill(v.name);
+    await page.locator(`[data-testid=hub-${id}]`).first().click();
+    await page.locator(`[data-testid=source-sheet] [data-testid=detail][data-source=${id}]`).waitFor({ timeout: 10_000 });
+    return;
+  }
+  const nav = v.group === 'setup' ? 'setup' : v.section;
   await page.locator(`[data-testid=nav-${nav}]`).click();
   await page.locator(`[data-testid=row-${id}]`).first().click();
   await page.locator(`[data-testid=detail][data-source=${id}]`).waitFor({ timeout: 10_000 });

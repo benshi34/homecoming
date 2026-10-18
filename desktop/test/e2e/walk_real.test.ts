@@ -51,7 +51,11 @@ test('a new person on this Mac: welcome to the end, then Explore, and nothing le
       steps.push(s);
       await page.waitForTimeout(s === 'mac' ? 3000 : 800);
       await shot(page, `walk-${String(steps.length).padStart(2, '0')}-${s.replace(':', '-')}`);
-      await page.locator('button[data-action=assistant-continue]').click();
+      // An export page's main button can be Do It for Me (Claude Code is on this Mac): that would start Claude on your
+      // real accounts, so it's set aside for now instead, as you can on any of them.
+      const skip = page.locator('button[data-action=skip-export]');
+      if (s.startsWith('export:') && await skip.count()) await skip.click();
+      else await page.locator('button[data-action=assistant-continue]').click();
       if (s === 'done') break;
       await page.waitForFunction((b) => document.querySelector('[data-testid=assistant]')?.getAttribute('data-step') !== b, s, { timeout: 15_000 });
     }

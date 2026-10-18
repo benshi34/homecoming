@@ -211,7 +211,9 @@ export interface JobView {
   lastLine?: string;
 }
 
-export type Section = 'needs' | 'working' | 'done' | 'unavailable';
+// Where a source is on its way into the library, which only moves forward: not started (todo), started and not
+// finished (working, stuck or not), in the library (done), or not collected. Whether it needs you is needsYou, apart.
+export type Section = 'todo' | 'working' | 'done' | 'unavailable';
 
 export interface Action {
   id: string;
@@ -230,6 +232,7 @@ export interface SourceView {
   group: string;
   blurb: string;
   section: Section;
+  needsYou?: boolean; // blocked on you right now (Claude waiting, a sign-in, a failed import...): first in To Do, with a dot, wherever it is
   status: string;
   stage?: 'waiting' | 'reading' | 'read'; // where it is in a run that reads several sources in turn
   waiting?: boolean; // requested, and the service hasn't sent it yet
@@ -258,7 +261,7 @@ export interface SourceView {
   // Asked for and not in yet, as far as the app can tell: before its usual wait is up, ready (an email or a
   // notification said so), past its usual wait, late, or its link has probably expired.
   onTheWay?: 'waiting' | 'ready' | 'due' | 'late' | 'expired';
-  deferred?: boolean; // skipped "for now": kept under Needs You's optional ones, not put away
+  deferred?: boolean; // skipped "for now": kept under To Do's optional ones, not put away
   inboxes?: Inbox[]; // where its "it's ready" email will come, for Look in Gmail and the like (shared/inbox.ts)
   ignored?: string[]; // files in Downloads the person chose to ignore for this source
   arrived?: boolean; // came home while the window was closed: its banner shows when the window opens again
@@ -286,7 +289,8 @@ export interface SignInCheck {
 export interface Summary {
   records: number;
   sourcesDone: number;
-  needsYou: number;
+  needsYou: number; // blocked on you (needsYou, not waiting on a setup check, not optional)
+  todo: number; // sources not started that can be (To Do's badge)
   working: number;
 }
 

@@ -1,5 +1,6 @@
 // Explore, end to end: the real app over a made-up corpus (make_fixtures.explore_corpus) in UTC. Every artifact
-// opens from its card, shows what the corpus holds, and opens the records it rests on.
+// opens from its card, shows what the corpus holds, and opens the records it rests on. The home is built ahead, before
+// Explore is opened, as the app does with a library (UMP_EXPLORE_WARM: tests leave it off unless they ask).
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -15,7 +16,7 @@ const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 before(async () => {
   sb = sandbox();
   execFileSync(PY, [path.join(DESKTOP, 'test/fixtures/make_fixtures.py'), 'explore-corpus', sb.corpus]);
-  run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_TZ: 'UTC' }));
+  run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_TZ: 'UTC', UMP_EXPLORE_WARM: '1', UMP_EXPLORE_WARM_MS: '0' }));
   // Numbers count up and pages animate in; with Reduce Motion they land at once, so text can be read straight away.
   await run.page.emulateMedia({ reducedMotion: 'reduce' });
 });
@@ -33,13 +34,40 @@ async function back() {
   await run.page.click('[data-testid=explore-back]');
 }
 
+const HOME = ['year', 'on-this-day', 'people', 'places', 'they-know', 'listening', 'movement', 'curiosity', 'journeys', 'watching', 'rhythms', 'groups', 'firsts', 'made', 'stream'];
+
+test('built ahead: Explore\'s home is built before it\'s opened, and opens on it', async () => {
+  // The last one the home asks for, built and saved, without Explore having been opened.
+  const cache = path.join(sb.userData, 'explore-cache');
+  const end = Date.now() + 120_000;
+  while (!(fs.existsSync(cache) && fs.readdirSync(cache).some((f) => f.startsWith('they-know')))) {
+    assert.ok(Date.now() < end, 'built ahead in time');
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  await run.page.waitForTimeout(500);
+  // What the window is told from here on: a build says how far it's got.
+  await run.app.evaluate(({ BrowserWindow }) => {
+    const wc = BrowserWindow.getAllWindows()[0].webContents;
+    const g = globalThis as unknown as { told: unknown[] };
+    g.told = [];
+    const send = wc.send.bind(wc);
+    wc.send = (ch: string, ...a: unknown[]) => {
+      if (ch === 'explore-progress') g.told.push(a[0]);
+      send(ch, ...a);
+    };
+  });
+  await run.page.click('[data-testid=nav-explore]');
+  await run.page.locator('[data-testid=explore-home]').waitFor({ timeout: 10_000 });
+  for (const id of HOME) await run.page.locator(`[data-testid=explore-card-${id}][data-ready=yes]`).waitFor({ timeout: 10_000 });
+  const told = await run.app.evaluate(() => (globalThis as unknown as { told: unknown[] }).told);
+  assert.deepEqual(told, [], 'every tile was there: nothing built, or waited for, on opening');
+});
+
 test('the tiles say what each artifact holds', async () => {
   await run.page.click('[data-testid=nav-explore]');
   await run.page.locator('[data-testid=explore-home]').waitFor({ timeout: 60_000 });
-  // The cards show at once and fill in one by one as each artifact is built.
-  for (const id of ['year', 'on-this-day', 'people', 'places', 'they-know', 'listening', 'movement', 'curiosity', 'journeys', 'watching', 'rhythms', 'groups', 'firsts', 'made', 'stream']) {
-    await run.page.locator(`[data-testid=explore-card-${id}][data-ready=yes]`).waitFor({ timeout: 60_000 });
-  }
+  // The cards show at once, and fill in one by one as each artifact is built if it wasn't already.
+  for (const id of HOME) await run.page.locator(`[data-testid=explore-card-${id}][data-ready=yes]`).waitFor({ timeout: 60_000 });
   assert.match(await card('year').innerText(), /2025/, 'the latest year with data');
   assert.match(await card('groups').innerText(), /2\s+group chats/);
   assert.match(await card('journeys').innerText(), /21,7\d\d\s+km traveled[\s\S]*2\s+flights/);

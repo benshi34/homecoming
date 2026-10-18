@@ -24,13 +24,14 @@ after(async () => {
 test('leads with Full Disk Access, and shows what it unlocks', async () => {
   const s = await until(run.page, 'first probe', (x) => !!x.probeTime);
   assert.equal(s.next, 'fda');
-  assert.equal(find(s, 'fda').section, 'needs');
+  assert.deepEqual([find(s, 'fda').section, find(s, 'fda').needsYou], ['todo', true]);
   assert.equal(find(s, 'imessage').blockedBy, 'fda');
-  assert.equal(find(s, 'identity').section, 'needs');
+  assert.equal(find(s, 'imessage').section, 'todo', 'waiting on it: to do, not needing you');
+  assert.deepEqual([find(s, 'identity').section, !!find(s, 'identity').needsYou], ['todo', false], 'to do: nothing waits on it');
   await run.page.locator('[data-testid=next]', { hasText: 'Full Disk Access' }).waitFor();
   await shot(run.page, 'first-run');
-  await run.page.locator('[data-testid=nav-needs]').click();
-  await run.page.locator('[data-testid=row-fda]').waitFor();
+  await run.page.locator('[data-testid=nav-todo]').click();
+  await run.page.locator('[data-group="Needs you now"] [data-testid=row-fda]').waitFor();
   assert.match(await run.page.locator('[data-testid=row-fda]').innerText(), /Unlocks Messages/);
 });
 
@@ -114,7 +115,7 @@ test('skips, ticked steps and requests survive a restart', async () => {
   assert.equal(find(s, 'ai_coding').section, 'done', 'read less than a day ago: no re-run');
   assert.equal(s.jobs.length, 0);
   await act(run.page, 'reddit', 'unskip');
-  await until(run.page, 'reddit back', (x) => find(x, 'reddit').section === 'needs');
+  await until(run.page, 'reddit back', (x) => find(x, 'reddit').section === 'todo');
   const state = readJson(path.join(sb.userData, 'state.json'));
   assert.ok(!JSON.stringify(state).includes('password'));
   assert.deepEqual(run.errors, []);
