@@ -7,7 +7,7 @@ import collections
 import re
 import zipfile
 
-from common import CORPUS, LIB, Writer, connect, from_apple, phone, snapshot_sqlite
+from common import CORPUS, LIB, Writer, columns, connect, from_apple, phone, snapshot_sqlite
 from phones import e164
 
 AB = LIB / "Application Support/AddressBook"
@@ -43,6 +43,16 @@ def _db_paths():
     return sorted(AB.glob("Sources/*/AddressBook-v22.abcddb")) + [AB / "AddressBook-v22.abcddb"]
 
 
+def _me_column(con):
+    """Which column marks the user's own card. Newer AddressBook files call it a container; files last written
+    around 2018 still call it a source. Every file is named AddressBook-v22.abcddb, and one Mac keeps both."""
+    cols = columns(con, "ZABCDRECORD")
+    for name in ("ZCONTAINERWHERECONTACTISME", "ZSOURCEWHERECONTACTISME"):
+        if name in cols:
+            return name
+    return None
+
+
 def load_contacts(snapshot=False):
     contacts = []
     for i, path in enumerate(_db_paths()):
@@ -63,10 +73,11 @@ def load_contacts(snapshot=False):
             parts = [r["ZSTREET"], r["ZCITY"], r["ZSTATE"], r["ZZIPCODE"], r["ZCOUNTRYNAME"]]
             addrs.setdefault(r["ZOWNER"], []).append(", ".join(p for p in parts if p))
         notes = {r["ZCONTACT"]: r["ZTEXT"] for r in con.execute("select ZCONTACT, ZTEXT from ZABCDNOTE")}
-        rows = con.execute("""select Z_PK, ZUNIQUEID, ZFIRSTNAME, ZMIDDLENAME, ZLASTNAME, ZNICKNAME,
-                                     ZORGANIZATION, ZJOBTITLE, ZDEPARTMENT, ZBIRTHDAY, ZCREATIONDATE,
-                                     ZMODIFICATIONDATE, ZCONTAINERWHERECONTACTISME
-                              from ZABCDRECORD where Z_ENT = (select Z_ENT from Z_PRIMARYKEY where Z_NAME='ABCDContact')""")
+        me = _me_column(con) or "0"
+        rows = con.execute(f"""select Z_PK, ZUNIQUEID, ZFIRSTNAME, ZMIDDLENAME, ZLASTNAME, ZNICKNAME,
+                                      ZORGANIZATION, ZJOBTITLE, ZDEPARTMENT, ZBIRTHDAY, ZCREATIONDATE,
+                                      ZMODIFICATIONDATE, {me} as is_me
+                               from ZABCDRECORD where Z_ENT = (select Z_ENT from Z_PRIMARYKEY where Z_NAME='ABCDContact')""")
         for r in rows:
             name = " ".join(p for p in (r["ZFIRSTNAME"], r["ZMIDDLENAME"], r["ZLASTNAME"]) if p)
             name = name or r["ZNICKNAME"] or r["ZORGANIZATION"]
@@ -77,7 +88,7 @@ def load_contacts(snapshot=False):
                 "uid": r["ZUNIQUEID"], "name": name, "nickname": r["ZNICKNAME"],
                 "org": r["ZORGANIZATION"], "job": r["ZJOBTITLE"], "department": r["ZDEPARTMENT"],
                 "birthday": from_apple(r["ZBIRTHDAY"]), "created": from_apple(r["ZCREATIONDATE"]),
-                "modified": from_apple(r["ZMODIFICATIONDATE"]), "is_me": bool(r["ZCONTAINERWHERECONTACTISME"]),
+                "modified": from_apple(r["ZMODIFICATIONDATE"]), "is_me": bool(r["is_me"]),
                 "phones": m.get("ZABCDPHONENUMBER", []), "emails": m.get("ZABCDEMAILADDRESS", []),
                 "social": m.get("ZABCDSOCIALPROFILE", []), "urls": m.get("ZABCDURLADDRESS", []),
                 "related": m.get("ZABCDRELATEDNAME", []), "addresses": addrs.get(r["Z_PK"], []),
