@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 # Records that are a whole day, not a moment: no hour to put them at.
 DAY_KINDS = {"health_day", "app_usage_day", "sleep"}
 # Not something you did: left out of the charts (they'd drown them), and of what's said about it.
-NOT_ACTIVITY = {"health_sample", "contact", "record", "app", "profile", "inference", "advertiser", "interaction"}
+NOT_ACTIVITY = {"health_sample", "contact", "record", "app", "profile", "inference", "advertiser", "interaction", "ad", "off_platform"}
 WORD = {"message": ("message", "messages"), "email": ("email", "emails"), "photo": ("photo", "photos"), "video": ("video", "videos"),
         "visit": ("page visited", "pages visited"), "search": ("search", "searches"), "call": ("call", "calls"), "note": ("note", "notes"),
         "event": ("event", "events"), "commit": ("commit", "commits"), "document": ("document", "documents"), "ai_turn": ("AI prompt", "AI prompts"),
@@ -23,6 +23,7 @@ WORD = {"message": ("message", "messages"), "email": ("email", "emails"), "photo
         "health_day": ("day of Health data", "days of Health data"), "transaction": ("payment", "payments"), "voice_memo": ("recording", "recordings"),
         "reaction": ("reaction", "reactions"), "post": ("post", "posts"), "comment": ("comment", "comments"), "listen": ("episode played", "episodes played"),
         "file_edit": ("saved version", "saved versions"), "command": ("command", "commands"),
+        "saved": ("thing saved", "things saved"),
         "app_usage_day": ("day of Screen Time", "days of Screen Time"), "sleep": ("night of sleep", "nights of sleep")}
 
 

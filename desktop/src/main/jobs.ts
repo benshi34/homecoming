@@ -1,6 +1,7 @@
 // One job at a time: connectors share corpus/manifest.json and corpus.db, so two runs at once would
 // overwrite each other. Queued jobs of the same kind merge, so "read everything" plus "read Notes" is one run.
 
+import { CATALOG } from '../shared/catalog.ts';
 import type { JobView } from '../shared/types.ts';
 import type { BridgeEvent, StreamResult } from './bridge.ts';
 
@@ -11,6 +12,7 @@ export interface JobSpec {
   connectors: string[];
   args?: string[];
   stdin?: string; // e.g. the iPhone backup password: handed to the process, then dropped
+  background?: boolean; // started by the app itself (the daily read, an index rebuild): runs at background priority
 }
 
 export interface Job extends JobSpec {
@@ -40,7 +42,7 @@ export class JobQueue {
   private seq = 0;
   private cancelled = new Set<string>();
   private holds = 0; // while something reads the whole library (Export Your Library), nothing new starts
-  private changeListeners: (() => void)[] = [];
+  private changeListeners: ((progress: boolean) => void)[] = [];
   private finishListeners: ((f: Finished) => void)[] = [];
   private lineListeners: ((job: Job, line: string) => void)[] = [];
   private runner: Runner;
@@ -51,7 +53,8 @@ export class JobQueue {
     this.now = now;
   }
 
-  onChange(fn: () => void) {
+  // progress: only a line a job printed (it's in the log and lastLine), nothing started, finished or moved.
+  onChange(fn: (progress: boolean) => void) {
     this.changeListeners.push(fn);
   }
 
@@ -63,8 +66,8 @@ export class JobQueue {
     this.lineListeners.push(fn);
   }
 
-  private changed() {
-    for (const fn of this.changeListeners) fn();
+  private changed(progress = false) {
+    for (const fn of this.changeListeners) fn(progress);
   }
 
   add(spec: JobSpec): Job {
@@ -73,6 +76,8 @@ export class JobQueue {
       if (queued) {
         queued.sourceIds = [...new Set([...queued.sourceIds, ...spec.sourceIds])];
         queued.connectors = [...new Set([...queued.connectors, ...spec.connectors])];
+        if (spec.args) queued.args = [...new Set([...(queued.args ?? []), ...spec.args])]; // an import's --reread
+        if (!spec.background) delete queued.background; // someone asked for it: not in the background any more
         if (spec.kind === 'connectors') queued.label = labelFor(queued);
         this.changed();
         return queued;
@@ -159,7 +164,7 @@ export class JobQueue {
         if (job.log.length > LOG_LINES) job.log.splice(0, job.log.length - LOG_LINES);
         for (const fn of this.lineListeners) fn(job, line);
       }
-      this.changed();
+      this.changed(e.type === 'log' || e.type === 'raw');
     });
     delete job.stdin; // the runner has written it to the process; don't keep it around
     this.running = { job, kill: handle.kill };
@@ -179,7 +184,10 @@ export function labelFor(job: Pick<JobSpec, 'kind' | 'connectors'>): string {
   if (job.kind === 'iphone') return 'Reading the iPhone backup';
   if (job.kind === 'import') return 'Importing downloaded exports';
   if (job.kind === 'index') return 'Rebuilding the search index';
-  return job.connectors.length > 1 ? `Reading ${job.connectors.length} sources on this Mac` : `Reading ${job.connectors[0]}`;
+  if (job.connectors.length > 1) return `Reading ${job.connectors.length} sources on this Mac`;
+  // By its name, not the connector's ("Reading Calendar", not "Reading calendar_events").
+  const c = job.connectors[0];
+  return c ? `Reading ${CATALOG.find((s) => s.connector === c)?.name ?? 'this Mac'}` : 'Reading this Mac';
 }
 
 // Which sources a finished job's errors belong to. A connector error lands on the source that connector
@@ -195,7 +203,7 @@ export function errorsBySource(job: Job, result: StreamResult, connectorToSource
       const cands = importParsers[parser];
       const inJob = cands.filter((c) => job.sourceIds.includes(c));
       const withFiles = cands.filter(hasFiles);
-      for (const s of inJob.length ? inJob : withFiles.length ? withFiles : cands) out[s] ??= `The importer couldn't read this export (${msg}). The site may have changed its format.`;
+      for (const s of inJob.length ? inJob : withFiles.length ? withFiles : cands) out[s] ??= `Couldn't read this export: the site may have changed its format. What went wrong is in the Progress log below.`;
       continue;
     }
     const src = connectorToSource[connector];

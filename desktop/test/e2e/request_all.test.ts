@@ -11,7 +11,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { act, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
+import { act, claudeChecked, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -59,7 +59,7 @@ before(async () => {
   const sources: Record<string, unknown> = Object.fromEntries(Object.values(BY_ID).filter((s) => s.group === 'web' && !keep.includes(s.id)).map((s) => [s.id, { skipped: 'I don\'t use it' }]));
   fs.mkdirSync(sb.userData, { recursive: true });
   fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({
-    version: 1, onboarding: { done: true }, sources,
+    version: 1, ask: claudeChecked(), onboarding: { done: true }, sources,
     settings: { autoRefresh: false, watchDownloads: true, aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true, agentDownloads: true, agentChecks: false },
     services: [{ id: 'svc_lumenfit', slug: 'lumenfit', name: 'Lumen Fitness', folder: 'lumenfit', domains: ['lumenfit.example'], email: 'privacy@lumenfit.example', addedAt: new Date().toISOString(), from: 'you' },
       { id: 'svc_lumennotes', slug: 'lumennotes', name: 'Lumen Notes', folder: 'lumennotes', domains: ['lumennotes.example'], url: 'https://lumennotes.example/settings/export',
@@ -84,7 +84,8 @@ test('Ask for Everything: who does each, Chrome signed in to Spotify from its pa
   assert.ok(find(s, 'instagram').notes?.some((n) => /^Chrome is signed in to Instagram, so Claude can ask for it without you/.test(n)));
   await p.click('[data-testid=nav-overview]');
   const card = p.locator('[data-testid=ask-everything]');
-  assert.match(await card.innerText(), /5 exports still to ask for[\s\S]*Claude can ask for 2 on its own · sign in to Spotify first · 1 request by email · 1 for you to do/);
+  // (once the window has the sign-ins: they come a moment after the rest)
+  await card.filter({ hasText: /5 exports still to ask for[\s\S]*Claude can ask for 2 on its own · sign in to Spotify first · 1 request by email · 1 for you to do/ }).waitFor({ timeout: 10_000 });
   await card.locator('button[data-action=ask-everything]').click();
   const sheet = p.locator('[data-testid=request-all]');
   await sheet.locator('[data-testid=ra-claude] [data-testid=ra-row-instagram]', { hasText: 'Chrome is signed in' }).waitFor();

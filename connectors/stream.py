@@ -27,6 +27,7 @@ import os
 import re
 import sqlite3
 import sys
+import zlib
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -35,7 +36,8 @@ from zoneinfo import ZoneInfo
 CORPUS = Path(os.environ.get("CORPUS_DIR") or Path(__file__).resolve().parent.parent / "corpus")
 DB = CORPUS / "corpus.db"
 OUT = CORPUS / "stream"
-VERSION = 2  # bump when events change shape or rules change, so every month is rebuilt (2: whole days on their own date)
+VERSION = 3  # bump when events change shape or rules change, so every month is rebuilt (2: whole days on their own date;
+# 3: what services showed or decided about you left out everywhere, YouTube's comments and playlists, bookmarks)
 
 # ---------------------------------------------------------------- time
 
@@ -143,7 +145,9 @@ APPS = {"imessage": "Messages", "instagram": "Instagram", "messenger": "Messenge
         "phone_reminders": "Reminders", "documents": "Files", "imported_documents": "Files", "editor_history": "Code editor",
         "voice_memos": "Voice Memos", "phone_voicerecordings": "Voice Memos", "health": "Health", "phone_health": "Health",
         "google_keep": "Keep", "google_maps_places": "Google Maps", "phone_netflix": "Netflix", "podcasts": "Podcasts",
+        "whatsapp": "WhatsApp", "books": "Books", "apple_maps": "Maps",
         "shell_history": "Terminal", "browser_history": "Browser", "chrome_synced": "Chrome", "phone_safarihistory": "Safari",
+        "youtube": "YouTube", "google_tasks": "Google Tasks", "google_saved": "Google Saved",
         "phone_safariwebsearch": "Safari", "phone_corpusxdirectmessages": "X", "contacts": "Contacts",
         "iphone_contacts": "Contacts", "google_contacts": "Google Contacts", "vcard_contacts": "Contacts"}
 
@@ -178,7 +182,8 @@ def me_names():
         d = json.loads((CORPUS / "identity.json").read_text())
     except (OSError, ValueError):
         return set()
-    return {norm(n).replace(" ", "") for n in d.get("names", []) + d.get("usernames", []) if n}
+    d = d if isinstance(d, dict) else {}  # who you are, cut off or written oddly: nobody, rather than no stream
+    return {norm(n).replace(" ", "") for n in (d.get("names") or []) + (d.get("usernames") or []) if n}
 
 
 def norm_url(u):
@@ -208,9 +213,13 @@ DROP_SOURCES = {
     "phone_walstrings", "phone_tcc", "phone_applewifiplist", "phone_applicationstatedb",
 }
 DROP = {("app_usage", "app_usage_day"),  # day totals of the app sessions that are kept
-        ("instagram_activity", "inference"),  # Meta's guesses about you
+        ("photos_memories", "memory"), ("photos_memories", "highlight"),  # Photos' summaries of your photos, not events
+        ("browser_saved", "open_tab"),  # tabs open on your other devices now: a state, not something that happened
         ("phone_safarihistory", "record")}  # Safari's tags on visits that are kept
-DROP_TIERS = {"device", "spam", "deleted"}
+# What a service showed you or decided about you, from any export: ads (YouTube's, sponsored results, X's), its guesses,
+# the advertisers that have you, what other companies told it. Not something you did (Explore's What They Know has them).
+DROP_KINDS = {"ad", "advertiser", "inference", "off_platform"}
+DROP_TIERS = {"device", "spam", "deleted", "superseded"}  # superseded: an earlier version (an edited post, a regenerated answer)
 # Export files that hold no event of yours: ads you were shown, and X's bookkeeping for direct messages (the messages
 # themselves are kept).
 DROP_FILES = re.compile(r"^(ads_viewed|data/(message-event|direct-message-headers|direct-message-group-headers|ad-[\w-]+)\.js)$")
@@ -279,7 +288,7 @@ def chat_partner(r, mine):
 def classify(r, mine, ctx):
     """The Item a record becomes, or None to leave it out."""
     s, k, m, f = r.source, r.kind, r.meta, r.fields
-    if s in DROP_SOURCES or (s, k) in DROP or m.get("tier") in DROP_TIERS or DROP_FILES.match(str(m.get("file") or "")):
+    if s in DROP_SOURCES or (s, k) in DROP or k in DROP_KINDS or m.get("tier") in DROP_TIERS or DROP_FILES.match(str(m.get("file") or "")):
         return None
     if s == "phone_amdsqlitedb" and ctx.get("screen_time_iphone"):
         return None  # the iPhone's app log; Screen Time has the same sessions
@@ -301,7 +310,8 @@ def classify(r, mine, ctx):
         if r.me or "Sent" in labels:
             return Item(r, "email", app, ("email", r.rowid), 0)
         sender = str(m.get("from") or r.author or "")
-        if labels & AUTOMATED_LABELS or AUTOMATED_SENDER.search(sender) or "unsubscribe" in (r.text or "").lower():
+        automatic = m.get("category") in ("transactions", "updates", "promotions")  # Mail's own sorting (mail_app.py)
+        if automatic or labels & AUTOMATED_LABELS or AUTOMATED_SENDER.search(sender) or "unsubscribe" in (r.text or "").lower():
             return Item(r, "mail", app, ("mail", s, r.t.date()), 10 ** 9)  # newsletters and notifications, a day at a time
         return Item(r, "email", app, ("email", r.rowid), 0)
 
@@ -317,6 +327,9 @@ def classify(r, mine, ctx):
         device = "iPhone" if s == "phone_safarihistory" or m.get("other_device") else "Mac"
         return Item(r, "browsing", "Safari" if s == "phone_safarihistory" else "Browser", ("web", device), 10 * 60,
                     device=device, same=("url", norm_url(url)), window=120, rank=_rank(s))
+    if s == "apple_maps" and k in ("search", "directions", "place_lookup"):  # Apple Maps: what you looked up
+        r.meta["_q"] = r.title
+        return Item(r, "maps", "Maps", ("maps",), 15 * 60, same=("mapq", norm(r.title)), window=300)
     if k == "search":
         q = r.title if s != "phone_safariwebsearch" else (f.get("Search Term") or r.title)
         q = re.sub(r"^Searched for\s+", "", str(q or r.text or ""))
@@ -390,17 +403,20 @@ def classify(r, mine, ctx):
         return Item(r, "sleep", "Health", ("sleep", r.rowid), 0)
     if s == "instagram_activity" and m.get("file") == "ai_conversations":
         return Item(r, "ai", "Meta AI", ("ai", "Meta AI"), 45 * 60)
-    if s in ("instagram_activity", "facebook_activity", "linkedin", "x", "x_other", "reddit", "tiktok", "threads", "bluesky"):
+    if s in ("instagram_activity", "facebook_activity", "linkedin", "x", "x_other", "reddit", "tiktok", "threads", "bluesky", "youtube"):
         return Item(r, "social", app, ("social", s, k, m.get("file")), 30 * 60)
     if s in ("phone_venmo", "phone_splitwise") or k in ("payment", "transaction"):
         return Item(r, "money", app, ("money", s), 30 * 60)
     if k in ("trip", "flight") or s in ("phone_united_airlines", "phone_uberclient", "phone_uberplaces", "phone_airbnb"):
         return Item(r, "travel", app, ("travel", s, k), 30 * 60)
-    return Item(r, "other", app, ("other", s, k), 30 * 60)
+    # Bookmarks, songs added to a playlist and the like: a run in each list (a bookmarks folder, a playlist). A bookmark
+    # Chrome has on this Mac and in Google Takeout is one, shown from the Mac's copy.
+    same = ("bookmark", norm_url(r.url)) if k == "bookmark" and r.url else None
+    return Item(r, "other", app, ("other", s, k, m.get("list")), 30 * 60, same=same, window=120 if same else 0, rank=_rank(s) if same else 0)
 
 
 # Which of several sources' copies of one thing to show: the one closest to where it happened.
-RANK = ["browser_history", "phone_safarihistory", "phone_safariwebsearch", "chrome_synced", "google_activity",
+RANK = ["browser_history", "browser_saved", "phone_safarihistory", "phone_safariwebsearch", "chrome_synced", "google_activity",
         "calendar", "phone_calendarall", "google_calendar", "apple_notes", "phone_notes", "reminders", "phone_reminders",
         "voice_memos", "phone_voicerecordings"]
 
@@ -724,7 +740,8 @@ def sum_sleep(e, recs, run):
 SOCIAL_VERBS = {"reaction": ("Liked", "post"), "follow": ("Followed", "account"), "saved": ("Saved", "post"),
                 "visit": ("Viewed", "post"), "post": ("Posted", "post"), "comment": ("Commented on", "post"),
                 "contact": ("Connected with", "person"), "invitation": ("Invitations:", "invitation"),
-                "message": ("Messaged", "person"), "search": ("Searched", "time")}
+                "message": ("Messaged", "person"), "search": ("Searched", "time"), "playlist": ("Made", "playlist"),
+                "subscription": ("Subscribed to", "channel"), "vote": ("Voted on", "post")}
 # Instagram's export says which list a record is from: the same kind can be something you did or something done to you.
 SOCIAL_FILES = {"following": ("Followed", "account"), "close_friends": ("Added", "person to Close Friends", "people to Close Friends"),
                 "recent_follow_requests": ("Asked to follow", "account"), "recently_unfollowed_profiles": ("Unfollowed", "account"),
@@ -732,11 +749,24 @@ SOCIAL_FILES = {"following": ("Followed", "account"), "close_friends": ("Added",
                 "videos_watched": ("Watched", "video"), "posts_viewed": ("Viewed", "post"), "stories_viewed": ("Viewed", "story", "stories"),
                 "threads_viewed": ("Viewed", "thread"), "link_history": ("Opened", "link"), "liked_comments": ("Liked", "comment"),
                 "post_comments_1": ("Commented on", "post"), "stories": ("Posted", "story", "stories"),
-                "posts_you're_not_interested_in": ("Marked", "post as not interesting", "posts as not interesting")}
+                "posts_you're_not_interested_in": ("Marked", "post as not interesting", "posts as not interesting"),
+                # YouTube's (imports.py youtube)
+                "comments.csv": ("Commented on", "video"), "live chats.csv": ("Chatted on", "live stream"),
+                "videos.csv": ("Uploaded", "video")}
+
+
+def added_to(e, recs, prep):
+    """Something saved to a list (a playlist, Watch later): "Added Song A to “Road trip” on Spotify", or how many."""
+    r = recs[0]
+    what = clip(r.title, 70) if len(recs) == 1 and r.title else plural(len(recs), str(r.meta.get("what") or "item"))
+    e["title"] = f"Added {what} to “{clip(r.meta['list'], 50)}” {prep} {e['app']}"
+    e["lines"] = [clip(x.title or x.text, 100) for x in recs if (x.title or x.text)] if len(recs) > 1 else []
 
 
 def sum_social(e, recs, run):
     k, file = recs[0].kind, str(recs[0].meta.get("file") or "")
+    if k == "saved" and recs[0].meta.get("list"):
+        return added_to(e, recs, "on")
     verb, *noun = SOCIAL_FILES.get(file) or SOCIAL_VERBS.get(k, ("Activity:", "item"))
     one, many = noun[0], (noun[1] if len(noun) > 1 else ("people" if noun[0] == "person" else None))
     if file.startswith("followers"):
@@ -759,6 +789,14 @@ def sum_social(e, recs, run):
 
 
 def sum_other(e, recs, run):
+    k = recs[0].kind
+    if k == "saved" and recs[0].meta.get("list"):
+        return added_to(e, recs, "in")
+    if k == "bookmark":
+        e["title"] = f"Bookmarked {clip(recs[0].title or host_of(recs[0].url) or 'a page', 80)}" if len(recs) == 1 \
+            else f"Bookmarked {plural(len(recs), 'page')} in {e['app']}"
+        e["lines"] = [clip(r.title or r.url, 100) for r in recs if (r.title or r.url)] if len(recs) > 1 else []
+        return
     first = clip(recs[0].title or recs[0].text, 90)
     if re.fullmatch(r"[\w./-]+", first or "") and not re.search(r"\d{3}", first):  # a machine word: "note-tweet", "data/x.js"
         first = re.sub(r"[_-]+", " ", Path(first).stem)
@@ -832,15 +870,25 @@ def months(con=None):
     rows = con.execute("select substr(ts, 1, 7), count(*) from records where ts >= '1990' and ts < '2100' "
                        "group by 1 order by 1 desc").fetchall()
     now = this_month()
-    return [{"month": m, "records": n} for m, n in rows if re.fullmatch(r"\d{4}-\d\d", m or "") and m <= now]
+    return [{"month": m, "records": n} for m, n in rows if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", m or "") and m <= now]
+
+
+def record_hash(*fields):
+    """32 bits of a record's fields: summed over a month, the sum changes when any record does."""
+    return zlib.crc32("\x1f".join("" if f is None else str(f) for f in fields).encode("utf-8", "replace"))
 
 
 def signature(con, name):
+    """What a month's events are made of: every record's fields an event uses (who wrote it and whether it's yours,
+    when, its title and thread, its meta), its text by length, and who you are. A relabel (an address added to who you
+    are, a sender put right) changes no count, but it's a new month all the same."""
     lo, hi = month_range(name)
     a, b = ((x - timedelta(days=1)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") for x in (lo, hi + timedelta(days=2)))
-    row = con.execute("select count(*), total(length(id)), total(length(coalesce(text, ''))), total(length(coalesce(meta, ''))) "
-                      "from records where ts >= ? and ts < ?", (a, b)).fetchone()
-    return hashlib.sha1(json.dumps([VERSION, str(TZ), row]).encode()).hexdigest()[:16]
+    con.create_function("record_hash", -1, record_hash, deterministic=True)
+    row = con.execute("select count(*), total(length(coalesce(text, ''))), sum(record_hash(source, id, kind, ts, ts_end, author, "
+                      "is_me, thread, thread_name, participants, title, url, meta)) from records where ts >= ? and ts < ?",
+                      (a, b)).fetchone()
+    return hashlib.sha1(json.dumps([VERSION, str(TZ), row, sorted(me_names())]).encode()).hexdigest()[:16]
 
 
 def build(everything=False, log=print):

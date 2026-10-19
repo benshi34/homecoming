@@ -52,6 +52,11 @@ describe('store', () => {
     assert.equal(fileKey('/a/b.zip', 10), '/a/b.zip|10');
   });
 
+  test('when Full Disk Access was seen on is kept, so losing it after an update can be told', () => {
+    assert.equal(normalize({ fdaOnAt: '2026-10-01T10:00:00Z' }).fdaOnAt, '2026-10-01T10:00:00Z');
+    assert.equal(normalize({ fdaOnAt: 7 }).fdaOnAt, undefined);
+  });
+
   test('Do It for Me turned on before AI had its own switch keeps AI on; otherwise AI waits to be agreed to', () => {
     const was = normalize({ settings: { agentExports: true } }).settings;
     assert.equal(was.aiOn, true);

@@ -20,6 +20,7 @@ import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { RecordSheet } from './ask.tsx';
 import { Glyph, SourceIcon } from './icons.tsx';
+import { ThumbCache } from './thumb_cache.ts';
 import { animate, Button, Checkmark, ProgressBar, reducedMotion, Sheet, sheetOpen, Spinner } from './ui.tsx';
 
 type View = { id: 'home' } | { id: 'on-this-day' } | { id: 'people' } | { id: 'person'; key: string; name: string }
@@ -363,7 +364,7 @@ function Ring({ value, size = 108, children }: { value?: number; size?: number; 
 
 // ---------------------------------------------------------------- pieces
 
-const thumbCache = new Map<string, string>(); // "size:rowid" -> data URL ('' when there's no picture)
+const thumbCache = new ThumbCache(); // "size:rowid" -> data URL ('' when there's no picture); the latest 2,000 and what's on screen
 const thumbsComing = new Set<string>(); // asked for, not here yet
 const thumbsArrived = new Set<() => void>();
 
@@ -372,13 +373,16 @@ const thumbsArrived = new Set<() => void>();
 function useThumbs(rowids: number[], size = 240): { get(r: number): string | undefined; has(r: number): boolean } {
   const example = useContext(Examples);
   const [, bump] = useState(0);
+  const grid = useRef({}).current;
   useEffect(() => {
     const f = () => bump((n) => n + 1);
     thumbsArrived.add(f);
     return () => {
       thumbsArrived.delete(f);
+      thumbCache.showing(grid, null);
     };
   }, []);
+  thumbCache.showing(grid, rowids.map((r) => `${size}:${r}`)); // these stay while this grid shows them
   const want = rowids.filter((r) => !thumbCache.has(`${size}:${r}`) && !thumbsComing.has(`${size}:${r}`));
   const k = want.join(',');
   useEffect(() => {
@@ -747,7 +751,7 @@ function Home({ ctx }: { ctx: Ctx }) {
         <h2>Explore</h2>
       </header>
       <div className={`bento ${enter ? 'enter' : ''}`}>
-        <Tile id="year" i={0} a={yearStory} onOpen={go('year')} look="mesh">
+        <Tile id="year" i={0} a={yearStory} onOpen={go('year', yearStory)} look="mesh" locked={lock('year', yearStory)}>
           {yearStory.data && <YearTile d={yearStory.data} />}
         </Tile>
         <Tile id="on-this-day" i={1} a={otd} onOpen={go('on-this-day')} look={covers.length > 0 ? 'photo' : undefined}>
@@ -1731,8 +1735,10 @@ function StreamTile({ d }: { d: Stream }) {
       <div className="tile-front">
         <div className="tile-title">{d.label}, as it happened</div>
         <div className="tile-sub">
-          <Num value={past.length} id="home-stream" /> {word(past.length, 'event')} from <Num value={d.records} id="home-stream-records" /> {word(d.records, 'record')}, in order
-          {coming > 0 && <> · {count(coming)} coming up</>}
+          {d.months.length ? <>
+            <Num value={past.length} id="home-stream" /> {word(past.length, 'event')} from <Num value={d.records} id="home-stream-records" /> {word(d.records, 'record')}, in order
+            {coming > 0 && <> · {count(coming)} coming up</>}
+          </> : 'Nothing in your library yet'}
         </div>
       </div>
       <div className="stream-mini" aria-hidden="true">
@@ -1849,7 +1855,7 @@ function StreamView({ ctx, month: start, day }: { ctx: Ctx; month?: string; day?
         <div className="hero-num"><b><Num value={past} id={`stream-n-${data.month}`} /></b> <span>{word(past, 'event')} in {data.label}{coming ? ' so far' : ''}</span></div>
         <div className="hero-sub">
           {coming > 0 && <>And {count(coming)} still to come, from your calendar and the like. </>}
-          From {counted(data.records, 'record')}, in the order they happened. Copies of one thing from several apps count once, and a run of the same thing (a conversation, a stretch of browsing, a batch of photos) is one event.
+          {data.records > 0 && <>From {counted(data.records, 'record')}, in the order they happened. Copies of one thing from several apps count once, and a run of the same thing (a conversation, a stretch of browsing, a batch of photos) is one event.</>}
           {data.left_out > 0 && <> {data.left_out === 1 ? '1 record isn\'t an event and is' : `${count(data.left_out)} records aren't events and are`} left out: device bookkeeping, raw Health samples, spam.</>}
         </div>
       </section>
@@ -1891,7 +1897,8 @@ function StreamView({ ctx, month: start, day }: { ctx: Ctx; month?: string; day?
           })}
         </div>
       </div>
-      {!shown.length && <div className="empty" data-testid="stream-none"><h2>No events</h2>{q ? 'Nothing this month matches your search.' : 'Nothing of this kind this month.'}</div>}
+      {!shown.length && <div className="empty" data-testid="stream-none"><h2>No events</h2>{q ? 'Nothing this month matches your search.' : group !== 'all' ? 'Nothing of this kind this month.'
+        : data.months.length ? 'Nothing in your data this month.' : 'Nothing in your library yet.'}</div>}
       <div className="stream-list" key={`${data.month}|${group}`}>
         {dayList(days)}
         {later.length > 0 && (
@@ -2041,7 +2048,7 @@ function YearView({ ctx }: { ctx: Ctx }) {
     <div className="stagger" data-testid="explore-year">
       <Story key={`story-${data.year}`} slides={slides} keep={`slide-${data.year}`} />
       <div className="explore-bar">
-        <YearPicker years={data.years} value={data.year} onChange={setY} testId="year-picker" />
+        <YearPicker years={data.years.includes(data.year) ? data.years : [data.year, ...data.years]} value={data.year} onChange={setY} testId="year-picker" />
         {loading && <Spinner size={13} />}
       </div>
       <h3 className="section-title">{data.year}{data.so_far ? ' so far' : ''}, in numbers</h3>
@@ -2647,6 +2654,7 @@ export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number;
   const more = (dir: 'before' | 'after') => {
     if (!t?.messages.length || busy) return;
     const edge = dir === 'before' ? t.messages[0].at : t.messages[t.messages.length - 1].at;
+    if (!edge) return;
     setBusy(dir);
     void api.explore<Thread>('thread', [String(rowid), dir, edge]).then((r) => {
       setBusy(null);
@@ -2670,20 +2678,21 @@ export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number;
             {t.more_before && <div className="convo-more"><Button size="small" onClick={() => more('before')} disabled={!!busy}>{busy === 'before' ? 'Loading…' : 'Show Earlier'}</Button></div>}
             {t.messages.map((m, i) => {
               const prev = t.messages[i - 1];
-              const d = new Date(m.ts);
-              const newDay = !prev || new Date(prev.ts).toDateString() !== d.toDateString();
-              const gap = prev && !newDay && d.getTime() - new Date(prev.ts).getTime() > 3600_000;
+              const d = new Date(m.ts ?? NaN); // no time that can be right: "No date", not a day in 1970
+              const dated = !Number.isNaN(d.getTime());
+              const newDay = !prev || new Date(prev.ts ?? NaN).toDateString() !== d.toDateString();
+              const gap = prev && !newDay && d.getTime() - new Date(prev.ts ?? NaN).getTime() > 3600_000;
               const who = m.me ? 'You' : m.author ?? t.name;
               const newSender = !prev || prev.me !== m.me || prev.author !== m.author || newDay || gap || prev.kind === 'reaction';
               return (
                 <div key={m.rowid}>
-                  {newDay && <div className="convo-day">{d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div>}
-                  {(newDay || gap) && <div className="convo-time">{d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</div>}
+                  {newDay && <div className="convo-day">{dated ? d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : 'No date'}</div>}
+                  {(newDay || gap) && dated && <div className="convo-time">{d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</div>}
                   {m.kind === 'reaction' ? (
                     <div className={`convo-reaction ${m.rowid === rowid ? 'anchor' : ''}`} data-rowid={m.rowid}>{who} {lowerFirst(m.text)}</div>
                   ) : (
                     <div className={`msg-row ${m.me ? 'me' : 'them'} ${newSender ? 'first' : ''} ${m.rowid === rowid ? 'anchor' : ''}`} data-rowid={m.rowid}
-                      title={d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}>
+                      title={dated ? d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'No date'}>
                       {t.group && !m.me && newSender && <div className="msg-author">{who}</div>}
                       {m.image && (
                         <button className="msg-image" onClick={() => onRecord(m.rowid)} title="Open this message">
@@ -2936,7 +2945,10 @@ const NEEDS: Partial<Record<HomeId, Need>> = {
     add: ['imessage', 'browser_history', 'photos'], shows: 'When in the day and week you message, browse, search, watch and code.' },
   made: { enough: (d: Made) => Object.values(d.days).some((c) => Object.entries(c).some(([k, n]) => k !== 'photos' && n)), need: 'things you made',
     from: 'From your code, notes, documents or coding assistants', add: ['git_commits', 'apple_notes', 'documents', 'ai_coding'], shows: 'What you made, day by day: code, writing, posts and AI conversations.' },
-  firsts: { enough: (d: Firsts) => d.items.length >= 3, need: 'a little more history', so: (d: Firsts) => sofar(d.items.length, 3, 'first'), from: 'From Messages or Photos',
+  // A year with something in it (twenty records or more, py/explore.py years_present): else it would open on an empty one.
+  year: { enough: (d: YearStory) => d.years.length > 0, need: 'more of your history', from: 'From Messages, Photos, your browsing history or your iPhone backup',
+    add: ['imessage', 'photos', 'browser_history', 'iphone_backup'], shows: 'Your year as a story, a slide at a time: who you talked to, where you went, what you made and played, and every number at once.' },
+  firsts: { enough: (d: Firsts) => d.items.length >= 3, need: 'your history', so: (d: Firsts) => sofar(d.items.length, 3, 'first'), from: 'From Messages or Photos',
     add: ['imessage', 'photos'], shows: 'Your firsts: the first message with each person, the first time in each country and city, each project and app.' },
   listening: { enough: (d: Listening) => d.plays >= 50, need: 'your listening history', so: (d: Listening) => sofar(d.plays, 50, 'song'),
     from: 'From Spotify, YouTube in your Google export, or Screen Time', add: ['spotify', 'google_takeout', 'app_usage'],

@@ -55,8 +55,11 @@ export function EmbedBlock({ embed, onRecord, onConversation }: { embed: Embed; 
   return d.kind === 'chat' ? <ChatCard d={d} onRecord={onRecord} onConversation={onConversation} /> : <PhotoGrid d={d} onRecord={onRecord} />;
 }
 
-const dayOf = (ts: string) => new Date(ts).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
-const timeOf = (ts: string) => new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+// A message's time; one with none that can be right (py/explore.py parse) says so, not a day in 1970.
+const dated = (ts: string | null) => !!ts && !Number.isNaN(new Date(ts).getTime());
+const dayOf = (ts: string | null) => (dated(ts) ? new Date(ts!).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : 'No date');
+const timeOf = (ts: string | null) => (dated(ts) ? new Date(ts!).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '');
+const whenOf = (ts: string | null) => (dated(ts) ? `${dayOf(ts)}, ${timeOf(ts)}` : 'No date');
 const lowerFirst = (s: string) => (s ? s[0].toLowerCase() + s.slice(1) : s);
 // Up to three emoji and nothing else, which Messages draws large, without a bubble.
 const emojiOnly = (s: string) => /^(\p{Extended_Pictographic}|\p{Emoji_Component}|\u200d|\ufe0f|\s)+$/u.test(s) && /\p{Extended_Pictographic}/u.test(s)
@@ -79,21 +82,21 @@ function ChatCard({ d, onRecord, onConversation }: { d: ChatEmbed; onRecord: (n:
         <Avatar name={d.name} size={28} />
         <span className="embed-chat-who">
           <b className="truncate">{d.name}</b>
-          <span className="truncate">{d.app}{first ? ` · ${dayOf(first.ts)}, ${timeOf(first.ts)}` : ''}</span>
+          <span className="truncate">{d.app}{first ? ` · ${whenOf(first.ts)}` : ''}</span>
         </span>
         <Glyph name="chevronRight" size={11} strokeWidth={2.2} className="row-chevron" />
       </button>
       <div className="embed-chat-body">
         {d.messages.map((m, i) => {
           const prev = d.messages[i - 1];
-          const newDay = !!prev && new Date(prev.ts).toDateString() !== new Date(m.ts).toDateString();
+          const newDay = !!prev && dayOf(prev.ts) !== dayOf(m.ts);
           const newSender = !prev || prev.me !== m.me || prev.author !== m.author || newDay || prev.kind === 'reaction';
           const who = m.me ? 'You' : m.author ?? d.name;
           return (
             <div key={m.rowid} className={`embed-msg ${m.me ? 'me' : 'them'}`} style={{ animationDelay: `${150 + i * 110}ms` }}>
               {newDay && <div className="convo-time">{dayOf(m.ts)}</div>}
               {m.kind === 'reaction' ? <div className="convo-reaction">{who} {lowerFirst(m.text)}</div> : (
-                <div className={`msg-row ${m.me ? 'me' : 'them'} ${newSender ? 'first' : ''}`} data-rowid={m.rowid} title={`${dayOf(m.ts)}, ${timeOf(m.ts)}`}>
+                <div className={`msg-row ${m.me ? 'me' : 'them'} ${newSender ? 'first' : ''}`} data-rowid={m.rowid} title={whenOf(m.ts)}>
                   {d.group && !m.me && newSender && <div className="msg-author">{who}</div>}
                   {m.image && m.thumb && (
                     <button className="msg-image" onClick={() => onRecord(m.rowid)} title="Open this message">

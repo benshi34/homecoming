@@ -4,6 +4,8 @@ with HOME and CORPUS_DIR pointed at a sandbox) over a small made-up corpus (make
 import base64
 import json
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -70,6 +72,76 @@ class AskTools(unittest.TestCase):
             self.assertTrue(r["error"], q)
         self.assertIn("7", self.call("sql", query="select count(*) from records")["text"])
 
+    def test_sql_whatever_a_model_writes(self):
+        """Nothing a model writes reaches outside the index or writes anything; a query that would run forever is
+        stopped; an answer is never bigger than one result holds; and each says what went wrong in words."""
+        stolen = self.corpus.parent / "stolen.db"
+        for q in (f"vacuum into '{stolen}'", f"attach '{stolen}' as x", "select load_extension('/tmp/x')", "create temp table t(x)",
+                  "select 1; delete from records", "select 'a\x00b'", "pragma query_only = off; delete from records"):
+            r = self.call("sql", query=q)
+            self.assertTrue(r["error"], q)
+            self.assertNotIn("Traceback", r["text"])
+        self.assertFalse(stolen.exists(), "no copy of the library written anywhere")
+        self.assertIn("7", self.call("sql", query="select count(*) from records")["text"])
+        for bad in ({}, {"query": ""}, {"query": None}, {"query": "select " + "1+" * 60_000 + "1"}):
+            r = self.call("sql", **bad)
+            self.assertTrue(r["error"])
+            self.assertRegex(r["text"], r"^(Give query|That query is)")
+        wide = self.call("sql", query="select r.text, r.text, r.text from records r, records, records, records", width=20000, limit=2000)
+        self.assertLess(len(wide["text"]), 21_000)
+        self.assertIn("stopped at", wide["text"])
+        # Forever, stopped (after a second here; SECONDS in the app), in words.
+        p = subprocess.run([sys.executable, "-c", "import json, ask_tools as t; t.SECONDS = 1; print(json.dumps(t.call('sql', {'query': "
+                            "'with recursive c(x) as (select 1 union all select x + 1 from c) select count(*) from c'})))"],
+                           capture_output=True, text=True, env=self.env, cwd=TOOLS.parent, timeout=60)
+        r = json.loads(p.stdout)
+        self.assertTrue(r["error"])
+        self.assertTrue(r["text"].startswith("Stopped after 1 second:"), r["text"])
+        self.assertLess(r["seconds"], 10)
+
+    def test_search_answers_odd_input_in_words(self):
+        """Search syntax a model gets wrong, filters that can't match, and arguments of the wrong shape: each comes back
+        as a plain message (never a traceback, never "no matches" when the reason is something else)."""
+        for q in ('"unbalanced', "*", "a OR", "NEAR(", "nosuch:column", "'; drop table records; --", "AND"):
+            r = self.call("search", query=q)
+            self.assertTrue(r["error"], q)
+            self.assertTrue(r["text"].startswith("Search error:"), r["text"])
+        self.assertIn("isn't a date or time", self.call("search", query="dinner", after="last week")["text"])
+        self.assertIn("isn't a date or time", self.call("search", query="dinner", before="2026-3-1")["text"])
+        self.assertIn("isn't before", self.call("search", query="dinner", after="2026-04-01", before="2026-01-01")["text"])
+        self.assertIn("Dinner with Grace", self.call("search", query="dinner", after="2026-03-06T20:00:00+01:00")["text"], "an offset, as UTC")
+        nosuch = self.call("search", query="dinner", source="nosuchapp")["text"]
+        self.assertIn("there's no source nosuchapp", nosuch)
+        self.assertIn("calendar, documents, imessage, photos", nosuch)
+        self.assertIn("there's no kind", self.call("search", kind="nosuch")["text"])
+        self.assertIn("calendar", self.call("search", query="dinner", me="false")["text"], "\"false\" isn't yes")
+        self.assertIn("sort is rank", self.call("search", query="dinner", sort="best")["text"])
+        self.assertIn("as text", self.call("search", query=["dinner"])["text"])
+        for name, args in (("search", [1, 2]), ("sql", "select 1"), ("read_file", {"rowid": 10 ** 30}), ("read_file", {}), ("view_image", {"rowid": "x"})):
+            r = json.loads(self.run_tools("call", name, stdin=json.dumps(args)))
+            self.assertTrue(r["error"], (name, args))
+            self.assertRegex(r["text"], r"JSON object|No record|Give rowid")
+
+    def test_an_empty_library(self):
+        """What a model sees when nothing has been read yet: lookups that say so, and nothing to list."""
+        with tempfile.TemporaryDirectory() as t:
+            corpus = Path(make_fixtures.edge_corpus(Path(t) / "corpus", "empty"))
+            env = {**self.env, "CORPUS_DIR": str(corpus)}
+            run = lambda *a, stdin="": subprocess.run([sys.executable, str(TOOLS), *a], input=stdin, capture_output=True, text=True, env=env, timeout=60).stdout  # noqa: E731
+            r = json.loads(run("call", "search", stdin='{"query": "dinner"}'))
+            self.assertIn("the library is empty", r["text"])
+            self.assertIn("the library is empty", json.loads(run("call", "search", stdin="{}"))["text"])
+            self.assertIn("0", json.loads(run("call", "sql", stdin='{"query": "select count(*) from records"}'))["text"])
+            self.assertEqual(json.loads(run("inventory")), [])
+
+    def test_inventory_dates_are_ones_that_can_be_right(self):
+        with tempfile.TemporaryDirectory() as t:
+            corpus = Path(make_fixtures.edge_corpus(Path(t) / "corpus", "messy"))
+            inv = {r["source"]: r for r in json.loads(subprocess.run([sys.executable, str(TOOLS), "inventory"], capture_output=True, text=True,
+                                                                      env={**self.env, "CORPUS_DIR": str(corpus)}, timeout=60).stdout)}
+            self.assertEqual((inv["imessage"]["first"], inv["git_commits"]["first"]), ("1990-01-15", "1990-01-15"), "not 1970, nor 1985")
+            self.assertLess(inv["imessage"]["last"], "2100", "not 2099, nor 9999")
+
     def test_search_filters_context_and_secrets(self):
         r = self.call("search", query="dinner")
         self.assertFalse(r["error"])
@@ -118,6 +190,48 @@ class AskTools(unittest.TestCase):
         self.assertTrue(self.call("read_file", rowid=self.rowid("calendar"))["error"])  # points to no file
         self.assertTrue(self.call("read_file", rowid=999999)["error"])
 
+    def test_iphone_files_through_the_library_link(self):
+        """The decrypted mirror lives outside the corpus, linked at raw/iphone; its referenced attachments are readable,
+        but traversal and links from that mirror to other files still aren't."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            corpus = Path(make_fixtures.ask_corpus(root / "corpus"))
+            home = root / "home"
+            home.mkdir()
+            mirror = home / "Library/Application Support/q1_user_model/iphone"
+            files = mirror / "files/MediaDomain/Library/SMS/Attachments"
+            files.mkdir(parents=True)
+            (files / "note.txt").write_text("A note attached to a phone message")
+            shutil.copy2(corpus / "files/IMG_0001.png", files / "picture.png")
+            (home / "secret.txt").write_text("not an attachment")
+            (files / "outside.txt").symlink_to(home / "secret.txt")
+            (corpus / "raw").mkdir()
+            (corpus / "raw/iphone").symlink_to(mirror, target_is_directory=True)
+            env = {**self.env, "HOME": str(home), "CORPUS_DIR": str(corpus)}
+
+            def read_attachment(name, source, path):
+                with sqlite3.connect(corpus / "corpus.db") as con:
+                    rowid = con.execute("select rowid from records where source = ? limit 1", (source,)).fetchone()[0]
+                    con.execute("update records set meta = ? where rowid = ?", (json.dumps({"files": [path]}), rowid))
+                r = subprocess.run([sys.executable, str(TOOLS), "call", name], input=json.dumps({"rowid": rowid}),
+                                   capture_output=True, text=True, env=env, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                return json.loads(r.stdout)
+
+            prefix = "raw/iphone/files/MediaDomain/Library/SMS/Attachments/"
+            for base in ("", "corpus/"):
+                text = read_attachment("read_file", "documents", base + prefix + "note.txt")
+                self.assertFalse(text["error"], text["text"])
+                self.assertIn("A note attached to a phone message", text["text"])
+            picture = read_attachment("view_image", "photos", "corpus/" + prefix + "picture.png")
+            self.assertFalse(picture["error"], picture["text"])
+            self.assertEqual(len(picture["images"]), 1)
+            for path in ("../home/secret.txt", prefix + "outside.txt"):
+                denied = read_attachment("read_file", "documents", path)
+                self.assertTrue(denied["error"], path)
+                self.assertIn("outside the library", denied["text"])
+                self.assertNotIn("not an attachment", denied["text"])
+
     def test_view_image_sends_the_picture(self):
         photo = self.rowid("photos")
         r = self.call("view_image", rowid=photo)
@@ -138,11 +252,14 @@ class AskTools(unittest.TestCase):
     # ------------------------------------------------------------ how the app and the agents reach them
 
     def test_serve_answers_line_by_line(self):
-        lines = [json.dumps({"id": 1, "name": "sql", "args": {"query": "select 1 + 1"}}), json.dumps({"id": 2, "name": "nope", "args": {}})]
+        lines = [json.dumps({"id": 1, "name": "sql", "args": {"query": "select 1 + 1"}}), json.dumps({"id": 2, "name": "nope", "args": {}}),
+                 "not json", "[1, 2]", json.dumps({"id": 3, "name": "sql", "args": "select 1"}), json.dumps({"id": 4, "name": "sql", "args": {"query": "select 4"}})]
         out = [json.loads(x) for x in self.run_tools("serve", stdin="\n".join(lines) + "\n").splitlines()]
-        self.assertEqual([o["id"] for o in out], [1, 2])
+        self.assertEqual([o["id"] for o in out], [1, 2, 3, 4], "a line that isn't a call is passed over; the tools carry on")
         self.assertIn("2", out[0]["text"])
         self.assertTrue(out[1]["error"])
+        self.assertTrue(out[2]["error"])
+        self.assertIn("4", out[3]["text"])
 
     def answer_mailbox(self, box, stop):
         """What the app does: run each request in the mailbox and write its answer."""
@@ -184,6 +301,20 @@ class AskTools(unittest.TestCase):
             img = subprocess.run([sys.executable, str(TOOLS), "ask", "--box", str(box), "view_image"], input='{"rowid": 1}',
                                  capture_output=True, text=True, env=self.env, timeout=30)
             self.assertIn("saved as", img.stdout)
+            # The arguments on the command line, as a model may write it: taken from there.
+            inline = subprocess.run([sys.executable, str(TOOLS), "ask", "--box", str(box), "search", '{"query": "lunch"}'],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, env=self.env, timeout=30)
+            self.assertIn('ran search {"query": "lunch"}', inline.stdout)
+            # None at all, in a terminal (Codex runs commands in one): said at once, not waited for.
+            master, slave = os.openpty()
+            try:
+                tty = subprocess.run([sys.executable, str(TOOLS), "ask", "--box", str(box), "search"], stdin=slave,
+                                     capture_output=True, text=True, env=self.env, timeout=30)
+            finally:
+                os.close(slave)
+                os.close(master)
+            self.assertEqual(tty.returncode, 1)
+            self.assertIn("No arguments. Pass them as a JSON object on stdin", tty.stdout)
             self.assertEqual(list(box.iterdir()), [])  # every request answered and cleaned up
         self.with_mailbox(go)
 

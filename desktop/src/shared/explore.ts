@@ -268,7 +268,7 @@ export interface YearStory {
 
 // A conversation around a message (explore.py thread): both sides, oldest first. `at` is the stored time, for
 // asking for more before or after it.
-export interface ThreadMessage { rowid: number; ts: string; at: string; me: boolean; author: string | null; kind: 'message' | 'reaction'; text: string; files: number; image: boolean }
+export interface ThreadMessage { rowid: number; ts: string | null; at: string | null; me: boolean; author: string | null; kind: 'message' | 'reaction'; text: string; files: number; image: boolean }
 export interface Thread { rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: ThreadMessage[]; more_before: boolean; more_after: boolean }
 // What an Ask answer shows rather than cites (py/explore.py embed): a stretch of a conversation, or a few photos.
 export interface ChatEmbed { kind: 'chat'; rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: (ThreadMessage & { thumb?: string })[]; anchors: number[] }

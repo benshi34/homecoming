@@ -3,16 +3,28 @@
 
 One email is one record: the same message (by Message-ID) read from Mail on this Mac and from a mailbox export
 (Takeout's Gmail, an exported Outlook mailbox) is kept once, the export's copy, and Mail's count of the others goes in
-the manifest's notes. Each source's own file keeps every message it read."""
+the manifest's notes. Each source's own file keeps every message it read.
 
+Only the sources whose files changed since the last build are loaded again (built_from keeps each file's size, time
+and a hash of what it says: one written again the same is left as it is), into a clone of the database that then
+takes its place, so a search never sees half a build. Mail goes again whenever a source with emails does (which of
+its emails are an export's depends on them). It's built from nothing when the database is from before this (or
+UMP_FULL_INDEX=1), when most of it changed, or when it has come to hold a lot of free space from what it dropped."""
+
+import ctypes
+import hashlib
 import json
 import os
+import shutil
 import sqlite3
 
-from common import CORPUS, FIELDS, MANIFEST, NORM
+from common import CORPUS, FIELDS, MANIFEST, NORM, write_manifest
 
 DB = CORPUS / "corpus.db"
 COLS = [f for f in FIELDS]
+SCHEMA = 1  # pragma user_version of a database built this way: one from before is built from nothing
+FTS_COLS = "title, text, author, thread_name, participants"
+INSERT = f"insert or ignore into records ({', '.join(COLS)}) values ({', '.join('?' * len(COLS))})"
 
 
 def note_same(same):
@@ -36,57 +48,195 @@ def note_same(same):
         entry["notes"] = notes
     else:
         entry.pop("notes", None)
-    MANIFEST.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    write_manifest(manifest)
+
+
+class Rows:
+    """A normalized file's records as table rows, read a line at a time (never all of a source at once). emails: the
+    export emails' ids so far (Mail's copies of them are left out, and counted). Afterwards: how many rows, how many
+    of Mail's were left out, whether it had emails, and the hash of the file."""
+
+    def __init__(self, path, emails):
+        self.path, self.emails, self.n, self.same, self.email, self.hash = path, emails, 0, 0, False, hashlib.sha1()
+
+    def __iter__(self):
+        with self.path.open("rb") as f:
+            for line in f:
+                self.hash.update(line)
+                r = json.loads(line)
+                if r.get("kind") == "email":
+                    self.email = True
+                    if r.get("id") in self.emails and self.path.stem == "mail":
+                        self.same += 1
+                        continue
+                    self.emails.add(r.get("id"))
+                r["is_me"] = None if r.get("is_me") is None else int(bool(r["is_me"]))
+                for k in ("participants", "meta"):
+                    if r.get(k) is None:
+                        r[k] = None
+                    elif k == "meta":
+                        r[k] = json.dumps(r[k], ensure_ascii=False)
+                    elif isinstance(r[k], (list, tuple)):
+                        r[k] = ", ".join(map(str, r[k]))
+                    else:  # one record from one app shaped oddly mustn't stop the whole index
+                        r[k] = str(r[k])
+                self.n += 1
+                yield tuple(r.get(c) for c in COLS)
+
+
+def file_hash(path):
+    h = hashlib.sha1()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def files():
+    """{source: (size, mtime_ns, path)} of the normalized files, Mail on this Mac last: an email it shares with an
+    export is the export's."""
+    out = {}
+    for path in sorted(NORM.glob("*.jsonl"), key=lambda p: (p.stem == "mail", p.stem)):
+        st = path.stat()
+        out[path.stem] = (st.st_size, st.st_mtime_ns, path)
+    return out
+
+
+def load(con, source, f, emails):
+    """One source's file into the table, and noted in built_from. Returns its Rows."""
+    rows = Rows(f[2], emails)
+    con.executemany(INSERT, rows)
+    con.execute("insert into built_from values (?, ?, ?, ?, ?, ?)", (source, f[0], f[1], rows.hash.hexdigest(), rows.n, rows.same))
+    return rows
+
+
+def fresh(tmp, now):
+    """A new database with every source in it: {source: (rows, Mail's left out)}."""
+    con = sqlite3.connect(tmp)
+    con.execute("pragma journal_mode = off")  # a file of its own until it's done: nothing to roll back to
+    con.executescript(f"""
+        create table records (rowid integer primary key, {", ".join(f"{c} text" for c in COLS)}, unique(source, id));
+        create virtual table fts using fts5({FTS_COLS},
+            content='records', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
+        create table built_from (source text primary key, size integer, mtime_ns integer, hash text, rows integer, same integer);
+    """)
+    totals, emails = {}, set()
+    for source, f in now.items():
+        r = load(con, source, f, emails)
+        totals[source] = (r.n, r.same)
+    con.executescript(f"""
+        insert into fts(fts) values('rebuild');
+        create index records_ts on records(ts);
+        create index records_source_ts on records(source, ts);
+        create index records_thread_ts on records(thread, ts);
+        create index records_kind_source on records(kind, source);
+        pragma user_version = {SCHEMA};
+    """)
+    con.commit()
+    con.close()
+    return totals, True
+
+
+def clone(src, dst):
+    """dst as an APFS clone of src (no copying, no space until one changes), else a plain copy."""
+    try:
+        if ctypes.CDLL(None).clonefile(os.fsencode(src), os.fsencode(dst), 0) == 0:
+            return
+    except (OSError, AttributeError):
+        pass
+    shutil.copyfile(src, dst)
+
+
+def built():
+    """{source: (size, mtime_ns, hash, rows, same)} the database was built from, or None if it wasn't built this way."""
+    try:
+        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        try:
+            if con.execute("pragma user_version").fetchone()[0] != SCHEMA:
+                return None
+            return {s: tuple(x) for s, *x in con.execute("select source, size, mtime_ns, hash, rows, same from built_from")}
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def drop(con, source):
+    """A source's records out of the table and the search index (an index of another table's text is told what it had)."""
+    con.execute(f"insert into fts(fts, rowid, {FTS_COLS}) select 'delete', rowid, {FTS_COLS} from records where source = ?", (source,))
+    con.execute("delete from records where source = ?", (source,))
+    con.execute("delete from built_from where source = ?", (source,))
+
+
+def index_text(con, source):
+    con.execute(f"insert into fts(rowid, {FTS_COLS}) select rowid, {FTS_COLS} from records where source = ?", (source,))
+
+
+def update(tmp, now, was):
+    """The database, cloned to tmp, with the sources whose files changed loaded again: {source: (rows, Mail's left
+    out)}, and whether Mail's were counted again. None when building it from nothing is as quick (most of it changed)
+    or tidier (it holds a lot of free space)."""
+    touched = [s for s in now if now[s][:2] != was.get(s, (None, None))[:2]]
+    hashes = {s: file_hash(now[s][2]) for s in touched if s in was}
+    same_text = [s for s in hashes if hashes[s] == was[s][2]]  # written again, saying the same
+    changed = [s for s in touched if s not in same_text]
+    gone = [s for s in was if s not in now]
+    if sum(now[s][0] for s in changed) + sum(was[s][0] for s in gone) > sum(f[0] for f in now.values()) / 2:
+        return None
+    clone(DB, tmp)
+    con = sqlite3.connect(tmp)
+    con.execute("pragma journal_mode = off")
+    if con.execute("pragma freelist_count").fetchone()[0] * 4 > con.execute("pragma page_count").fetchone()[0]:
+        con.close()
+        return None
+    for s in same_text:
+        con.execute("update built_from set size = ?, mtime_ns = ? where source = ?", (now[s][0], now[s][1], s))
+    totals = {s: (n, same) for s, (_, _, _, n, same) in was.items()}
+    emails_moved = False  # an export's emails changed: which of Mail's it has may be different now
+    for s in gone + changed:
+        if s != "mail":
+            emails_moved = emails_moved or con.execute("select 1 from records where kind = 'email' and source = ? limit 1", (s,)).fetchone() is not None
+            drop(con, s)
+            totals.pop(s, None)
+    for s in changed:
+        if s != "mail":
+            r = load(con, s, now[s], set())
+            index_text(con, s)
+            totals[s] = (r.n, r.same)
+            emails_moved = emails_moved or r.email
+    mail = "mail" in now and (emails_moved or "mail" in changed)
+    if mail or "mail" in gone:
+        drop(con, "mail")
+        totals.pop("mail", None)
+    if mail:
+        emails = {i for (i,) in con.execute("select id from records where kind = 'email' and source != 'mail'")}
+        r = load(con, "mail", now["mail"], emails)
+        index_text(con, "mail")
+        totals["mail"] = (r.n, r.same)
+    con.commit()
+    con.close()
+    again = [s for s in changed if s != "mail"] + (["mail"] if mail else [])
+    print(f"index: read again {', '.join(again) or 'nothing'}" + (f"; taken out {', '.join(gone)}" if gone else ""))
+    return {s: totals[s] for s in now if s in totals}, mail or "mail" in gone
 
 
 def main():
     tmp = DB.with_suffix(".db.tmp")
     tmp.unlink(missing_ok=True)
-    con = sqlite3.connect(tmp)
-    con.executescript(f"""
-        create table records (rowid integer primary key, {", ".join(f"{c} text" for c in COLS)}, unique(source, id));
-        create virtual table fts using fts5(title, text, author, thread_name, participants,
-            content='records', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
-    """)
-    totals, emails, same = {}, set(), {}
-    # Mail on this Mac last: an email it shares with an export is the export's.
-    for path in sorted(NORM.glob("*.jsonl"), key=lambda p: (p.stem == "mail", p.stem)):
-        rows = []
-        for line in path.open():
-            r = json.loads(line)
-            if r.get("kind") == "email":
-                if r.get("id") in emails and path.stem == "mail":
-                    same[path.stem] = same.get(path.stem, 0) + 1
-                    continue
-                emails.add(r.get("id"))
-            r["is_me"] = None if r.get("is_me") is None else int(bool(r["is_me"]))
-            for k in ("participants", "meta"):
-                if r.get(k) is None:
-                    r[k] = None
-                elif k == "meta":
-                    r[k] = json.dumps(r[k], ensure_ascii=False)
-                elif isinstance(r[k], (list, tuple)):
-                    r[k] = ", ".join(map(str, r[k]))
-                else:  # one record from one app shaped oddly mustn't stop the whole index
-                    r[k] = str(r[k])
-            rows.append(tuple(r.get(c) for c in COLS))
-        con.executemany(f"insert or ignore into records ({', '.join(COLS)}) values ({', '.join('?' * len(COLS))})", rows)
-        totals[path.stem] = len(rows)
-    con.executescript("""
-        insert into fts(fts) values('rebuild');
-        create index records_ts on records(ts);
-        create index records_source_ts on records(source, ts);
-        create index records_thread_ts on records(thread, ts);
-    """)
-    con.commit()
-    con.execute("vacuum")
-    con.close()
-    note_same(same)
+    now = files()
+    was = built() if DB.exists() and os.environ.get("UMP_FULL_INDEX") != "1" else None
+    result = update(tmp, now, was) if was is not None else None
+    if result is None:
+        tmp.unlink(missing_ok=True)
+        result = fresh(tmp, now)
+    totals, mail = result
+    if mail:  # what Mail shares with an export was counted again
+        note_same({"mail": totals["mail"][1]} if "mail" in totals else {})
     tmp.replace(DB)
     os.utime(DB)  # newer than the manifest it was built from, note included: the app rebuilds an index older than it
-    for k, v in totals.items():
-        print(f"{k:18s} {v:>8,}" + (f"  ({same[k]:,} already in an export)" if same.get(k) else ""))
-    print(f"{'TOTAL':18s} {sum(totals.values()):>8,}  -> {DB}")
+    for k, (n, same) in totals.items():
+        print(f"{k:18s} {n:>8,}" + (f"  ({same:,} already in an export)" if same else ""))
+    print(f"{'TOTAL':18s} {sum(n for n, _ in totals.values()):>8,}  -> {DB}")
     # The event stream (corpus/stream/), for the months whose records changed. Never fails the index.
     try:
         import stream

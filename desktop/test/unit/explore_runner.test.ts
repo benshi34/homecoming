@@ -101,3 +101,22 @@ test('the stream\'s files written: the stream is built again; quick lookups neve
   assert.equal(t.ran().filter((x) => x === 'stream').length, 2);
   t.done();
 });
+
+test('one that failed isn\'t built ahead again until the library changes; asked for, it\'s tried again', async () => {
+  const t = setup();
+  // This stand-in can't build People.
+  const py = path.join(path.dirname(t.db), '..', 'python3');
+  fs.writeFileSync(py, fs.readFileSync(py, 'utf8').replace('printf', '[ "$3" = people ] && { printf \'{"error":"out of time"}\'; exit 0; }\nprintf'));
+  fs.writeFileSync(t.db, 'one');
+  t.explore.warm();
+  await until('all built', () => t.ran().length === HOME);
+  t.explore.warm();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(t.ran().filter((x) => x === 'people').length, 1, 'not again for the same library');
+  assert.deepEqual(await t.explore('people'), { error: 'out of time' });
+  assert.equal(t.ran().filter((x) => x === 'people').length, 2, 'asked for: tried again');
+  fs.writeFileSync(t.db, 'two, longer');
+  t.explore.warm();
+  await until('people again', () => t.ran().filter((x) => x === 'people').length === 3);
+  t.done();
+});

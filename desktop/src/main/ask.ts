@@ -12,6 +12,7 @@ import path from 'node:path';
 import { addEvent, answerOf, explainError, followupPrompt, isLocalAddress, PROVIDER, titleOf, type AskConversation, type AskEvent, type AskProvider,
   type AskSettings, type AskSummary, type AskTurn, type LocalStatus, type SignIn } from '../shared/ask.ts';
 import { lineSplitter } from './bridge.ts';
+import { NO_HOOKS, runDir, runRoot } from './run_dirs.ts';
 import { childEnv, type Paths } from './paths.ts';
 import { tieToApp } from './tied.ts';
 
@@ -224,7 +225,8 @@ export class Ask {
       let text = '(the database isn\'t built yet: read some sources first)';
       try {
         const rows = JSON.parse(await this.py(['inventory'])) as { source: string; count: number; first: string; last: string }[];
-        text = rows.map((r) => `- ${r.source}: ${r.count.toLocaleString('en-US')} records, ${r.first || '?'} to ${r.last || '?'}`).join('\n');
+        text = rows.length ? rows.map((r) => `- ${r.source}: ${r.count.toLocaleString('en-US')} records, ${r.first || '?'} to ${r.last || '?'}`).join('\n')
+          : '(nothing yet: no source has been read into the library, so every lookup will come back empty)';
       } catch {
         /* keep the placeholder */
       }
@@ -281,9 +283,11 @@ export class Ask {
     return this.running.has(id);
   }
 
-  // Every answer under way (AI turned off).
+  // Every answer under way (AI turned off), and making sense of a download too.
+  private completing = new Set<AbortController>();
   stopAll() {
     for (const c of this.running.values()) c.abort();
+    for (const c of this.completing) c.abort();
   }
 
   stop(id: string) {
@@ -304,6 +308,13 @@ export class Ask {
     this.save(conv);
     const ctl = new AbortController();
     this.running.set(conv.id, ctl);
+    // An answer has ten minutes: past that it's stopped, and says so (an agent stuck retrying would otherwise go on).
+    let tooLong = false;
+    const limit = setTimeout(() => {
+      tooLong = true;
+      ctl.abort();
+    }, Number(process.env.UMP_ASK_LIMIT_MS || 10 * 60_000));
+    limit.unref(); // it doesn't keep anything running by itself
     const index = conv.turns.length - 1;
     const started = new Map<string, number>();
     const emit = (e: AskEvent) => {
@@ -326,10 +337,19 @@ export class Ask {
       turn.errorDetail = e.message;
       turn.fix = x.fix;
     }).finally(() => {
+      clearTimeout(limit);
       turn.endedAt = new Date().toISOString();
-      turn.stopped = ctl.signal.aborted || undefined;
+      turn.stopped = (ctl.signal.aborted && !tooLong) || undefined;
+      if (tooLong) {
+        turn.error = `It took more than ${Math.round(Number(process.env.UMP_ASK_LIMIT_MS || 10 * 60_000) / 60_000)} minutes, so it was stopped. Try a narrower question, or Try Again.`;
+        turn.fix = undefined;
+      }
       // A failed turn has no answer: what the agent said on its way out was the error (shown, plainly, above).
       turn.answer = turn.error ? '' : turn.answer || answerOf(turn.events);
+      // An answer with no lookups behind it (a model on this Mac often skips them): said, under it.
+      if (turn.answer && !turn.error && !turn.events.some((e) => e.t === 'tool')) {
+        addEvent(turn, { t: 'notice', text: 'Answered without looking anything up in your library, so it may not be from your data. Try Again, or ask it to look.' });
+      }
       this.running.delete(conv.id);
       conv.updatedAt = turn.endedAt;
       this.save(conv);
@@ -359,7 +379,12 @@ export class Ask {
     const s = this.host.settings();
     const model = s.models[s.provider] || PROVIDER[s.provider].models[0] || '';
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    let late = false;
+    const timer = setTimeout(() => {
+      late = true;
+      ctl.abort();
+    }, timeoutMs);
+    this.completing.add(ctl);
     const turn: AskTurn = { question: prompt, provider: s.provider, model, startedAt: new Date().toISOString(), events: [], answer: '' };
     const run: Run = { turn, emit: (e) => addEvent(turn, e), signal: ctl.signal, model, question: prompt, history: [], tools: false };
     try {
@@ -370,8 +395,10 @@ export class Ask {
       throw Object.assign(new Error(x.text), { detail: raw, fix: x.fix });
     } finally {
       clearTimeout(timer);
+      this.completing.delete(ctl);
     }
-    if (ctl.signal.aborted) throw new Error(`${PROVIDER[s.provider].name} took longer than ${Math.round(timeoutMs / 60_000)} minutes, so it was stopped.`);
+    if (late) throw new Error(`${PROVIDER[s.provider].name} took longer than ${Math.round(timeoutMs / 60_000)} minutes, so it was stopped.`);
+    if (ctl.signal.aborted) throw new Error('Stopped: AI was turned off.');
     const text = turn.answer || answerOf(turn.events);
     if (!text.trim()) throw new Error(`${PROVIDER[s.provider].name} didn't reply.`);
     return text;
@@ -425,7 +452,7 @@ export class Ask {
     try {
       const r = await fetch(`${url.replace(/\/+$/, '')}/models`, { signal: AbortSignal.timeout(5000) });
       const ids = ((await r.json()) as { data?: { id?: string }[] }).data?.map((m) => String(m.id ?? '')).filter(Boolean) ?? [];
-      return ids.length ? ['default', ...ids.sort()] : fallback;
+      return ids.length ? ids.sort() : fallback; // its own only: "default" would have Codex download one
     } catch (e) {
       this.host.log(`Couldn't list the local server's models: ${(e as Error).message}`);
       return fallback;
@@ -449,15 +476,20 @@ export class Ask {
     if (!force && before && Date.now() - Date.parse(before.at) < 15_000) return { status: before, changed: false };
     this.localCheck ??= (async () => {
       let up: boolean | null = null;
+      let models: string[] | undefined;
       if (isLocalAddress(url)) {
         try {
-          await fetch(`${url.replace(/\/+$/, '')}/models`, { signal: AbortSignal.timeout(2000) });
+          const r = await fetch(`${url.replace(/\/+$/, '')}/models`, { signal: AbortSignal.timeout(2000) });
           up = true;
+          // The models it has, when it says (any reply still counts as up).
+          try {
+            models = ((await r.json()) as { data?: { id?: string }[] }).data?.map((m) => String(m.id ?? '')).filter(Boolean);
+          } catch { /* not a list */ }
         } catch {
           up = false;
         }
       }
-      return { url, up, at: new Date().toISOString() };
+      return { url, up, at: new Date().toISOString(), ...(models ? { models } : {}) };
     })().finally(() => (this.localCheck = null));
     const status = await this.localCheck;
     this.local = status;
@@ -483,7 +515,7 @@ export class Ask {
     if (!force && before && Date.now() - Date.parse(before.at) < 60_000) return false;
     this.signInChecks[harness] ??= new Promise<SignIn>((resolve) => {
       const args = harness === 'codex' ? ['login', 'status'] : ['auth', 'status', '--json'];
-      const p = spawn(bin, args, { env: this.agentEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }), cwd: os.tmpdir(), stdio: ['ignore', 'pipe', 'pipe'] });
+      const p = spawn(bin, args, { env: this.agentEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }), cwd: runRoot(), stdio: ['ignore', 'pipe', 'pipe'] });
       let out = '';
       let err = '';
       const timer = setTimeout(() => p.kill(), 10_000);
@@ -518,7 +550,8 @@ export class Ask {
 
   // Runs one command-line agent (who: its name, for messages; cmd may be the sandbox around it): lines of JSON on stdout
   // become events; stopping kills its process group.
-  private agent(who: string, cmd: string, args: string[], input: string, run: Run, onLine: (o: Record<string, unknown>) => void, cwd: string,
+  // onLine returns 'stop' to end the run there (what it's about to do can't help, as with no lookups to make).
+  private agent(who: string, cmd: string, args: string[], input: string, run: Run, onLine: (o: Record<string, unknown>) => void | 'stop', cwd: string,
     env: Record<string, string> = {}): Promise<void> {
     return new Promise((resolve, reject) => {
       // Stopped while the answer was getting ready (the lookups starting): there's nothing to start. An abort before
@@ -527,22 +560,29 @@ export class Ask {
       const p = spawn(cmd, args, { cwd, env: this.agentEnv(env), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
       tieToApp(p, true);
       let err = '';
-      const kill = () => {
+      const signal = (sig: NodeJS.Signals) => {
         try {
-          process.kill(-p.pid!, 'SIGTERM');
+          process.kill(-p.pid!, sig);
         } catch {
           /* gone */
         }
+      };
+      // Asked to stop, then made to a few seconds later if it hasn't (or the answer would say "still answering" for good).
+      const kill = () => {
+        signal('SIGTERM');
+        setTimeout(() => p.exitCode === null && p.signalCode === null && signal('SIGKILL'), 3000).unref();
       };
       run.signal.addEventListener('abort', kill, { once: true });
       const split = lineSplitter((line) => {
         const s = line.trim();
         if (!s.startsWith('{')) return;
+        let said: unknown;
         try {
-          onLine(JSON.parse(s));
+          said = JSON.parse(s);
         } catch {
-          /* not an event */
+          return; // not an event
         }
+        if (onLine(said as Record<string, unknown>) === 'stop') kill();
       });
       p.stdout.setEncoding('utf8').on('data', (d: string) => split.push(d));
       p.stderr.setEncoding('utf8').on('data', (d: string) => (err = (err + d).slice(-4000)));
@@ -560,8 +600,9 @@ export class Ask {
 
   // A command-line agent's run folder: its working directory, with the mailbox its lookups come through (see relay()
   // in ask_tools.py). The app runs each request and shows it as a tool call.
-  private async withRunDir(run: Run, go: (dir: string, box: string) => Promise<void>) {
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ump-ask-run-')));
+  private async withRunDir(run: Run, go: (dir: string, box: string) => Promise<void>, claude = false) {
+    // Claude Code's in the app's own runs folder (run_dirs.ts); Codex's in the temp folder, where its permission profile lets it work.
+    const dir = claude ? runDir('ump-ask-run-') : fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ump-ask-run-')));
     const box = path.join(dir, '.box');
     fs.mkdirSync(box, { mode: 0o700 });
     const taken = new Set<string>();
@@ -630,10 +671,11 @@ export class Ask {
     await this.withRunDir(run, async (dir, box) => {
       const mcp = { command: this.host.paths.python, args: [this.toolsPath, 'mcp', '--box', box] };
       const args = [...(withKey ? ['--bare'] : []), '-p', '--model', run.model, '--output-format', 'stream-json', '--verbose',
-        '--include-partial-messages', '--no-session-persistence', '--strict-mcp-config',
+        '--include-partial-messages', '--no-session-persistence', '--strict-mcp-config', ...(instructions !== null ? ['--max-turns', '40'] : []),
         ...(instructions !== null ? ['--mcp-config', JSON.stringify({ mcpServers: { corpus: mcp } })] : []),
         '--setting-sources', 'project', '--tools', '', '--permission-mode', 'dontAsk',
-        ...(instructions !== null ? ['--settings', JSON.stringify({ permissions: { allow: ['mcp__corpus'] } }), '--append-system-prompt', instructions] : [])];
+        '--settings', JSON.stringify({ ...NO_HOOKS, ...(instructions !== null ? { permissions: { allow: ['mcp__corpus'] } } : {}) }),
+        ...(instructions !== null ? ['--append-system-prompt', instructions] : [])];
       let streamed = false;
       // Its own tools are off and the sandbox makes sure: the data is reachable only through the corpus tools.
       const going = this.agent('Claude Code', '/usr/bin/sandbox-exec', ['-p', agentProfile(this.host.paths, this.host.dir, dir), bin, ...args],
@@ -650,8 +692,18 @@ export class Ask {
             for (const c of ((ev.message as { content?: Record<string, unknown>[] })?.content ?? [])) {
               if (c.type === 'text' && String(c.text ?? '').trim()) run.emit({ t: 'text', text: String(c.text) });
             }
+          } else if (ev.type === 'system' && ev.subtype === 'init' && instructions !== null) {
+            // Its lookups are the app's tools, and nothing else: if they didn't start, it would answer without your data.
+            const corpus = ((ev.mcp_servers ?? []) as { name: string; status: string }[]).find((x) => x.name === 'corpus');
+            if (corpus?.status !== 'connected' && corpus?.status !== 'pending') {
+              failed = `The app's lookup tools didn't start for Claude Code (${corpus?.status ?? 'missing'}), so it stopped rather than answer without your data. Try again; if it keeps happening, Setup Checks shows whether Python is ready.`;
+              return 'stop';
+            }
           } else if (ev.type === 'result') {
-            if (ev.is_error) failed = String(ev.result || ev.subtype || 'Claude Code stopped');
+            // Its reason, wherever it put it: the result, its errors, the API's status.
+            const why = [ev.result, ...(Array.isArray(ev.errors) ? ev.errors : []), ev.api_error_status ? `API status ${ev.api_error_status}` : '']
+              .filter((x) => typeof x === 'string' && x.trim()).join('\n');
+            if (ev.is_error) failed = why || (ev.subtype === 'error_max_turns' ? 'It took more steps than an answer gets (40), so it stopped.' : String(ev.subtype || 'Claude Code stopped'));
             else if (typeof ev.result === 'string') run.turn.answer = ev.result;
           }
         }, dir, env);
@@ -660,13 +712,34 @@ export class Ask {
       } catch (e) {
         throw new Error([failed, (e as Error).message].filter(Boolean).join('\n'));
       }
-    });
+    }, true);
     if (failed) throw new Error(failed);
   }
 
   // Codex: signed in with your ChatGPT account, with an OpenAI API key, or on a local model server (--oss). With a key
   // or a local model it gets a settings folder of its own, so your ChatGPT sign-in is neither used nor changed.
+  // With your ChatGPT sign-in, one run at a time: each refreshes that same sign-in, and two at once (or one beside the
+  // ChatGPT app's) can use up its refresh and sign every Codex on the Mac out. A key or a local model has its own.
+  private codexTurn: Promise<void> = Promise.resolve();
   private async codex(run: Run, s: AskSettings) {
+    if (s.provider !== 'codex') return this.codexRun(run, s);
+    const before = this.codexTurn;
+    let done!: () => void;
+    this.codexTurn = new Promise<void>((r) => (done = r));
+    let waiting = true;
+    const note = setTimeout(() => waiting && run.emit({ t: 'notice', text: 'Waiting for Codex to finish another answer first…' }), 500);
+    try {
+      await before;
+      waiting = false;
+      clearTimeout(note);
+      return await this.codexRun(run, s);
+    } finally {
+      clearTimeout(note);
+      done();
+    }
+  }
+
+  private async codexRun(run: Run, s: AskSettings) {
     const bin = findCodex();
     if (!bin) throw new Error('Codex isn\'t on this Mac. It comes with the ChatGPT app, or install it on its own.');
     const instructions = run.tools ? `${await this.instructions()}\n\n${CODEX_TOOLS}` : null;
@@ -676,7 +749,7 @@ export class Ask {
     await this.withRunDir(run, async (dir, box) => {
       // The tools are a command in its folder (custom tool servers can be turned off by a workspace's policy).
       if (instructions !== null) {
-        fs.writeFileSync(path.join(dir, 'ask'), `#!/bin/sh\nexec ${shq(this.host.paths.python)} -I ${shq(this.toolsPath)} ask --box ${shq(box)} "$1"\n`, { mode: 0o755 });
+        fs.writeFileSync(path.join(dir, 'ask'), `#!/bin/sh\nexec ${shq(this.host.paths.python)} -I ${shq(this.toolsPath)} ask --box ${shq(box)} "$@"\n`, { mode: 0o755 });
       }
       const toml = (v: unknown) => JSON.stringify(v);
       const env: Record<string, string> = {};
@@ -689,14 +762,20 @@ export class Ask {
         env.CODEX_API_KEY = this.key('openai');
         if (process.env.UMP_OPENAI_URL) how.push('-c', `openai_base_url=${toml(process.env.UMP_OPENAI_URL)}`); // tests
       } else if (s.provider === 'local') {
+        // Never "default": Codex would download its own model (gpt-oss, ~13 GB) before answering, saying so nowhere.
+        if (!run.model || run.model === 'default') throw new Error('Pick one of the models your local server has first, in AI Settings.');
         env.CODEX_OSS_BASE_URL = s.localUrl.replace(/\/+$/, '');
         how.push('--oss', '--local-provider', s.localServer);
       }
+      // With your ChatGPT account and the field left empty: the model the field shows as Codex's default (its own
+      // config, which these runs don't read otherwise).
+      const shown = s.provider === 'codex' && (!run.model || run.model === 'default') ? codexModels(this.host.paths.home)?.[0] : undefined;
+      const model = run.model && run.model !== 'default' ? run.model : shown && shown !== 'default' ? shown : '';
       const args = ['--ask-for-approval', 'never', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
         '--color', 'never', ...how, '-c', 'analytics.enabled=false', '-c', 'web_search="disabled"', '-c', 'shell_environment_policy.inherit="none"', '-c', 'project_doc_max_bytes=0',
         '-c', 'features.multi_agent=false', '-c', 'features.apps=false', ...codexPermissions(this.host.paths, this.toolsPath),
         ...(instructions !== null ? ['-c', `developer_instructions=${toml(instructions)}`] : []),
-        ...(run.model && run.model !== 'default' ? ['--model', run.model] : []), '-'];
+        ...(model ? ['--model', model] : []), '-'];
       const answer: string[] = [];
       const going = this.agent('Codex', bin, args, followupPrompt(run.question, run.history), run, (ev) => {
         const item = (ev.item ?? {}) as Record<string, unknown>;
@@ -761,6 +840,13 @@ const isFile = (p: string) => {
     return false;
   }
 };
+const folders = (dir: string) => {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    return [];
+  }
+};
 const onPath = (name: string) => (process.env.PATH ?? '').split(':').filter(Boolean).map((d) => path.join(d, name)).find(isFile) ?? null;
 
 // Where people's own installs put a command a GUI app's short PATH misses: npm's global folder, Volta, Bun, pnpm, Yarn,
@@ -785,11 +871,11 @@ export function findClaude(home = os.homedir()): string | null {
     || userBin(home, 'claude');
   if (found) return found;
   // ~/Library/Application Support/Claude/claude-code/<version>/<build>/claude.app/Contents/MacOS/claude
+  // Only its folders: the Claude app keeps files there too (auto-update-candidate.json).
   const root = path.join(home, 'Library/Application Support/Claude/claude-code');
-  if (!fs.existsSync(root)) return null;
   const v = (s: string) => s.split('.').map((n) => n.padStart(6, '0')).join('.');
-  for (const ver of fs.readdirSync(root).sort((a, b) => v(b).localeCompare(v(a)))) {
-    for (const build of fs.readdirSync(path.join(root, ver))) {
+  for (const ver of folders(root).sort((a, b) => v(b).localeCompare(v(a)))) {
+    for (const build of folders(path.join(root, ver))) {
       const p = path.join(root, ver, build, 'claude.app/Contents/MacOS/claude');
       if (isFile(p)) return p;
     }
@@ -832,7 +918,15 @@ export function agentProfile(p: Paths, appData: string, cwd: string): string {
       return x;
     }
   };
-  const deny = [...new Set([p.corpus, real(p.corpus), path.join(p.repo, 'corpus'), path.join(p.repo, 'corpus.nosync'), appData, real(appData)])];
+  // The library and this app's data, and what this app's Full Disk Access would otherwise open to it: the Mac's own
+  // data (Messages, Mail, Photos, other apps'), the decrypted iPhone backup, keys, documents and other disks.
+  const lib = path.join(p.home, 'Library');
+  const mac = ['Messages', 'Mail', 'Safari', 'Calendars', 'Containers', 'Group Containers', 'Biome', 'Application Support/AddressBook',
+    'Application Support/CallHistoryDB', 'Application Support/q1_user_model', 'Mobile Documents', 'CloudStorage', 'Accounts', 'Cookies']
+    .map((d) => path.join(lib, d));
+  const home = ['Pictures', 'Documents', 'Desktop', 'Downloads', 'Movies', 'Music', '.ssh', '.gnupg', '.aws'].map((d) => path.join(p.home, d));
+  const deny = [...new Set([p.corpus, real(p.corpus), path.join(p.repo, 'corpus'), path.join(p.repo, 'corpus.nosync'), appData, real(appData),
+    ...mac, ...home, '/Volumes'])];
   return `(version 1)(allow default)(deny file-read* ${deny.map((d) => `(subpath ${JSON.stringify(d)})`).join(' ')})`
     + `(allow file-read* file-write* (subpath ${JSON.stringify(real(cwd))}))`;
 }

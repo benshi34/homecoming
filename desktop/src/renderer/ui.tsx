@@ -1,7 +1,7 @@
 // Controls drawn to look and move like AppKit's: push buttons, switches, the spoked spinner, grouped forms,
 // sheets. Animations go through the View Transitions API and respect Reduce Motion.
 
-import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from 'react';
+import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useId, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Glyph } from './icons.tsx';
 
@@ -52,13 +52,20 @@ export function Button({ children, kind = 'default', size = 'regular', onClick, 
   );
 }
 
-export function Toggle({ checked, onChange, label, testId }: { checked: boolean; onChange: (v: boolean) => void; label?: string; testId?: string }) {
+// Read-only mode (UMP_READONLY, not the demo): main saves no setting, so every switch and picker says so and stays put.
+export const ReadOnly = createContext<string | null>(null); // the note to show, when locked
+export const useReadOnly = () => useContext(ReadOnly);
+
+// anyway: one read-only mode still lets change (turning AI on, for Ask).
+export function Toggle({ checked, onChange, label, testId, anyway }: { checked: boolean; onChange: (v: boolean) => void; label?: string; testId?: string; anyway?: boolean }) {
   // Flip at once; the saved value catches up a moment later.
   const [on, setOn] = useState(checked);
   useEffect(() => setOn(checked), [checked]);
+  const locked = useReadOnly();
+  const off = !!locked && !anyway;
   return (
-    <button type="button" role="switch" aria-checked={on} aria-label={label} data-testid={testId}
-      className={`switch ${on ? 'on' : ''}`} onClick={() => { setOn(!on); onChange(!on); }}>
+    <button type="button" role="switch" aria-checked={on} aria-label={label} data-testid={testId} disabled={off} title={off ? locked! : undefined}
+      className={`switch ${on ? 'on' : ''}`} style={off ? { opacity: 0.45 } : undefined} onClick={() => { setOn(!on); onChange(!on); }}>
       <span className="knob" />
     </button>
   );

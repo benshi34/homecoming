@@ -54,12 +54,17 @@ export interface Source {
   signIn?: { domains: string[]; cookies: string[] };
   // Why Do It for Me can't do it (the Claude in Chrome extension isn't allowed on the site): it's yours to do.
   agentBlocked?: string;
+  confirmByEmail?: boolean; // the request only starts once you click the link in the email it sends (Spotify)
+  // Its page lists another export too (Google's two, on Takeout): which one is this one's, for Claude. An email's link
+  // can't say which, so Claude goes by the page.
+  exportIs?: string;
+  firstPartOnly?: boolean; // it can run to hundreds of GB: Claude downloads the first part, and asks about the rest
   // A service you added whose export page is known (data/services.json): Claude can request it there.
   exportPage?: boolean;
 }
 
 const GOOGLE_CORE = ['gmail', 'google_activity', 'google_calendar', 'google_contacts', 'chrome_synced', 'google_keep',
-  'google_chat', 'google_maps_places'];
+  'google_chat', 'google_maps_places', 'youtube', 'google_tasks', 'google_saved'];
 
 export const CATALOG: Source[] = [
   // ---------------------------------------------------------------- setup
@@ -149,6 +154,8 @@ export const CATALOG: Source[] = [
     blurb: 'The address book. It turns phone numbers and emails into names everywhere else.' },
   { id: 'imessage', name: 'Messages', group: 'mac', connector: 'imessage', produces: ['imessage'], gapKeys: ['imessage'],
     blurb: 'iMessage, SMS and RCS from this Mac, merged with the iPhone backup by message ID.' },
+  { id: 'whatsapp', name: 'WhatsApp (desktop app)', group: 'mac', connector: 'whatsapp', produces: ['whatsapp'],
+    blurb: 'Your chats in the WhatsApp app on this Mac, both sides, and who said what in groups. Messages the iPhone backup also has are counted once.' },
   { id: 'apple_mail', name: 'Mail', group: 'mac', connector: 'mail_app', produces: ['mail'],
     blurb: 'Every account in Mail on this Mac: Gmail, Outlook and Exchange, iCloud, school and work mail. Mail you also exported is kept once.' },
   { id: 'apple_notes', name: 'Notes', group: 'mac', connector: 'apple_notes', produces: ['apple_notes'],
@@ -160,7 +167,7 @@ export const CATALOG: Source[] = [
   { id: 'calls', name: 'Phone and FaceTime calls', group: 'mac', connector: 'calls', produces: ['calls'],
     blurb: 'Call history. The Mac keeps about 6 months, so the app reads it daily.',
     knownGaps: ['The Mac keeps about 6 months of calls and the phone about 9. Older calls are gone unless an earlier run saved them.'] },
-  { id: 'browser_history', name: 'Browsing history', group: 'mac', connector: 'browser_history', produces: ['browser_history'],
+  { id: 'browser_history', name: 'Browsing history', group: 'mac', connector: 'browser_history', produces: ['browser_history', 'browser_saved'],
     blurb: 'Pages visited and searches made, in Safari, Chrome, Arc, Edge, Brave, Firefox and the other browsers on this Mac (pick which in Your Setup). Chrome keeps 90 days; Google Takeout has more.' },
   { id: 'app_usage', name: 'Screen Time', group: 'mac', connector: 'app_usage', produces: ['app_usage'],
     blurb: 'Which apps you used and what was playing, on every device on your Apple ID. Kept for about 4 weeks.',
@@ -173,15 +180,19 @@ export const CATALOG: Source[] = [
     blurb: 'The commands you typed in Terminal. Passwords, tokens and keys in them are replaced with [redacted].' },
   { id: 'podcasts', name: 'Podcasts', group: 'mac', connector: 'podcasts', produces: ['podcasts'],
     blurb: 'The shows you follow and the episodes you played in Apple Podcasts.' },
-  { id: 'photos', name: 'Photos', group: 'mac', connector: 'photos', produces: ['photos', 'shared_photos'],
+  { id: 'books', name: 'Books', group: 'mac', connector: 'books', produces: ['books'],
+    blurb: 'The books in Apple Books, how far you got in each and when you finished, and every passage you highlighted or wrote a note on.' },
+  { id: 'photos', name: 'Photos', group: 'mac', connector: 'photos', produces: ['photos', 'shared_photos', 'photos_memories'],
     blurb: 'Dates, places, people and on-device labels for every photo. No pixels are copied. Photos others shared with you (shared albums, Shared with You, a Shared Library) are kept apart, so their places aren\'t taken for yours.' },
+  { id: 'apple_maps', name: 'Apple Maps', group: 'mac', connector: 'apple_maps', produces: ['apple_maps'],
+    blurb: 'What you searched for and got directions to in Apple Maps, your favorites and guides, the places you rated, and the places Maps says you visited.' },
   { id: 'voice_memos', name: 'Voice Memos', group: 'mac', connector: 'voice_memos', produces: ['voice_memos'],
     blurb: 'Recordings synced to this Mac.' },
 
   { id: 'notion_local', name: 'Notion (desktop app)', group: 'mac', connector: 'notion_local', produces: ['notion'],
     blurb: 'Pages the Notion app has cached on this Mac, with exact edit times.' },
   { id: 'documents', name: 'Documents', group: 'mac', connector: 'documents', produces: ['documents'],
-    blurb: 'Text from documents in Documents, Desktop, Downloads and iCloud Drive.' },
+    blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
     blurb: 'Your commits across every repository under Documents, Desktop and your code folders (Developer, Code, Projects...).' },
 
@@ -203,12 +214,13 @@ export const CATALOG: Source[] = [
   {
     id: 'google_takeout', name: 'Google', group: 'web', produces: GOOGLE_CORE, gapKeys: ['gmail'],
     signIn: { domains: ['google.com'], cookies: ['SID', '__Secure-1PSID'] },
-    blurb: 'Gmail, search and YouTube history, Chrome, Calendar, Contacts, Keep, Google Chat and Maps.',
+    blurb: 'Gmail, search and YouTube history, Chrome, Calendar, Contacts, Keep, Tasks, Google Chat, Maps and your saved lists.',
     url: 'https://takeout.google.com/', downloadUrl: 'https://takeout.google.com/manage',
+    exportIs: 'the one with Mail, Calendar, Chrome and the rest (not one with only Google Photos and Drive)',
     waitHours: [8, 48], expiresDays: 7, importDir: 'takeout', fileHint: 'takeout-<date>-<n>-001.zip, often several parts',
     steps: [
       { text: 'Sign in with your own Google account. Check the name in the top right.' },
-      { text: 'Click "Deselect all", then tick Calendar, Chrome, Contacts, Gemini, Google Chat, Keep, Mail, Maps, Maps (your places), My Activity, Tasks, and YouTube and YouTube Music.', detail: 'The counter at the top should go up with each tick. Leave Google Photos and Drive for their own export.' },
+      { text: 'Click "Deselect all", then tick Calendar, Chrome, Contacts, Gemini, Google Chat, Keep, Mail, Maps, Maps (your places), My Activity, Saved, Tasks, and YouTube and YouTube Music.', detail: 'The counter at the top should go up with each tick. Saved holds your Maps lists (Want to go, Favorites, your own). Leave Google Photos and Drive for their own export.' },
       { text: 'My Activity → Multiple formats → Activity records: choose JSON.' },
       { text: 'YouTube and YouTube Music → Multiple formats → history: choose JSON. Under "All YouTube data included", untick videos.' },
       { text: 'Next step: send download link via email, export once, .zip, 50 GB parts (one download, not several). Create export.' },
@@ -220,6 +232,7 @@ export const CATALOG: Source[] = [
     signIn: { domains: ['google.com'], cookies: ['SID', '__Secure-1PSID'] },
     blurb: 'Photo times, places and people from Google Photos, and the text of your Drive files (imported as documents). Can be very large.',
     url: 'https://takeout.google.com/', downloadUrl: 'https://takeout.google.com/manage',
+    exportIs: 'the one with only Google Photos and Drive', firstPartOnly: true,
     waitHours: [24, 72], expiresDays: 7, importDir: 'takeout', optional: true,
     fileHint: 'takeout-<date>-<n>-001.zip, 50 GB parts',
     steps: [
@@ -324,7 +337,7 @@ export const CATALOG: Source[] = [
   {
     id: 'x', name: 'X (Twitter)', group: 'web', produces: ['x'],
     signIn: { domains: ['x.com', 'twitter.com'], cookies: ['auth_token'] },
-    blurb: 'Your posts, likes and direct messages.',
+    blurb: 'Your posts (deleted ones too), likes, direct messages and Grok chats.',
     url: 'https://x.com/settings/download_your_data', waitHours: [24, 96], importDir: 'x', fileHint: 'twitter-<date>-<id>.zip',
     steps: [
       { text: 'Sign in to X in your browser.' },
@@ -347,15 +360,15 @@ export const CATALOG: Source[] = [
     ],
   },
   {
-    id: 'spotify', name: 'Spotify', group: 'web', produces: ['spotify'],
+    id: 'spotify', name: 'Spotify', group: 'web', produces: ['spotify'], confirmByEmail: true,
     signIn: { domains: ['spotify.com'], cookies: ['sp_dc'] },
-    blurb: 'Every song and podcast you ever played (extended streaming history).',
-    url: 'https://www.spotify.com/account/privacy/', waitHours: [72, 720], importDir: 'spotify', fileHint: 'my_spotify_data.zip',
+    blurb: 'Every song, podcast and audiobook you ever played, your playlists, library and searches, and what Spotify decided about you.',
+    url: 'https://www.spotify.com/account/privacy/', waitHours: [72, 720], importDir: 'spotify', fileHint: 'my_spotify_data.zip, one for each part',
     steps: [
       { text: 'Sign in to Spotify.' },
-      { text: 'Tick Extended streaming history (all-time plays). Account data alone covers only the last year.' },
+      { text: 'Tick both Account data and Extended streaming history.', detail: 'Account data has your playlists, library, searches and the last year\'s plays. Extended streaming history has every play since you joined.' },
       { text: 'Request data, then confirm in the email Spotify sends.' },
-      { text: 'Extended history takes days, up to 30.' },
+      { text: 'They arrive separately, each in its own email: Account data in about 5 days, Extended streaming history in days, up to 30. Add each one when it comes.' },
     ],
   },
 
@@ -421,6 +434,12 @@ export const CATALOG: Source[] = [
     ],
   },
 ];
+
+// Where a service's download is found once it's ready, with no link in hand: its own page has a download button
+// (Takeout's downloads, the Accounts Center's exports, X and LinkedIn settings), or the link only comes by email (Discord).
+export const EMAIL_ONLY = new Set(['discord', 'spotify', 'reddit', 'notion', 'chatgpt', 'claude_ai']);
+// Its own page, once it's ready, when it shows the download there (a service you added: its export page).
+export const downloadPage = (src: Source) => (EMAIL_ONLY.has(src.id) ? undefined : src.downloadUrl ?? (src.custom ? src.url : undefined));
 
 export const BY_ID: Record<string, Source> = Object.fromEntries(CATALOG.map((s) => [s.id, s]));
 // Services you set up by hand rather than request (Outlook and other mail through Mail, Maps Timeline from the phone,
@@ -530,6 +549,7 @@ export const MAC_CONNECTORS = CATALOG.filter((s) => s.group === 'mac').map((s) =
 export const IMPORT_PARSER_SOURCES: Record<string, string[]> = {
   ai_exports: ['chatgpt', 'claude_ai'],
   google: ['google_takeout', 'other_mail', 'iphone_vcard', 'maps_timeline'],
+  youtube: ['google_takeout'],
   google_chat: ['google_takeout'],
   discord: ['discord'],
   meta: ['instagram', 'facebook'],

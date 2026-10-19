@@ -56,6 +56,38 @@ def library(home):
     psi.close()
 
 
+def names_blob(given, family):
+    """NSPersonNameComponents as Photos archives it (NSKeyedArchiver), for a shared album member."""
+    import plistlib
+    U = plistlib.UID
+    return plistlib.dumps({"$archiver": "NSKeyedArchiver", "$version": 100000, "$top": {"root": U(1)}, "$objects": [
+        "$null", {"$class": U(3), "NS.nameComponentsPrivate": U(2)},
+        {"$class": U(4), "NS.givenName": U(5), "NS.familyName": U(6), "NS.middleName": U(0), "NS.nickname": U(0)},
+        {"$classname": "NSPersonNameComponents", "$classes": ["NSPersonNameComponents", "NSObject"]},
+        {"$classname": "NSPersonNameComponentsPrivate", "$classes": ["NSObject"]}, given, family]}, fmt=plistlib.FMT_BINARY)
+
+
+def library26(home):
+    """The same library as macOS 26 keeps shared albums: a ZSHARE row, linked from each photo, with who posted it."""
+    library(home)
+    con = sqlite3.connect(home / "Pictures/Photos Library.photoslibrary/database/Photos.sqlite")
+    con.executescript("""
+        delete from ZGENERICALBUM; delete from Z_30ASSETS;
+        create table ZSHARE (Z_PK integer primary key, ZTITLE text);
+        insert into ZSHARE values (1, 'Lisbon trip');
+        alter table ZASSET add column ZCOLLECTIONSHARE int;
+        alter table ZASSET add column ZCOLLECTIONSHAREASSETCONTRIBUTOR int;
+        alter table ZSHAREPARTICIPANT add column ZNAMECOMPONENTS blob;
+        alter table ZSHAREPARTICIPANT add column ZEMAILADDRESS text;
+        insert into ZASSETCONTRIBUTOR values (10, 2, null), (11, 1, null);
+        update ZASSET set ZCOLLECTIONSHARE = 1, ZCOLLECTIONSHAREASSETCONTRIBUTOR = 10 where Z_PK = 2;
+        update ZASSET set ZCOLLECTIONSHARE = 1, ZCOLLECTIONSHAREASSETCONTRIBUTOR = 11 where Z_PK = 3;
+    """)
+    con.execute("update ZSHAREPARTICIPANT set ZNAMECOMPONENTS = ?, ZEMAILADDRESS = 'grace@example.com' where Z_PK = 2", (names_blob("Grace", "Hopper"),))
+    con.commit()
+    con.close()
+
+
 class PhotosTests(unittest.TestCase):
     def setUp(self):
         t = tempfile.TemporaryDirectory()
@@ -100,6 +132,61 @@ class PhotosTests(unittest.TestCase):
         con.close()
         mine, shared = self.run_photos()
         self.assertEqual((len(mine), len(shared)), (6, 0), "no sharing columns: everything is yours, as before")
+
+
+class MemoriesTests(PhotosTests):
+    """What Photos made of them: Memories and the days and trips it titled, as their own source; and counts, screenshots."""
+    def setUp(self):
+        super().setUp()
+        con = sqlite3.connect(self.home / "Pictures/Photos Library.photoslibrary/database/Photos.sqlite")
+        con.executescript("""
+            create table ZMEMORY (ZUUID text, ZTITLE text, ZSUBTITLE text, ZSTARTDATE real, ZENDDATE real, ZCREATIONDATE real, ZFAVORITE int,
+              ZPLAYCOUNT int, ZVIEWCOUNT int, ZSHARECOUNT int, ZREJECTED int);
+            insert into ZMEMORY values ('M1', 'Summer in Lisbon', '2023', 700000000, 700500000, 701000000, 1, 3, 5, 1, 0);
+            insert into ZMEMORY values ('M2', 'Not this one', null, 700000000, 700500000, 701000000, 0, 0, 0, 0, 1);
+            create table ZPHOTOSHIGHLIGHT (ZUUID text, ZKIND int, ZTITLE text, ZSUBTITLE text, ZSTARTDATE real, ZENDDATE real, ZVERBOSESMARTDESCRIPTION text);
+            insert into ZPHOTOSHIGHLIGHT values ('H1', 3, 'Lisbon', 'Jun 3 - 9', 700000000, 700500000, 'A week by the river');
+            insert into ZPHOTOSHIGHLIGHT values ('H2', 1, 'June 2023', null, 700000000, 702000000, null);
+            alter table ZADDITIONALASSETATTRIBUTES add column ZVIEWCOUNT int;
+            alter table ZADDITIONALASSETATTRIBUTES add column ZPLAYCOUNT int;
+            alter table ZADDITIONALASSETATTRIBUTES add column ZSHARECOUNT int;
+            alter table ZADDITIONALASSETATTRIBUTES add column ZLASTVIEWEDDATE real;
+            alter table ZASSET add column ZKINDSUBTYPE int;
+            insert into ZADDITIONALASSETATTRIBUTES (ZASSET, ZORIGINALFILENAME, ZVIEWCOUNT, ZLASTVIEWEDDATE) values (1, 'IMG_1.HEIC', 12, 700000500);
+            update ZASSET set ZKINDSUBTYPE = 10 where Z_PK = 5;
+        """)
+        con.commit()
+        con.close()
+
+    def test_memories_days_and_trips_counts_and_screenshots(self):
+        mine, _ = self.run_photos()
+        self.assertEqual((mine["1"]["meta"]["views"], mine["1"]["meta"]["last_viewed"]), (12, "2023-03-08T20:35:00Z"))
+        self.assertTrue(mine["5"]["meta"]["screenshot"])
+        self.assertIn("Screenshot", mine["5"]["text"])
+        made = {x["id"]: x for x in map(json.loads, (self.corpus / "normalized/photos_memories.jsonl").read_text().splitlines())}
+        self.assertEqual(sorted(made), ["highlight:H1", "memory:M1"], "not one you turned down, nor a month")
+        self.assertEqual((made["memory:M1"]["kind"], made["memory:M1"]["meta"]["views"], made["memory:M1"]["is_me"]), ("memory", 5, False))
+        self.assertIn("A week by the river", made["highlight:H1"]["text"])
+        self.assertEqual(made["highlight:H1"]["meta"]["span"], "days")
+
+
+class SharedAlbums26Tests(PhotosTests):
+    """macOS 26: shared albums by name, and who posted each photo, from ZSHARE."""
+    def setUp(self):
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        self.home, self.corpus = Path(t.name) / "home", Path(t.name) / "corpus"
+        self.corpus.mkdir()
+        library26(self.home)
+
+    def test_others_photos_are_kept_apart(self):
+        mine, shared = self.run_photos()
+        friend, yours = shared["2"], shared["3"]
+        self.assertEqual((friend["author"], friend["meta"]["album"], friend["meta"]["posted_by"]), ("Grace Hopper", "Lisbon trip", "Grace Hopper"))
+        self.assertIn('In the shared album "Lisbon trip", posted by Grace Hopper', friend["text"])
+        self.assertIn("Albums: Lisbon trip", friend["text"])
+        self.assertEqual((yours["is_me"], yours["meta"].get("posted_by")), (True, None), "one you posted")
+        self.assertIn('In the shared album "Lisbon trip" (one you posted)', yours["text"])
 
 
 if __name__ == "__main__":

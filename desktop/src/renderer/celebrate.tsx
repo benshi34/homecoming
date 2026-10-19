@@ -40,14 +40,19 @@ const years = (a?: string | null, b?: string | null) => {
 // empty then).
 function useMoments(sources: SourceView[], loaded: boolean): { now: Moment | null; done: () => void } {
   const prev = useRef<Map<string, { section: string; records: number; requestedAt?: string }> | null>(null);
+  // Every source seen collected since the window opened (and what was already, then): home once, not again after a re-read.
+  const ever = useRef(new Set<string>());
   const [queue, setQueue] = useState<Moment[]>([]);
   useEffect(() => {
     if (!loaded) return;
     const before = prev.current;
     prev.current = new Map(sources.map((v) => [v.id, { section: v.section, records: v.records, requestedAt: v.requestedAt }]));
+    const seen = new Set(ever.current);
+    for (const v of sources) if (v.section === 'done' && v.records > 0) ever.current.add(v.id);
     if (!before) return;
     const was = (id: string) => before.get(id);
-    const home = sources.filter((v) => v.group !== 'setup' && v.section === 'done' && v.records > 0 && was(v.id) && was(v.id)!.section !== 'done');
+    // Home for the first time: not read again (a daily read, a fresh export of one already in), which passes through In Progress.
+    const home = sources.filter((v) => v.group !== 'setup' && v.section === 'done' && v.records > 0 && was(v.id) && was(v.id)!.section !== 'done' && !seen.has(v.id));
     const asked = sources.filter((v) => v.requestedAt && v.section !== 'done' && was(v.id) && !was(v.id)!.requestedAt);
     if (!home.length && !asked.length) return;
     const now = Date.now();

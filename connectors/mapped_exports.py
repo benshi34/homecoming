@@ -30,6 +30,7 @@ from common import CORPUS
 
 MAPPINGS = CORPUS / "mappings"
 MAPPED = {}  # export path -> dot paths of the lists a mapping read there (the catch-all leaves those out)
+SOURCES = set()  # the sources this run's mappings wrote: one whose mapping was taken out is removed (imports.py)
 KINDS = {"post", "message", "comment", "note", "event", "reminder", "visit", "search", "purchase", "transaction",
          "trip", "media", "listen", "watch", "read", "review", "contact", "follow", "like", "photo", "document",
          "activity", "record"}
@@ -161,7 +162,10 @@ def records(mapping, entries, when=None, is_me=None):
 
 
 def mapped_exports(es, W, used):
-    """imports.py parser: every corpus/imports/<folder>/ with a mapping -> source <folder>."""
+    """imports.py parser: every corpus/imports/<folder>/ with a mapping -> source <folder>. An item whose id another
+    one has already (a mapping that names a field that isn't unique) is skipped and counted, not a failure: one
+    mapping's mistake mustn't stop the others."""
+    SOURCES.clear()
     maps = load()
     if not maps:
         return
@@ -170,10 +174,15 @@ def mapped_exports(es, W, used):
     for folder, m in maps.items():
         mine = [e for e in es if e.path not in used and (PurePosixPath(e.origin).parts[:1] == (folder,) if e.origin else False)]
         source = folder_key(folder)
+        SOURCES.add(source)
         AV.setdefault(source, f"The {m['service'] or folder} export in corpus/imports/{folder}/, read with the mapping in "
                               f"corpus/mappings/{folder}.json. {DROP}")
         for i, e, rec in records(m, mine, when=leftover_time, is_me=lambda a: is_me_name(a) or is_me_email(a)):
-            W(source).add(**rec)
+            w = W(source)
+            if w.has(rec["id"]):
+                w.notes["same_id_as_another"] = w.notes.get("same_id_as_another", 0) + 1
+            else:
+                w.add(**rec)
             if m["items"][i]["path"]:
                 MAPPED.setdefault(e.path, set()).add(m["items"][i]["path"])
             else:

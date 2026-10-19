@@ -7,8 +7,8 @@ import { type ReactNode, useEffect, useState } from 'react';
 import type { Settings, Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { GlyphTile } from './icons.tsx';
-import { IdentityPicker } from './parts.tsx';
-import { Button, Group, GroupRow, Toggle } from './ui.tsx';
+import { forgetPicker, IdentityPicker } from './parts.tsx';
+import { Button, Group, GroupRow, Toggle, useReadOnly } from './ui.tsx';
 
 const REGION = (() => {
   try {
@@ -23,8 +23,9 @@ const set = (patch: Partial<Settings>) => void api.settings(patch);
 
 export function Picker({ value, onChange, options, label, testId }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
   label: string; testId?: string }) {
+  const locked = useReadOnly(); // read-only mode: nothing is saved
   return (
-    <select className="select" value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} data-testid={testId}>
+    <select className="select" value={value} onChange={(e) => onChange(e.target.value)} aria-label={label} data-testid={testId} disabled={!!locked} title={locked ?? undefined}>
       {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   );
@@ -51,18 +52,28 @@ export function YourSetupPage({ snap, toolbar, onSource, editing, onEdited }: { 
   );
 }
 
+// Who you are, open to change: kept open, with what's ticked and typed in it, while another page is looked at, until
+// it's saved or closed with Done.
+let youOpen = false;
+const YOU = 'your-setup';
+
 function You({ snap, editing, onEdited }: { snap: Snapshot; editing?: boolean; onEdited?: () => void }) {
   const id = snap.identity;
   // New addresses or accounts turned up in what came home: to look at, here.
   const check = snap.sources.find((v) => v.id === 'identity');
   const fresh = check?.section === 'todo' && check.status.endsWith('found');
-  const [open, setOpen] = useState(!!editing);
+  const [open, setOpenNow] = useState(!!editing || youOpen);
+  const setOpen = (v: boolean) => {
+    youOpen = v;
+    setOpenNow(v);
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (editing) setOpen(true);
   }, [editing]);
   const close = () => {
+    forgetPicker(YOU);
     setOpen(false);
     onEdited?.();
   };
@@ -87,7 +98,7 @@ function You({ snap, editing, onEdited }: { snap: Snapshot; editing?: boolean; o
           {fresh && <span className="warn-text" data-testid="setup-identity-new"><br />{check!.status}: are they yours?</span>}</>}
         trailing={open ? <Button size="small" onClick={close} testAction="setup-identity-close">Done</Button>
           : <Button size="small" kind={fresh ? 'primary' : 'default'} onClick={() => setOpen(true)} testAction="setup-identity-change">{fresh ? 'Review…' : 'Change…'}</Button>} />
-      {open && <div className="setup-identity-form" data-testid="setup-identity-form"><IdentityPicker snap={snap} onSubmit={save} busy={busy} />{error && <div className="error">{error}</div>}</div>}
+      {open && <div className="setup-identity-form" data-testid="setup-identity-form"><IdentityPicker snap={snap} onSubmit={save} busy={busy} keep={YOU} />{error && <div className="error">{error}</div>}</div>}
       {phone && (
         <GroupRow icon={<GlyphTile glyph="phone" color="green" />} title="Phone numbers" chevron={false} testId="setup-phone"
           subtitle={phone.known ? `Read as ${regionName(phone.region)} (+${phone.cc})${phone.chosen ? '' : ', this Mac\'s region'}.`
@@ -139,7 +150,8 @@ function Browsers({ snap }: { snap: Snapshot }) {
   const s = snap.settings;
   const su = snap.setup;
   const off = s.historyOff ?? [];
-  const apps = su.browsers.filter((b) => b.app);
+  // The Mac's default is its own choice, listed once: not again under its name.
+  const apps = su.browsers.filter((b) => b.app && b.id !== su.macBrowserId);
   return (
     <Group title="Browsers" testId="setup-browsers"
       footer="Turning a browser's history off stops reading it from now on; what was already read stays in your library.">
@@ -152,7 +164,7 @@ function Browsers({ snap }: { snap: Snapshot }) {
       {!su.browsers.length && <GroupRow icon={<GlyphTile glyph="compass" color="gray" />} title="No browsers found" subtitle="Safari's history needs Full Disk Access." chevron={false} />}
       <GroupRow icon={<GlyphTile glyph="external" color="blue" />} title="Open export pages in" chevron={false} testId="setup-page-browser"
         subtitle="Where each service's download page opens, signed in as you."
-        trailing={<Picker value={su.pageBrowser ?? ''} onChange={(v) => set({ pageBrowser: v })} label="Open export pages in" testId="setup-page-browser-pick"
+        trailing={<Picker value={su.pageBrowser && su.pageBrowser !== su.macBrowserId ? su.pageBrowser : ''} onChange={(v) => set({ pageBrowser: v })} label="Open export pages in" testId="setup-page-browser-pick"
           options={[{ value: '', label: `${su.macBrowser} (this Mac's default)` }, ...apps.map((b) => ({ value: b.id, label: b.name }))]} />} />
     </Group>
   );

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { agentPrompt, outcomeOf, runAgent, visitPrompt } from '../../src/main/export_agent.ts';
+import { agentPrompt, CONTINUE, outcomeOf, runAgent, visitPrompt } from '../../src/main/export_agent.ts';
 
 const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fakes/fake_claude_browser.py');
 
@@ -23,7 +23,7 @@ test('the request prompt: the export page, the service\'s own steps, everything 
 
 test('the download prompt uses the link from the email', () => {
   const p = agentPrompt(BY_ID.google_takeout, 'download', 'https://takeout.google.com/settings/takeout/downloads?u=1');
-  assert.match(p, /Open https:\/\/takeout\.google\.com\/settings\/takeout\/downloads\?u=1 in a new tab\. Download it: every part/);
+  assert.match(p, /Open https:\/\/takeout\.google\.com\/settings\/takeout\/downloads\?u=1 in a new tab\. .*Download it: every part/);
   assert.doesNotMatch(p, /webmail/, 'with the link, no need to look in the inbox');
   assert.match(p, /Follow each download link or button once/, 'not twice: that makes copies');
 });
@@ -95,6 +95,20 @@ test('a run that ends without a RESULT line says so in plain words, the details 
   assert.doesNotMatch(r.out.note, /Claude Code|exit/);
 });
 
+test('one tab: Claude works in the tab it opens, reloads it to look again, and closes it (not when it stops for you)', () => {
+  const mine = ['ada@gmail.com', 'ada@work.example'];
+  const look = agentPrompt(BY_ID.chatgpt, 'download', undefined, '2026-10-10T00:00:00Z', { mine, inboxes: mine });
+  assert.match(look, /- Use one tab: the one you open first\. Go from page to page in it, and to look in another account go to that account's address in it/);
+  assert.match(look, /Before your last line, close that tab \(tabs_close_mcp\), unless you stop with needs_you: then leave it open/);
+  assert.match(look, /In Gmail, look in the accounts of those addresses signed in to Chrome, one after another in the same tab/);
+  assert.doesNotMatch(look, /any other webmail they're signed in to/, 'only the inboxes listed');
+  assert.match(look, /look at that tab again every 15 seconds or so \(wait, then read it again\)/);
+  assert.match(agentPrompt(BY_ID.instagram, 'request'), /- Use one tab/, 'asking for it too');
+  assert.match(agentPrompt(BY_ID.chatgpt, 'download', undefined, undefined, {}), /every account signed in to Chrome, one after another in the same tab .*, and in any other webmail/, 'no addresses known: any');
+  assert.match(CONTINUE, /in the same tab \(tabs_context_mcp lists it\), or in one new tab if it's gone/);
+  assert.match(visitPrompt([{ name: 'Instagram', url: 'https://instagram.com/' }]), /in one tab of your own \(go from one to the next in it\)/);
+});
+
 test('in the browser picked in Your Setup, looking only in the inboxes allowed there', () => {
   const mine = ['ada@gmail.com', 'ada@work.example'];
   const look = agentPrompt(BY_ID.discord, 'download', undefined, '2026-10-01T00:00:00Z', { mine, inboxes: ['ada@gmail.com'] }, 'Arc');
@@ -103,6 +117,10 @@ test('in the browser picked in Your Setup, looking only in the inboxes allowed t
   assert.match(look, /Their addresses: ada@gmail\.com \(/);
   assert.doesNotMatch(look, /ada@work\.example/);
   assert.match(look, /Look only in the inboxes of the addresses above/);
+  assert.match(look, /if more than one browser is connected \(list_connected_browsers\), select Arc \(select_browser\) before anything else/, 'in the one picked');
+  const none = agentPrompt(BY_ID.discord, 'download', undefined, undefined, { mine, inboxes: [] }, 'Arc');
+  assert.match(none, /They've turned off looking in their email: don't open any webmail or email\. Discord sends the link only by email, so stop with needs_you/, 'every inbox off');
+  assert.doesNotMatch(none, /webmail \(mail\.google\.com/);
   assert.doesNotMatch(look, /\bChrome\b(?! extension)/);
   // Requesting, every address still says which account is theirs.
   const ask = agentPrompt(BY_ID.instagram, 'request', undefined, undefined, { mine, inboxes: ['ada@gmail.com'] }, 'Arc');
@@ -123,9 +141,62 @@ test('Claude waiting in Chrome for the person says so on a line of its own: the 
 test('the instructions say to wait for the person a few minutes, not stop, and how to say what they need to do', () => {
   const p = agentPrompt(BY_ID.x, 'request');
   assert.match(p, /wait for them, don't stop: first write one line, WAITING: <what they need to do/);
-  assert.match(p, /for up to 5 minutes, and carry on as soon as it's done\. Only if it still isn't done after that, stop with needs_you/);
+  assert.match(p, /for up to 5 minutes, and carry on as soon as it's done\. Don't reload a page where they're signing in[^.]*\. Only if it still isn't done after that, stop with needs_you/);
   assert.match(p, /"Allow Claude on <site> in Chrome\." when Chrome asks them to let Claude work on a site/);
   assert.match(p, /never confirm with a passkey/);
+});
+
+test('reading the result however it\'s written: bold, in backticks, a list item, the prompt\'s <brackets>, "needs you"', () => {
+  assert.deepEqual(outcomeOf('Done.\n**RESULT: requested**'), { status: 'requested', note: '' });
+  assert.deepEqual(outcomeOf('`RESULT: downloading`'), { status: 'downloading', note: '' });
+  assert.deepEqual(outcomeOf('- RESULT: needs you <Sign in to Instagram in Chrome.>'), { status: 'needs_you', note: 'Sign in to Instagram in Chrome.' });
+  assert.deepEqual(outcomeOf('> RESULT: not ready'), { status: 'not_ready', note: '' });
+  assert.deepEqual(outcomeOf('EMAIL: <ada@example.com>\nRESULT: requested'), { status: 'requested', note: '', email: 'ada@example.com' });
+  assert.deepEqual(outcomeOf('EMAIL: a***a@example.com\nRESULT: requested'), { status: 'requested', note: '' }, 'an address shown masked isn\'t one to look in');
+  assert.deepEqual(outcomeOf('OPENED: <https://x.com/settings>\nRESULT: requested')!.opened, ['https://x.com/settings']);
+});
+
+test('only its own WAITING: line is a wait, said once each; "Waiting for the page" is a step', async () => {
+  const r = await fakeRun({ request: [{ steps: ['Waiting for the export page to load', 'WAITING: Sign in to Instagram in Chrome.', '**WAITING:** Sign in to Instagram in Chrome.',
+    'waiting: lowercase is a step too'], result: 'requested', sleep: 0.05 }] });
+  assert.deepEqual(r.waited, ['Sign in to Instagram in Chrome.'], 'one alert, not one a line');
+  assert.ok(r.steps.includes('Waiting for the export page to load'));
+  assert.equal(r.out.status, 'requested');
+});
+
+test('the extension gone partway, or Claude\'s usage limit: said as what it is, not "couldn\'t finish"', async () => {
+  const lost = await fakeRun({ request: [{ steps: ['Opening Instagram'], tool: 'Error: Browser extension is not connected', result: 'failed couldn\'t click', sleep: 0.05 }] });
+  assert.deepEqual([lost.out.status, lost.out.reason, lost.out.note], ['needs_you', 'chrome', 'Turn on the Claude in Chrome extension.']);
+  const limit = await fakeRun({ request: [{ steps: ['Opening Instagram'], limit: 'You\'ve hit your usage limit · resets 7:40pm', result: '', sleep: 0.05 }] });
+  assert.deepEqual([limit.out.status, limit.out.reason], ['failed', 'limit']);
+  assert.equal(limit.out.note, 'Claude\'s usage limit was reached (resets 7:40pm). Try again then.');
+});
+
+test('a copy only, never deletion; a sign-in page read again, not reloaded; a download run doesn\'t ask again', () => {
+  const ask = agentPrompt(BY_ID.chatgpt, 'request');
+  assert.match(ask, /- Only ever ask for a copy of their data\. Never pick or click anything that deletes, deactivates, cancels, clears or opts out/);
+  assert.doesNotMatch(ask, /repeat the export on a schedule/, 'no standing change to the account');
+  assert.match(ask, /One that's finished and waiting to be downloaded: download it, and finish with RESULT: downloading/);
+  assert.match(ask, /Don't reload a page where they're signing in or entering a password, passkey or code/);
+  assert.doesNotMatch(ask, /reload it to look again/);
+  const look = agentPrompt(BY_ID.chatgpt, 'download');
+  assert.match(look, /Don't request a new export here: if the link has expired or there's no export to download, finish with RESULT: failed/);
+  assert.doesNotMatch(look, /^RESULT: requested$/m, 'not one of its answers when downloading');
+  assert.match(agentPrompt(BY_ID.chatgpt, 'download', 'https://chatgpt.com/x'), /Don't request a new export here: if the link has expired, finish with RESULT: failed The download link has expired/);
+  assert.match(look, /If you can't tell which one is Chrome, don't guess: stop with needs_you, asking "Which browser is Chrome\?"/);
+});
+
+test('Spotify\'s request is confirmed in its email; Google\'s two exports each download only their own', () => {
+  const spotify = agentPrompt(BY_ID.spotify, 'request', undefined, undefined, { mine: ['ada@gmail.com'], inboxes: ['ada@gmail.com'] });
+  assert.match(spotify, /Spotify starts the export only once its email is confirmed\. After requesting, find that email in their email in Chrome \(mail from spotify\.com/);
+  assert.match(spotify, /stop with needs_you: "Confirm the request in Spotify's email\."/);
+  assert.match(spotify, /mail\.google\.com/, 'its webmail is a site it may use, for that one email');
+  assert.match(agentPrompt(BY_ID.spotify, 'request', undefined, undefined, { mine: ['ada@gmail.com'], inboxes: [] }),
+    /they've turned off looking in their email, so stop with needs_you: "Confirm the request in Spotify's email\."/);
+  assert.match(agentPrompt(BY_ID.google_takeout, 'download'), /theirs is the one with Mail, Calendar, Chrome and the rest \(not one with only Google Photos and Drive\)\. Leave any other alone/);
+  const photos = agentPrompt(BY_ID.google_photos_drive, 'download');
+  assert.match(photos, /[Dd]ownload its first part only, even if there are more/);
+  assert.doesNotMatch(photos, /every part/);
 });
 
 test('a visit before Ask for Everything: only opening each page, waiting for Allow, and saying which it got onto', () => {

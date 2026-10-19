@@ -38,13 +38,13 @@ const lower = (s?: string) => (s ? s.charAt(0).toLowerCase() + s.slice(1).replac
 
 // The one notification once Claude has been through them all: how many it asked for, and what needs you, by name.
 // Nothing to say when every one was stopped.
-export function batchSummary(results: { name: string; status: string; note?: string }[]): { title: string; body: string } | null {
+export function batchSummary(results: { name: string; status: string; note?: string }[], browser = 'Chrome'): { title: string; body: string } | null {
   const asked = results.filter((r) => r.status === 'requested');
   const you = results.filter((r) => r.status === 'needs_you' || r.status === 'failed');
   if (!asked.length && !you.length) return null;
   const title = asked.length ? `Claude asked for ${asked.length} of your exports` : 'Claude couldn\'t ask for your exports';
   const body = you.length
-    ? `${you.length} ${you.length === 1 ? 'needs' : 'need'} you: ${you.map((r) => `${r.name} (${lower(r.note) || 'have a look in Chrome'})`).join('; ')}.`
+    ? `${you.length} ${you.length === 1 ? 'needs' : 'need'} you: ${you.map((r) => `${r.name} (${lower(r.note) || `have a look in ${browser}`})`).join('; ')}.`
     : 'Each one is imported when it comes.';
   return { title, body };
 }

@@ -4,10 +4,12 @@ holding an API key or a wallet's recovery phrase can't be sent to Anthropic or O
 
     redact(text) -> text with each secret replaced by [redacted <kind>]
 
-What counts: private keys, API keys and tokens with a known shape (OpenAI, Anthropic, OpenRouter, GitHub, Slack,
-Google, AWS, Stripe), JWTs and bearer tokens, password/passcode values, secret-looking URL parameters, card numbers
-(Luhn-valid, with a network prefix) and wallet recovery phrases (12 or more words in a row from the BIP39 list in
-data/bip39_english.txt, from trezor/python-mnemonic, MIT).
+What counts: private keys, API keys and tokens with a known shape (OpenAI, Anthropic, OpenRouter, GitHub, GitLab,
+Slack, Google, AWS, Stripe, npm, Hugging Face, SendGrid), JWTs and bearer tokens, password/passcode values (also
+"the password for X is", PGPASSWORD= and the like, and the password in a link), secret-looking URL parameters, card
+numbers (Luhn-valid, with a network prefix), Social Security numbers and bank account and routing numbers said as
+such, and wallet recovery phrases (12 or more words in a row from the BIP39 list in data/bip39_english.txt, from
+trezor/python-mnemonic, MIT).
 """
 
 import re
@@ -18,20 +20,28 @@ WORDS = frozenset((Path(__file__).with_name("data") / "bip39_english.txt").read_
 _VALUE = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"',;&]+)"
 # (kind, pattern): a match's "keep" group (a label like "password: ") stays; the rest becomes [redacted kind].
 PATTERNS = [
-    ("private key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[\s\S]{0,8000}?(?:-----END (?:[A-Z]+ )*PRIVATE KEY-----|$)")),
+    # The key's lines, to its END line or the last line that looks like one (cut short, or followed by anything).
+    ("private key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----(?:\s*[A-Za-z0-9+/=]{8,}|\s*[A-Za-z-]+:[^\n]*)*\s*(?:-----END (?:[A-Z]+ )*PRIVATE KEY-----)?")),
     ("private key", re.compile(r"(?P<keep>\"private_key\":\s*\")[^\"]{20,}")),
     ("API key", re.compile(r"\bsk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}")),
-    ("token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,})")),
+    ("token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|"
+                         r"npm_[A-Za-z0-9]{30,}|hf_[A-Za-z0-9]{30,}|ya29\.[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})")),
     ("API key", re.compile(r"\b(?:AIza[0-9A-Za-z_-]{35}|AKIA[0-9A-Z]{16}|(?:sk|rk)_live_[A-Za-z0-9]{16,})")),
     ("token", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     ("token", re.compile(r"(?i)(?P<keep>\bbearer\s+)[A-Za-z0-9._~+/=-]{16,}")),
     ("password", re.compile(rf"(?i)(?P<keep>\b(?:password|passwd|passcode|pwd)(?:\s*[:=]\s*|\s+is\s+)){_VALUE}")),
+    ("password", re.compile(rf"(?i)(?P<keep>\b(?:password|passwd|passcode|pin)\s+(?:for|to)\s+[^\s:=]{{1,40}}\s+(?:is\s+|[:=]\s*))(?!\[redacted){_VALUE}")),
+    ("password", re.compile(rf"(?P<keep>\b[A-Z0-9_]*(?:PASSWORD|PASSWD|PASS|SECRET|TOKEN|API_KEY|APIKEY)[A-Z0-9_]*\s*=\s*)(?!\[redacted){_VALUE}")),
+    ("password", re.compile(r"(?P<keep>\b[a-z][a-z0-9+.-]{1,20}://[^\s:/@]{1,64}:)[^\s@/]{1,128}(?=@)")),
     ("secret", re.compile(rf"(?i)(?P<keep>\b(?:aws_secret_access_key|client_secret|secret_key|api_key|apikey|access_token|"
                           rf"refresh_token|token_secret|token-secret)\s*[=:]?\s*){_VALUE}")),
     ("secret", re.compile(r"(?i)(?P<keep>[?&](?:token|access_token|refresh_token|id_token|auth|api_key|apikey|key|password|sig|"
-                          r"signature|code|otp)=)[A-Za-z0-9%._~+/=-]{12,}")),
+                          r"signature|code|otp|secret)=)[A-Za-z0-9%._~+/=-]{12,}")),
+    ("Social Security number", re.compile(r"(?i)(?P<keep>\b(?:ssn|social security(?: number| no\.?)?|soc\. sec\.)\s*(?:#|number|no\.?)?(?:\s+is)?\s*[:#]?\s*)"
+                                          r"(?!000|666|9\d\d)\d{3}[- ]?(?!00)\d{2}[- ]?(?!0000)\d{4}\b")),
+    ("account number", re.compile(r"(?i)(?P<keep>\b(?:routing|aba|account|acct|iban)(?:\s*(?:number|no\.?|#))?\s*[:#]?\s*)[A-Z]{0,2}\d[\d ]{5,30}\d\b")),
 ]
-CARD = re.compile(r"\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)(?:[ -]?\d{4}){2}[ -]?\d{1,4}\b")
+CARD = re.compile(r"\b(?:4\d{3}|5[1-5]\d{2}|2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720)|3[47]\d{2}|6011)(?:[ -]?\d{4}){2}[ -]?\d{1,4}\b")
 # A card number is only one when the text around it talks about a card (order and tracking numbers pass Luhn too).
 CARD_WORDS = re.compile(r"(?i)\b(?:card|visa|mastercard|master card|amex|american express|discover|credit|debit|cvc|cvv|"
                         r"security code|exp(?:iry|iration|ires)?|valid thru)\b")

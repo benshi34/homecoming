@@ -77,13 +77,20 @@ test('AI is agreed to once, its agent picked, and turned off and on', async () =
   // Its model, with the default shown when the field is empty.
   assert.match(await page.locator('[data-testid=provider-detail] [data-testid=ask-model]').getAttribute('placeholder') ?? '', /claude-sonnet-5-5 \(Sonnet 5\.5, the default\)/);
 
-  // Codex for the agent: Ask and the download helper use it; Do It for Me stays with Claude, and says why.
+  // Codex for the agent: everything AI does uses it. Do It for Me isn't there with it yet, and says it's coming.
   await page.locator('[data-testid=ai-provider-codex]').click();
+  const notYet = p.locator('[data-testid=agent-not-yet]');
+  assert.equal(await notYet.locator('h2').innerText(), 'Do It for Me isn\'t here yet with this AI');
+  assert.match(await notYet.innerText(), /Do It for Me doesn't work with Codex \(your ChatGPT account\) yet: it's coming soon/);
+  await look('ai-codex-not-yet');
+  await notYet.locator('button[data-action=agent-not-yet-ok]').click();
   s = await until(p, 'Codex picked', (x) => x.ask.settings.provider === 'codex' && x.claude === 'codex');
   // Its model can be picked too (empty: Codex's own default), and its row says whether it's signed in.
   await page.locator('[data-testid=provider-detail] [data-testid=ask-model]').waitFor();
   await page.locator('[data-testid=ai-provider-codex]', { hasText: /Signed in with ChatGPT|Uses the sign-in in Codex/ }).waitFor();
-  await page.getByText(/It's Claude even with Codex picked above: Codex can use a browser only inside its own app/).waitFor();
+  assert.match(await page.locator('[data-testid=ai-do-it]').innerText(), /Coming soon with this AI/);
+  assert.equal(await page.locator('[data-testid=toggle-agent]').count(), 0, 'no switch for what it can\'t do yet');
+  assert.match(await page.innerText(), /Do It for Me\s[\s\S]*Coming soon/);
   await look('ai-page-codex');
   await p.emulateMedia({ colorScheme: 'dark' });
   await look('ai-page-dark');
@@ -106,7 +113,16 @@ test('AI is agreed to once, its agent picked, and turned off and on', async () =
   s = await until(p, 'on again', (x) => x.settings.aiOn === true);
   await p.locator('[data-testid=ask-input]').waitFor();
   assert.ok(find(s, 'instagram').actions.some((a) => a.id === 'agent-request' && a.ai));
-  await p.locator('[data-testid=nav-ai]').click();
+  // With Codex still picked, Do It for Me on an export's page says it's coming, and AI Settings is a click away.
+  await selectSource(p, 'instagram');
+  await p.locator('button[data-action=agent-request]').click();
+  await notYet.getByText(/it's coming soon/).waitFor();
+  assert.equal(find(await snap(p), 'instagram').status, 'Not requested yet', 'nothing started');
+  await notYet.locator('button[data-action=agent-not-yet-settings]').click();
   await page.locator('[data-testid=toggle-ai][aria-checked=true]').waitFor();
+  // Back to Claude Code with your claude.ai account: Do It for Me has its switch again.
+  await page.locator('[data-testid=ai-provider-claude-code]').click();
+  await page.locator('[data-testid=toggle-agent]').waitFor();
+  assert.equal(await notYet.count(), 0, 'nothing to say for Claude Code');
   assert.deepEqual(run.errors, []);
 });

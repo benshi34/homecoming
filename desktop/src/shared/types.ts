@@ -41,6 +41,7 @@ export interface Probe {
   python: { path: string; version: string; cryptography: boolean; pypdf: boolean };
   fda: boolean | null;
   fda_path: string | null;
+  downloads?: 'ok' | 'blocked' | 'absent' | 'later'; // the Downloads folder: macOS can refuse it without Full Disk Access
   sources: Record<string, Access>;
   corpus: { path: string; exists: boolean; real_path: string; in_icloud: boolean; free_bytes: number; total_bytes: number };
   identity: Identity | null;
@@ -97,6 +98,9 @@ export interface Identified {
   entries?: number;
   already_imported?: string | null; // the same bytes are already in corpus/imports/ (this path, relative)
   encrypted?: boolean; // a zip locked with a password (WeChat's): it has to be unzipped first
+  needs_unzip?: boolean; // packed in a way Python can't unpack (Windows' Deflate64): unzipped in Finder first
+  partial?: boolean; // a browser is still downloading it (.crdownload, .part, .download)
+  empty?: boolean; // a zip or folder with no files in it
 }
 
 // Per-source memory the app keeps between launches (userData/state.json). Never holds passwords.
@@ -107,8 +111,9 @@ export type AgentStatus = 'queued' | 'running' | 'needs_you' | 'failed' | 'reque
 // auto: started by the app, not the person: a look while it's on its way ("check"), or the download after a ready email
 // ("ready"). reason: why it needs you or failed, when that changes what the page offers.
 export interface AgentState { mode: AgentMode; status: AgentStatus; at: string; step?: string; note?: string; session?: string;
-  auto?: 'check' | 'ready'; reason?: 'chrome' | 'no-claude' | 'quit';
+  auto?: 'check' | 'ready'; reason?: 'chrome' | 'no-claude' | 'quit' | 'limit';
   waiting?: string; // running, and waiting in Chrome for the person to do this (a passkey, a sign-in, allowing Claude on a site)
+  batch?: boolean; // one of Ask for Everything's: still queued when the app quits, it's set aside (it never started)
 }
 
 export interface SourceState {
@@ -120,6 +125,8 @@ export interface SourceState {
   notifyEmail?: string; // where the service said it would email the download link (Do It for Me saw it when requesting)
   checkedAt?: string; // Claude last looked for it (or that look was stopped): the next look waits from here
   noChecks?: string; // when the person said Stop Checking: Claude doesn't look for it by itself until they ask again
+  looks?: { since: string; n: number }; // how many times Claude looked by itself since it was requested (since: requestedAt)
+  saidNeeds?: { note: string; at: string }; // the last "Claude needs you" an automatic look said, not said again for a while
   stepsDone?: number[];
   skipped?: string; // reason
   siteAllowed?: string; // Claude has worked on its site (Claude in the browser asks to allow each site once)
@@ -133,6 +140,7 @@ export interface SourceState {
   importedAt?: string;
   lastFileAt?: string; // a download for this source was last moved into corpus/imports/
   notified?: string[];
+  failingSince?: string; // a Mac source whose reads have failed since then (main.ts tells you once it's been a while)
   accountName?: string; // other_mail: the folder under corpus/imports/
   libraryMapping?: string; // when the app's shared mapping for this service was put to use (once: taking it out sticks)
 }
@@ -186,6 +194,9 @@ export interface AppState {
   services: ServiceEntry[];
   ask: AskSettings;
   notifyCheck?: NotifyCheck; // whether this app's notifications are shown (main.ts checkNotifications)
+  agentPausedAt?: string; // Do It for Me's checks couldn't run (Claude Code signed out, say), and you were told then
+  readers?: number; // the version of the exports' readers your exports were last read with (main.ts READERS)
+  fdaOnAt?: string; // Full Disk Access was last seen on: losing it after an update is then said (status.ts fdaLost)
 }
 
 // The Setup Assistant: whether it's finished, where it is, and which web accounts the person said they use.
@@ -303,12 +314,13 @@ export interface Snapshot {
   probeTime?: string;
   corpusPath?: string;
   readOnly: boolean;
+  packaged?: boolean; // the installed app (npm run install-app), not run from Terminal: only it can open at login
   // The library's numbers have been read. Before that every source looks empty, so nothing is taken as just arrived.
   loaded?: boolean;
   appleMail?: boolean; // Mail is set up on this Mac: requests by email can be sent from it
   notifyCheck?: NotifyCheck; // the last check of whether this app's notifications are shown
   demo?: boolean; // a made-up library (scripts/demo.mjs)
-  agentInstalled?: boolean; // Do It for Me can run: Claude Code is on this Mac (or the demo's stand-in)
+  agentInstalled?: boolean; // Claude Code is on this Mac (or the demo's stand-in); whether Do It for Me can run is setup.agent
   // What Claude is at besides each service's own run: its first look at each site (and what it's waiting for you to do
   // there), and how far Ask for Everything has got.
   claudeWork?: { visit: { sites: string[]; step?: string; waiting?: string } | null; batch: { total: number; done: number } | null };
@@ -360,6 +372,7 @@ export interface LibrarySizes {
 export interface SetupView {
   browsers: BrowserFound[];
   macBrowser: string; // the Mac's own default, by name
+  macBrowserId: string | null; // and which of `browsers` it is, when it's one of them
   pageBrowser: string | null; // chosen for export pages (an id), or null for the Mac's default
   agentBrowser: { id: string; name: string } | null; // where Do It for Me works
   agent: AgentReady; // whether Do It for Me can run here
@@ -451,7 +464,7 @@ export interface ServiceEntry {
 export interface MappingPreview {
   mapping: { service: string; version: number; items: Record<string, unknown>[] };
   rules: { describe: string; kind: string; file: string; files: number; items: number; timed: number; first: string | null; last: string | null;
-    sample: { ts?: string; title?: string; text?: string; author?: string }[] }[];
+    sample: { ts?: string; title?: string; text?: string; author?: string }[]; repeats?: number }[]; // repeats: items whose id another has
   structured: number;
   mapped: number;
   unmapped: string[];

@@ -2,13 +2,14 @@
 // Laid out like Messages: conversations on the left, the chosen one on the right with the composer under it. Every
 // answer shows what was looked up, and cites the records it rests on; a citation opens the record. An answer can also
 // show a stretch of a conversation or a few photos in place (embeds.tsx). The agent that answers is picked from one
-// list (AgentChoices), here and in AI Settings; the composer says what it still needs, and fixes it in place.
+// list (AgentChoices), here and in AI Settings, for everything AI does; the composer says what it still needs, and fixes it in place.
 
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { type AgentReady, agentProvider, notYetTitle } from '../shared/setup.ts';
 import {
   addEvent, type AgentNeed, agentNeed, answerOf, type AskConversation, type AskEvent, type AskProvider, type AskSummary, type AskTurn,
-  describeTool, explainError, hostOf, isLocalAddress, LINKS, LOCAL_SERVERS, type LocalServer, modelLabel, needText, PROVIDER, PROVIDERS, RETENTION,
+  describeTool, explainError, hostOf, isLocalAddress, LINKS, LOCAL_SERVERS, type LocalServer, modelLabel, needText, PROVIDER, providerLabel, PROVIDERS, RETENTION,
   retentionOk, TOOL_LABEL,
 } from '../shared/ask.ts';
 import { CATALOG } from '../shared/catalog.ts';
@@ -234,7 +235,7 @@ function Chat({ conv, running, onRecord, onConversation, onExample, onRetry, onS
         <div className="ask-hello">
           <Glyph name="bubble" size={30} />
           <h2>Ask about your life</h2>
-          <p>Your messages, mail, photos, calendar, browsing and the rest, looked up on this Mac. Answers cite the records they come from.</p>
+          <p>Your messages, mail, photos, calendar, browsing and the rest, looked up on this Mac. What it finds goes to the AI you picked to write the answer (with a model on this Mac, nothing leaves it). Answers cite the records they come from.</p>
           <div className="ask-examples">
             {EXAMPLES.map((q) => <button key={q} className="example no-drag" onClick={() => onExample(q)}>{q}</button>)}
           </div>
@@ -420,7 +421,7 @@ function PrivacyLine({ snap, onOpen, testId }: { snap: Snapshot; onOpen: () => v
       <Glyph name={ok ? 'shield' : 'warning'} size={13} />
       {ok
         ? <span>Checked {on}: {r.done} <button className="link" onClick={onOpen}>Details</button></span>
-        : <span>Before your data goes to {company}, check that it won't be kept. <button className="link" onClick={onOpen}>Check now…</button></span>}
+        : <span>Before your data goes to {company}, check how long it's kept, and that it isn't used for training. <button className="link" onClick={onOpen}>Check now…</button></span>}
     </div>
   );
 }
@@ -441,8 +442,8 @@ export function AgentNeedNote({ snap, need, onChoose }: { snap: Snapshot; need: 
       <div className="agent-need-actions">
         {need.kind === 'install' && <Button size="small" onClick={() => openLink(LINKS[need.harness].url)} testAction="agent-get">{LINKS[need.harness].label}…</Button>}
         {need.kind === 'sign-in' && <SignInButton harness={need.harness} signing={signing} />}
-        {(need.kind === 'install' || need.kind === 'local' || need.kind === 'sign-in') && <Button size="small" onClick={check} disabled={checking} testAction="agent-check">{checking ? 'Checking…' : 'Check Again'}</Button>}
-        {onChoose && <Button size="small" kind="plain" onClick={onChoose} testAction="agent-choose">{need.kind === 'local-address' ? 'Change the Address…' : 'Choose Another…'}</Button>}
+        {(need.kind === 'install' || need.kind === 'local' || need.kind === 'sign-in' || need.kind === 'local-model') && <Button size="small" onClick={check} disabled={checking} testAction="agent-check">{checking ? 'Checking…' : 'Check Again'}</Button>}
+        {onChoose && <Button size="small" kind="plain" onClick={onChoose} testAction="agent-choose">{need.kind === 'local-address' ? 'Change the Address…' : need.kind === 'local-model' ? 'Pick a Model…' : 'Choose Another…'}</Button>}
       </div>
     </div>
   );
@@ -527,18 +528,34 @@ export function inline(s: string, onRecord: (n: number) => void): ReactNode[] {
 // The five ways an agent can do the work, as one list. The one picked shows what it needs right under it (its key, the
 // model, the local model's server), so nothing is behind another sheet. On AI Settings, in the Setup Assistant, and in
 // Ask's sheet. An agent that isn't on this Mac can't be picked; if it's the one picked already, it says so.
-// testPrefix: the rows' test ids ("ai-provider" on AI Settings, "provider" in Ask's sheet).
+// testPrefix: the rows' test ids ("ai-provider" on AI Settings, "provider" in Ask's sheet). Everything AI does uses the
+// one picked: picking Codex says Do It for Me isn't there with it yet (it's coming); picking an API key for Claude Code
+// says so too if Do It for Me was on. Then the key field, if it has one, is ready to paste into again.
 export function AgentChoices({ snap, testPrefix }: { snap: Snapshot; testPrefix: string }) {
   const s = snap.ask.settings;
   const [picked, setPicked] = useState<AskProvider | null>(null); // just picked here: its key field takes the focus
+  const [notYet, setNotYet] = useState<AgentReady | null>(null);
   // Look again for the agents, and whether the local model's server answers (on this Mac only).
   useEffect(() => void api.ask({ op: 'check' }), []);
   const choose = (id: AskProvider) => {
     setPicked(id);
     void api.ask({ op: 'settings', patch: { provider: id } });
+    const can = agentProvider(id, providerLabel(id));
+    if (!can.ok && snap.settings.aiOn === true && (can.soon || snap.settings.agentExports)) setNotYet(can);
+  };
+  const closeNotYet = () => {
+    setNotYet(null);
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-testid=provider-detail] [data-testid=ask-key]')?.focus());
   };
   return (
     <>
+      {notYet && (
+        <Sheet onClose={closeNotYet} testId="agent-not-yet" width={460}>
+          <h2>{notYetTitle(notYet)}</h2>
+          <p>{notYet.why}</p>
+          <div className="sheet-actions"><Button kind="primary" onClick={closeNotYet} testAction="agent-not-yet-ok">OK</Button></div>
+        </Sheet>
+      )}
       {PROVIDERS.map((x) => {
         const sel = x.id === s.provider;
         const here = snap.ask.installed[x.harness];
@@ -606,13 +623,19 @@ function ProviderDetail({ snap, focusKey }: { snap: Snapshot; focusKey: boolean 
       {!installed && (
         <div className="provider-detail-banner">
           <Banner kind="warning">
-            {info.harness === 'codex' ? 'Codex comes with the ChatGPT app, or install it on its own.' : 'Install Claude Code.'}
+            {p === 'local' ? 'The Codex harness is free: it comes with the ChatGPT app, or install it on its own. No ChatGPT account is needed for this.'
+              : info.harness === 'codex' ? 'Codex comes with the ChatGPT app, or install it on its own.' : 'Install Claude Code.'}
             {info.auth.startsWith('Your') ? ' Then Sign In here: its sign-in opens in your browser.' : ''}
             <div className="banner-actions">
               <Button size="small" onClick={() => openLink(LINKS[info.harness].url)}>{LINKS[info.harness].label}…</Button>
               <Button size="small" onClick={check} disabled={checking}>{checking ? 'Checking…' : 'Check Again'}</Button>
             </div>
           </Banner>
+        </div>
+      )}
+      {p === 'local' && (
+        <div className="provider-detail-banner field-hint" data-testid="local-harness-note">
+          Codex is only the harness here: it runs the lookups, and the model answering is the one in {LOCAL_SERVERS[s.localServer]?.name ?? 'Ollama or LM Studio'} on this Mac. No ChatGPT account or OpenAI key is used, and nothing leaves this Mac.
         </div>
       )}
       <div className="form-grid">
@@ -694,13 +717,14 @@ function ModelField({ snap }: { snap: Snapshot }) {
   return (
     <div>
       <input id="ask-model" type="text" list="ask-models" value={model} spellCheck={false} data-testid="ask-model"
-        placeholder={def === 'default' ? `default (${info.name} chooses)` : p === 'codex' ? `${def} (Codex's default)` : `${def} (${modelLabel(def)}, the default)`}
+        placeholder={p === 'local' ? `Pick one ${LOCAL_SERVERS[s.localServer]?.name ?? 'the server'} has` : def === 'default' ? `default (${info.name} chooses)` : p === 'codex' ? `${def} (Codex's default)` : `${def} (${modelLabel(def)}, the default)`}
         onChange={(e) => {
           setModel(e.target.value);
           void api.ask({ op: 'settings', patch: { models: { [p]: e.target.value.trim() } } });
         }} />
       <datalist id="ask-models">{models.map((m) => <option key={m} value={m}>{modelLabel(m)}</option>)}</datalist>
-      {info.harness === 'codex' && <div className="field-hint">Leave it empty to use Codex's own default{p === 'local' ? ': gpt-oss works best with it' : p === 'codex' ? ', or pick one your ChatGPT plan has' : ''}.</div>}
+      {p === 'local' ? <div className="field-hint">One your model server has: gpt-oss works best.{s.localServer === 'ollama' ? ' In Ollama\'s settings, set the context length to 64k or more, or Codex\'s instructions get cut short and it answers without your data.' : ''}</div>
+        : info.harness === 'codex' && <div className="field-hint">Leave it empty to use Codex's own default{p === 'codex' ? ', or pick one your ChatGPT plan has' : ''}.</div>}
     </div>
   );
 }
@@ -754,12 +778,12 @@ export function KeyField({ snap, kind, autoFocus }: { snap: Snapshot; kind: 'ant
   );
 }
 
-// Ask's sheet for who does the work: the same list as AI Settings, and the provider's data settings.
+// Ask's sheet for who does the work: the same list as AI Settings, and the same choice, for everything AI does.
 export function ProviderSheet({ snap, onClose, onRetention }: { snap: Snapshot; onClose: () => void; onRetention: (p: AskProvider) => void }) {
   return (
     <Sheet onClose={onClose} testId="ask-provider-sheet" width={560}>
       <h2>Who does the work</h2>
-      <p>Claude Code or Codex looks things up with the app's tools, signed in the way you choose. It reads only what it looks up, with passwords and keys blanked out; photos it looks at are sent as they are.</p>
+      <p>The one picked is for everything AI does here: it answers in Ask and makes sense of downloads, and Do It for Me works with it once it can (for now, only Claude Code with your claude.ai account). In Ask it reads only what it looks up, with passwords and keys blanked out; photos it looks at are sent as they are. Do It for Me sees the pages it works on.</p>
       <div className="group-box" style={{ marginTop: 12 }}><AgentChoices snap={snap} testPrefix="provider" /></div>
       <div style={{ marginTop: 10 }}><PrivacyLine snap={snap} onOpen={() => onRetention(snap.ask.settings.provider)} /></div>
       <div className="sheet-actions"><Button kind="primary" onClick={onClose}>Done</Button></div>
@@ -797,7 +821,7 @@ export function RetentionSheet({ provider, confirmed, onClose, onConfirm }: { pr
     <Sheet onClose={onClose} testId="ask-retention" width={480}>
       <div className="retention-head">
         <Glyph name="shield" size={26} />
-        <h2>Make sure {company} doesn't keep your data</h2>
+        <h2>Check what {company} keeps</h2>
       </div>
       <ul className="retention-list">{r.detail.map((d) => <li key={d}>{d}</li>)}</ul>
       <Button kind="plain" onClick={() => void api.ask({ op: 'open-link', url: r.link.url })}>{r.link.label} <Glyph name="external" size={11} /></Button>

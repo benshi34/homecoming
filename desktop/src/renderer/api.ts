@@ -5,7 +5,7 @@ import type { AskView, DirectoryEntry, ExportPart, LibrarySizes, Onboarding, Set
 export interface Api {
   snapshot(): Promise<Snapshot>;
   onSnapshot(cb: (s: Snapshot) => void): () => void;
-  onToast(cb: (t: { text: string; kind: string; undo?: { sourceId: string; action: string } }) => void): () => void; // undo: a button that runs it
+  onToast(cb: (t: { text: string; kind: string; undo?: { sourceId: string; action: string }; about?: string }) => void): () => void; // undo: a button that runs it; about: its source
   onMenu(cb: (cmd: string) => void): () => void;
   action(sourceId: string, action: string, payload?: unknown): Promise<{ ok: boolean; error?: string; id?: string; ids?: string[]; data?: unknown }>;
   dropFiles(files: File[], sourceId: string | null): Promise<{ ok: boolean; error?: string }>;

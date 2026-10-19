@@ -10,7 +10,8 @@ Record schema (keys with None values are dropped):
                   visit | search | app_usage | app_usage_day | media | document | ai_turn |
                   email | photo | voice_memo | commit | post | place | place_visit | activity |
                   (phone, via ileapp.py) transaction | trip | interaction | app | record | health_sample
-    meta.tier     optional: "device" (phone internals), "spam" / "deleted" / "unsent" (mail folders), so searches
+    meta.tier     optional: "device" (phone internals), "spam" / "deleted" / "unsent" (mail folders), "superseded" (an
+                  earlier version: an edited X post's, a ChatGPT answer regenerated or prompt edited), so searches
                   can leave low-signal records out without the corpus dropping them
     ts            ISO-8601 UTC time the record happened
     ts_end        optional end time (events, app usage); for editable content (notes) the last edit, i.e.
@@ -27,12 +28,17 @@ Record schema (keys with None values are dropped):
 """
 
 import datetime as dt
+import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import unicodedata
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +56,15 @@ IPHONE = RAW / "iphone" / "files"
 def phone(domain, rel=""):
     """A file (or folder) from the decrypted iPhone backup, e.g. phone("HomeDomain", "Library/SMS/sms.db")."""
     return IPHONE / domain / rel
+
+
+def phone_unencrypted():
+    """Whether the iPhone backup copied last wasn't encrypted (iphone_backup.py's backup.json): Finder leaves Health, call
+    history and Safari out of those, so their readers say that rather than that nothing was decrypted yet."""
+    try:
+        return json.loads((IPHONE.parent / "backup.json").read_text()).get("encrypted") is False
+    except (OSError, ValueError, AttributeError):
+        return False
 
 UTC = dt.timezone.utc
 APPLE_EPOCH = dt.datetime(2001, 1, 1, tzinfo=UTC)
@@ -101,6 +116,57 @@ def norm_ts(ts):
     return ts
 
 
+def write_atomic(path, text):
+    """A file written whole or not at all: a temp file beside it, flushed to disk, then renamed over it. A run cut off
+    midway (a crash, a full disk, the app quit) leaves the old file, never half of a new one."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def read_json(path, default=None):
+    """A JSON file, or `default` when it's missing or can't be read (cut off by a crash): one bad file mustn't stop
+    every later run."""
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def read_manifest():
+    m = read_json(MANIFEST, {})
+    return m if isinstance(m, dict) else {}
+
+
+def write_manifest(manifest):
+    write_atomic(MANIFEST, json.dumps(manifest, indent=2, sort_keys=True))
+
+
+ID_AT_START = re.compile(rb'^\{"id": ("(?:[^"\\]|\\.)*")')  # Writer writes each record's id first
+
+
+def ids_in(path):
+    """The ids of the records in a source's file, read off the start of each line (no record is parsed)."""
+    try:
+        with open(path, "rb") as f:
+            return {json.loads(m.group(1)) for line in f for m in [ID_AT_START.match(line)] if m}
+    except (OSError, ValueError):
+        return set()
+
+
+# Half of a surrogate pair (an emoji cut in two by an export) can't be written as UTF-8: it becomes U+FFFD.
+LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
 def snapshot_sqlite(src, name):
     """Copy a live SQLite DB into corpus/raw/<name> without disturbing the owning app."""
     src, dst = Path(src), RAW / name
@@ -125,6 +191,17 @@ def snapshot_sqlite(src, name):
             p = Path(str(src) + suffix)
             if p.exists():
                 shutil.copy2(p, str(dst) + suffix)
+        # Copied in the middle of a write, the copy has the app's journal of it: opened once to write, SQLite rolls
+        # it back (or takes in its write-ahead log), so it can be read read-only, as it was before that write.
+        if dst.exists():
+            try:
+                d = sqlite3.connect(dst)
+                try:
+                    d.execute("select count(*) from sqlite_master").fetchone()
+                finally:
+                    d.close()
+            except sqlite3.Error:
+                pass
     return dst
 
 
@@ -138,6 +215,19 @@ def columns(con, table):
     return {r[1] for r in con.execute(f"pragma table_info({table})")}
 
 
+def tables(con):
+    """The tables a database has: none in a file its app made and never wrote to, so a connector says so rather than
+    fail on its first query."""
+    return {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
+
+
+def select(con, table, want):
+    """select want from table, a column this version of the app doesn't have as null: older and newer schemas differ,
+    and one column missing mustn't lose every row. ROWID is always there, declared or not."""
+    have = columns(con, table) | {"ROWID"}
+    return f"select {', '.join(c if c in have else f'null {c}' for c in want)} from {table}"
+
+
 # st_flags bit of a file whose contents are only in iCloud Drive (or another cloud drive): it keeps its own name, and
 # opening it downloads it, slowly, all of it, and not at all offline.
 SF_DATALESS = 0x40000000
@@ -149,6 +239,73 @@ def cloud_only(path):
         return bool(os.stat(path).st_flags & SF_DATALESS)
     except (OSError, AttributeError):
         return False
+
+
+# ---------------------------------------------------------------- zips (imports.py reads them, bridge.py's identify looks in them)
+
+# How zip members can be packed that Python reads. Windows packs big files with Deflate64 (9), WinZip with AES (99): neither.
+ZIP_METHODS = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA, getattr(zipfile, "ZIP_ZSTANDARD", 93)}
+IN_MEMORY = 64 << 20  # a zip inside a zip up to this size is read into memory; a bigger one isn't
+# An export's files pack to a tenth of their size or more (text; photos hardly shrink); a zip bomb's to a thousandth (a GB of
+# zeros in a MB).
+BOMB_RATIO = 100
+
+
+def member_name(info):
+    """A zip member's name as its zip meant it. Archive Utility on a Mac writes names in UTF-8 without saying so, which zipfile
+    then reads as the old DOS code page ("Caf├⌐"); zips made on Windows can use backslashes; some tools start names with "./".
+    A name that really is in the DOS code page, or another one zipfile can't know (a Chinese Windows'), is kept as read."""
+    name = info.filename
+    if not info.flag_bits & 0x800 and not name.isascii():
+        try:
+            name = unicodedata.normalize("NFC", name.encode("cp437").decode("utf-8"))
+        except UnicodeError:
+            pass
+    name = name.replace("\\", "/")
+    while name.startswith("./"):
+        name = name[2:]
+    return name
+
+
+def junk_member(name):
+    """What a Mac adds to a zip that isn't anyone's data: __MACOSX/ and ._ files (a file's Finder details), .DS_Store."""
+    base = name.rsplit("/", 1)[-1]
+    return "__MACOSX/" in name or base.startswith("._") or base == ".DS_Store"
+
+
+def zip_problem(info):
+    """Why a zip member can't be read as it is, in words, or None: locked with a password, or packed in a way Python can't unpack."""
+    if info.flag_bits & 0x1:
+        return "locked with a password"
+    if info.compress_type not in ZIP_METHODS:
+        return "packed in a way that can't be read here"
+    return None
+
+
+def looks_like_bomb(info, floor=256 << 20):
+    """A member that unpacks to more than floor, and to over BOMB_RATIO times its packed size: no export's data does that."""
+    return info.file_size > floor and info.file_size > BOMB_RATIO * max(info.compress_size, 1)
+
+
+def open_nested(z, info, spill=None):
+    """A zip inside a zip, without all of it in memory: one stored as it is (Notion's parts, LinkedIn's .zip.zip) is read in place;
+    a small packed one from memory; a big packed one in place too (fine for a listing), or, with spill (a folder), from an
+    unnamed copy there, gone once it's closed, as reading its files one by one in place would unpack it again each time."""
+    if info.compress_type == zipfile.ZIP_STORED or info.file_size > IN_MEMORY and spill is None:
+        return zipfile.ZipFile(z.open(info))
+    if info.file_size <= IN_MEMORY:
+        return zipfile.ZipFile(io.BytesIO(z.read(info)))
+    Path(spill).mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(spill).free < info.file_size + (1 << 30):
+        raise OSError(f"no room to unpack it ({info.file_size / 1e9:.1f} GB)")
+    f = tempfile.TemporaryFile(dir=spill)
+    try:
+        with z.open(info) as src:
+            shutil.copyfileobj(src, f, 1 << 20)
+        return zipfile.ZipFile(f)
+    except BaseException:
+        f.close()
+        raise
 
 
 _GIT = {}
@@ -193,10 +350,13 @@ class Writer:
     """Writes normalized records for one source and records stats in the manifest, including the
     parser (file:function) and code version that produced them."""
 
-    def __init__(self, source, avenue, parser=None, accumulate=True):
+    def __init__(self, source, avenue, parser=None, accumulate=True, forget=None):
         self.source = source
         self.avenue = avenue
         self.accumulate = accumulate  # keep earlier runs' records the source no longer has (off for full exports)
+        # An earlier run's record this says yes to isn't kept either: how things were then, not something that
+        # happened (the tabs open on another device), or one that turned out not to be this source's.
+        self.forget = forget or (lambda rec: False)
         if parser is None:  # default: the connector function that opened this Writer
             caller = sys._getframe(1).f_code
             parser = f"{Path(caller.co_filename).resolve().relative_to(ROOT)}:{caller.co_name}"
@@ -211,7 +371,7 @@ class Writer:
     def __enter__(self):
         NORM.mkdir(parents=True, exist_ok=True)
         self.tmp = self.path.with_suffix(".jsonl.tmp")
-        self.f = open(self.tmp, "w")
+        self.f = open(self.tmp, "w", encoding="utf-8")
         return self
 
     def has(self, rid):
@@ -237,7 +397,11 @@ class Writer:
         for key in ("ts", "ts_end"):
             rec[key] = norm_ts(rec.get(key))
         out = {k: rec[k] for k in FIELDS if rec.get(k) not in (None, "", [], {})}
-        self.f.write(json.dumps(out, ensure_ascii=False, default=str) + "\n")
+        line = json.dumps(out, ensure_ascii=False, default=str)
+        try:
+            self.f.write(line + "\n")
+        except UnicodeEncodeError:  # half an emoji: replaced, rather than the whole source failing
+            self.f.write(LONE_SURROGATE.sub("�", line) + "\n")
         self.count += 1
         kind = out.get("kind", "?")
         self.kinds[kind] = self.kinds.get(kind, 0) + 1
@@ -255,34 +419,39 @@ class Writer:
         # (screen time, Chrome, calls, Claude Code etc. only retain weeks of history).
         kept = 0
         if self.accumulate and self.path.exists():
-            for line in self.path.open():
-                try:
-                    old = json.loads(line)
-                except ValueError:
-                    continue
-                if str(old.get("id")) not in self.seen:
-                    self.f.write(line if line.endswith("\n") else line + "\n")
-                    self.seen.add(str(old.get("id")))
-                    kept += 1
-                    self.count += 1
-                    kind = old.get("kind", "?")
-                    self.kinds[kind] = self.kinds.get(kind, 0) + 1
-                    ts = old.get("ts")
-                    if ts:
-                        self.first = ts if self.first is None or ts < self.first else self.first
-                        self.last = ts if self.last is None or ts > self.last else self.last
+            with self.path.open(encoding="utf-8", errors="replace") as before:
+                for line in before:
+                    try:
+                        old = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(old, dict) or self.forget(old):
+                        continue
+                    if str(old.get("id")) not in self.seen:
+                        self.f.write(line if line.endswith("\n") else line + "\n")
+                        self.seen.add(str(old.get("id")))
+                        kept += 1
+                        self.count += 1
+                        kind = old.get("kind", "?")
+                        self.kinds[kind] = self.kinds.get(kind, 0) + 1
+                        ts = old.get("ts")
+                        if ts:
+                            self.first = ts if self.first is None or ts < self.first else self.first
+                            self.last = ts if self.last is None or ts > self.last else self.last
+        self.f.flush()
+        os.fsync(self.f.fileno())
         self.f.close()
         self.tmp.replace(self.path)
         if kept:
             print(f"[{self.source}] kept {kept} records from earlier runs")
-        manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+        manifest = read_manifest()
         manifest[self.source] = {
             "count": self.count, "kinds": self.kinds, "first": self.first,
             "last": self.last, "avenue": self.avenue, "parser": self.parser, "code": code_version(),
             "ran_at": dt.datetime.now(UTC).isoformat(timespec="seconds"),
             **({"notes": self.notes} if self.notes else {}),
         }
-        MANIFEST.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        write_manifest(manifest)
         print(f"[{self.source}] {self.count} records {self.kinds} {self.first} → {self.last}")
         if self.notes:
             print(f"[{self.source}] notes: {self.notes}")

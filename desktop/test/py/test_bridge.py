@@ -79,6 +79,37 @@ class ProbeTests(Sandbox):
         self.assertEqual(p["retention"]["claude"], {"present": False})
         self.assertEqual(p["retention"]["messages"], {"readable": False, "value": None})
 
+    def test_protected_folders_wait_until_asked(self):
+        """Before the Setup Assistant is past Full Disk Access (UMP_DEFER_FOLDERS=1), Documents, Desktop and Downloads
+        aren't looked in, so macOS asks nothing yet; with Full Disk Access they are, as they are without the flag."""
+        (self.home / "Documents").mkdir()
+        (self.home / "Documents" / "notes.txt").write_text("x")
+        (self.home / "Downloads").mkdir()
+        early = jsonout(bridge(["probe"], self.home, self.corpus, extra_env={"UMP_DEFER_FOLDERS": "1"}))
+        self.assertEqual((early["sources"]["documents"], early["downloads"]), ("absent", "later"))
+        now = self.probe()
+        self.assertEqual((now["sources"]["documents"], now["downloads"]), ("ok", "ok"))
+        (self.home / "Library/Messages").mkdir(parents=True)
+        (self.home / "Library/Messages/chat.db").write_bytes(b"x")  # Full Disk Access: nothing to ask
+        fda = jsonout(bridge(["probe"], self.home, self.corpus, extra_env={"UMP_DEFER_FOLDERS": "1"}))
+        self.assertEqual((fda["fda"], fda["sources"]["documents"], fda["downloads"]), (True, "ok", "ok"))
+
+    def test_cloud_drives_and_other_apps_data_wait_too(self):
+        """A cloud drive's folder alone makes Documents there, and WhatsApp's, Maps' and Books' own folders are other
+        apps' data: none is looked in before the Setup Assistant is past Full Disk Access."""
+        (self.home / "Library/CloudStorage/OneDrive-Personal").mkdir(parents=True)
+        maps = self.home / "Library/Containers/com.apple.Maps/Data/Maps"
+        maps.mkdir(parents=True)
+        (maps / "MapsSync_0.0.1").write_bytes(b"x")
+        chats = self.home / "Library/Group Containers/group.net.whatsapp.WhatsApp.shared"
+        chats.mkdir(parents=True)
+        (chats / "ChatStorage.sqlite").write_bytes(b"x")
+        (self.home / "Library/Containers/com.apple.iBooksX/Data/Documents/BKLibrary").mkdir(parents=True)
+        ids = ("documents", "apple_maps", "whatsapp", "books")
+        early = jsonout(bridge(["probe"], self.home, self.corpus, extra_env={"UMP_DEFER_FOLDERS": "1"}))
+        self.assertEqual([early["sources"][k] for k in ids], ["absent"] * 4)
+        self.assertEqual([self.probe()["sources"][k] for k in ids], ["ok"] * 4)
+
     def test_terminal_history_settings_and_fix(self):
         env = {"SHELL": "/bin/zsh"}
         rc = self.home / ".zshrc"
@@ -197,6 +228,26 @@ class IdentifyTests(Sandbox):
         self.assertEqual(by["unknown"]["reason"], "not a recognized export")
         self.assertIsNone(by["linkedin"]["already_imported"])
 
+    def test_unzipped_by_safari_and_tgz(self):
+        """Safari unzips "safe" downloads: a Takeout becomes a folder named Takeout (the zip's top), ChatGPT's a folder
+        named after its zip. Takeout can also come as .tgz. Each is still known for what it is."""
+        import tarfile, zipfile
+        made = make_fixtures.exports(self.tmp / "exports")
+        out = self.tmp / "Downloads"
+        with zipfile.ZipFile(made["google_takeout"]) as z:
+            z.extractall(out / "unz")
+            z.extractall(self.tmp / "tgz")
+        (out / "unz" / "Takeout").rename(out / "Takeout")
+        with zipfile.ZipFile(made["chatgpt"]) as z:
+            z.extractall(out / "a1b2c3-2026-10-17-12-00-00")
+        tgz = out / "takeout-20250301T120000Z-1-001.tgz"
+        with tarfile.open(tgz, "w:gz") as t:
+            t.add(self.tmp / "tgz" / "Takeout", arcname="Takeout")
+        takeout, chatgpt, packed = jsonout(bridge(["identify", str(out / "Takeout"), str(out / "a1b2c3-2026-10-17-12-00-00"), str(tgz)], self.home, self.corpus))
+        self.assertEqual(takeout["kind"], "google_takeout", takeout)
+        self.assertEqual(chatgpt["kind"], "chatgpt", chatgpt)
+        self.assertEqual((packed["kind"], packed["valid"], packed["export_id"]), ("google_takeout", True, "20250301"), packed)
+
     def test_already_imported_under_another_name(self):
         made = make_fixtures.exports(self.tmp / "exports")
         (self.corpus / "imports" / "linkedin").mkdir(parents=True)
@@ -252,6 +303,19 @@ class IdentifyTests(Sandbox):
                 if top in builtin or top.startswith("takeout"):
                     self.assertIsNotNone(r["kind"], r["reason"])
                 self.assertTrue(r["valid"], r["reason"])
+
+
+class TakeoutKindTests(unittest.TestCase):
+    def test_photos_and_drive_alone_in_any_language_and_the_main_one_by_anything_else(self):
+        code = ("import sys, json; sys.path.insert(0, sys.argv[1]); import bridge; "
+                "print(json.dumps([bridge.classify_names(n.split(',')) for n in sys.argv[2:]]))")
+        cases = {"Takeout/Google Fotos/Fotos von 2024/a.jpg,Takeout/archive_browser.html": "google_photos_drive",
+                 "Takeout/Google Photos/Trip/a.jpg,Takeout/Drive/notes.txt": "google_photos_drive",
+                 "Takeout/Meine Aktivitäten/Suche/MeineAktivitäten.html,Takeout/Google Fotos/a.jpg": "google_takeout",
+                 "Takeout/Correo/Todo el correo.mbox": "google_takeout"}
+        r = subprocess.run([sys.executable, "-c", code, str(BRIDGE.parent), *cases], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), list(cases.values()))
 
 
 class DiscoverTests(Sandbox):
@@ -376,6 +440,28 @@ class MailTests(Sandbox):
         off = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps(asked[1:]), extra_env={**env, "UMP_READY_MAIL": "0"}))
         self.assertEqual((off["mail"], off["matches"]), (False, []))
 
+    def test_a_ready_email_not_from_the_service_is_only_a_guess_and_junk_is_nothing(self):
+        """Anyone can write "Your Instagram data is ready": from another domain it's a guess with no link (a link from it
+        is what could steer Claude), and from Junk it's nothing."""
+        t = lambda d, h=12: dt.datetime(2026, 10, d, h, tzinfo=dt.timezone.utc)
+        db = mail_index(self.tmp / "Mail/V10", [
+            (t(8), "help@insta-gram-support.example", "Instagram", "Your Instagram information is ready to download", "Get it now",
+             '<a href="https://docs.google.com/document/d/evil">Download your information</a>'),
+            (t(9), "no-reply@mail.instagram.com", "Instagram", "Your Instagram information is ready to download", "Hi, it's ready",
+             '<a href="https://accountscenter.instagram.com/info_and_permissions/dyi/?id=1">Download your information</a>'),
+        ])
+        con = sqlite3.connect(db)
+        con.execute("insert into mailboxes values (2, 'imap://ACCOUNT-1/Junk')")
+        con.execute("update messages set mailbox = 2 where ROWID = 2")
+        con.commit()
+        con.close()
+        asked = [{"id": "instagram", "names": ["Instagram"], "domains": ["instagram.com"], "since": "2026-10-05T00:00:00Z"}]
+        env = {"UMP_MAIL_DB": str(db), "UMP_NOTIFICATIONS_DB": str(self.tmp / "missing/db")}
+        [m] = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps(asked), extra_env=env))["matches"]
+        self.assertEqual(m["at"][:10], "2026-10-08", "the one in Junk counts for nothing, though it's from Instagram")
+        self.assertNotIn("link", m)
+        self.assertNotIn("sender", m, "a guess: not \"Instagram emailed you\"")
+
     def test_an_email_beats_a_notification_about_the_same_export(self):
         t = lambda d, h=12: dt.datetime(2026, 10, d, h, tzinfo=dt.timezone.utc)
         db = mail_index(self.tmp / "Mail/V10", [(t(8), "noreply@discord.com", "Discord", "Your Discord data package is ready", "Download it below",
@@ -452,6 +538,21 @@ class NotificationTests(Sandbox):
         d = jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=json.dumps([{"id": "spotify", "names": ["Spotify"], "since": "2026-10-05T00:00:00Z"}]),
                            extra_env={"UMP_NOTIFICATIONS_DB": str(self.tmp / "missing/db")}))
         self.assertEqual(d, {"readable": False, "mail": False, "matches": []})
+
+    def test_the_probe_copies_nothing_and_a_place_turned_off_keeps_no_copy(self):
+        db = self.tmp / "db2/db"
+        notification_db(db, [("com.apple.mail", dt.datetime(2026, 10, 9, 12, tzinfo=dt.timezone.utc), "Spotify", "", "Your data is ready")])
+        cache = self.tmp / "cache"
+        env = {"UMP_NOTIFICATIONS_DB": str(db), "UMP_CACHE_DIR": str(cache)}
+        copy = cache / "copies/notifications/db"
+        self.assertTrue(jsonout(bridge(["probe"], self.home, self.corpus, extra_env=env))["notifications"]["readable"])
+        self.assertFalse(copy.exists(), "whether it can be read is asked of the file itself: nothing copied for it")
+        asked = json.dumps([{"id": "spotify", "names": ["Spotify"], "since": "2026-10-05T00:00:00Z"}])
+        self.assertEqual(len(jsonout(bridge(["export-signals"], self.home, self.corpus, stdin=asked, extra_env=env))["matches"]), 1)
+        self.assertTrue(copy.exists(), "looked in for an export on its way: read from a copy")
+        jsonout(bridge(["probe"], self.home, self.corpus, extra_env={**env, "UMP_READY_NOTIFICATIONS": "0"}))
+        self.assertFalse(copy.exists(), "turned off in General: the copy goes too")
+        self.assertFalse(copy.parent.exists(), "and its folder")
 
     def test_iphone_notifications_on_this_mac(self):
         prefs = self.home / "Library/Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist"
@@ -532,6 +633,16 @@ class MappingTests(Sandbox):
         self.assertNotIn("Secret", json.dumps(saved), "a mapping holds field names, never data")
         self.run_bridge("save-mapping", "wattpad", "--remove")
         self.assertFalse((self.corpus / "mappings/wattpad.json").exists())
+
+    def test_try_says_when_ids_repeat(self):
+        """A mapping whose id field is the same for many items (a shelf, not a book): Try Mapping says how many would be
+        left out, rather than the import failing on them."""
+        mapping = {"service": "Wattpad", "items": [{"describe": "Stories", "file": "export.json", "path": "data.stories", "kind": "post",
+                                                    "title": "title", "id": "tags"}]}
+        d = self.corpus / "imports/wattpad/export.json"
+        d.write_text(json.dumps({"data": {"stories": [{"title": "A", "tags": "x"}, {"title": "B", "tags": "x"}, {"title": "C", "tags": "y"}]}}))
+        rule = self.run_bridge("try-mapping", "wattpad", stdin=json.dumps(mapping))["rules"][0]
+        self.assertEqual((rule["items"], rule["repeats"]), (2, 1))
 
 
 class StatsTests(Sandbox):
@@ -980,3 +1091,21 @@ class PhoneNotYoursTests(Sandbox):
         self.assertEqual((m["imessage"]["count"], m["imessage"]["kinds"], m["imessage"]["first"]), (1, {"message": 1}, "2026-01-01T00:00:00Z"))
         self.assertFalse((mirror / "files").exists())
         self.assertFalse((mirror / "backup.json").exists())
+        self.assertEqual([p.name for p in norm.iterdir() if p.name.endswith(".tmp")], [], "its own temp names, none left")
+
+    def test_forget_phone_as_a_queued_run_then_the_index(self):
+        """The app runs it as a job of its queue (index --forget-phone), so no iPhone read writes the same files meanwhile:
+        one JSON event per line, then the index rebuilt."""
+        norm = self.corpus / "normalized"
+        norm.mkdir()
+        (norm / "phone_notes.jsonl").write_text(json.dumps({"id": "1", "source": "phone_notes", "kind": "note", "text": "x"}) + "\n")
+        (norm / "calls.jsonl").write_text(json.dumps({"id": "2", "source": "calls", "kind": "call", "meta": {"copy": "mac"}}) + "\n")
+        (self.corpus / "manifest.json").write_text('{"phone_notes": {"count": 1}, "calls": {"count": 1}, "cut sh')  # cut short by a crash
+        r = bridge(["index", "--forget-phone"], self.home, self.corpus)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        evs = events(r)
+        self.assertEqual(evs[-1], {"type": "finished", "failed": []})
+        self.assertTrue(any(e.get("connector") == "forget-phone" and "Taken out" in e.get("line", "") for e in evs))
+        self.assertFalse((norm / "phone_notes.jsonl").exists())
+        self.assertTrue((self.corpus / "corpus.db").exists())
+        self.assertNotIn("phone_notes", json.loads((self.corpus / "manifest.json").read_text()), "a manifest that can't be read starts over")

@@ -60,7 +60,7 @@ export function Welcome() {
           <div className="tour-demo" key={at}>{STEPS[at].demo({ stop })}</div>
         </div>
       </div>
-      <p className="welcome-foot"><Glyph name="lock" size={12} />Your library stays on this Mac. Ask sends the model you choose only what it looks up to answer you.</p>
+      <p className="welcome-foot"><Glyph name="lock" size={12} />Your library stays on this Mac. With AI on, the AI you pick sees only what it needs: what Ask looks up, and the pages Do It for Me works on.</p>
     </div>
   );
 }

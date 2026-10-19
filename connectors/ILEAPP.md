@@ -7,6 +7,7 @@
 - Input: our decrypted mirror, laid out as hard links in the phone's own paths (`build_view`), read with `-t fs`. Not `-t itunes`: see issue 1. iLEAPP never sees the backup password.
 - Filesystem mode matches or beats iTunes mode on every artifact except issue 22 and a one-row setting. It gains the address book, Notion, the complete Uber store and our modules. A full run takes ~8 minutes and peaks at ~10 GB of working files (2026-10-12: 6 GB of copied files, 2.3 GB of HTML report, the rest timeline and TSV, all deleted after the run).
 - Profile: every plugin except `EXCLUDE_MODULES`: Photos.sqlite analysis (`Ph*`), the keychain (saved passwords), SIM identifiers.
+- Never all or nothing: a module that raises inside iLEAPP is logged by iLEAPP and listed in `run.json` `failed_artifacts`; the others' results are read. An exit with an error after "Processes completed" (its HTML report, or its run history) still has complete results, so they're read; an exit before it, or without `_lava_artifacts.db`/`_lava_data.lava`, is said in words and what was read from the phone before stays. A run still going after `TIMEOUT` (4 hours) is stopped. iLEAPP failing never stops `iphone.py`: our parsers and the index run all the same.
 - Kept: only `_lava_artifacts.db` (one table per artifact) and `_lava_data.lava` (column types, chat-column roles). iLEAPP's copies of files and media and its HTML/TSV/timeline reports (~20 GB) are deleted after each run.
 - Custom modules in `connectors/ileapp_modules/` (iLEAPP's own format, loaded with `--custom_artifacts_path`), written so they can go upstream as pull requests.
 
@@ -20,6 +21,8 @@
   - privacy or security (`PRIVATE_*`): cookies, tokens, secure stores, SIM/cellular/subscriber identifiers, Siri voice samples;
   - other people's data (`OTHER_PEOPLE_NAMES`, `SKIP_ROWS`): strangers' Bluetooth devices, other people's cached posts, Venmo's public feed;
   - nothing about the person (`NO_INFO_CATEGORIES`): Control Center, app manifests, backup settings.
+  Besides those, an artifact the adapter couldn't read (its table missing, its metadata incomplete, an error while
+  reading it) is listed as "couldn't be read", with its rows; the rest of its module and the other modules are imported.
   The phone's Photos.sqlite is skipped only when the Mac's library is in the corpus (`DUPLICATE_OF`).
 - Everything else is imported. Phone internals (Wi-Fi networks, paired devices, alarms, home screen, app use,
   iCloud Drive listing, shares, recovered app records) carry `meta.tier = "device"`. Credential-like fields
@@ -52,6 +55,7 @@
 | 22 | `safariRecentWebSearches` | 0 rows in `-t fs` mode (some in `-t itunes`) | Three `com.apple.mobilesafari.plist` files match. Only the Safari container's has searches, and the module doesn't take it | None (those searches are lost) |
 | 24 | `venmo` | "Transactions" mixes in Venmo's cached public and friends feeds: other people's payments. "Users" is everyone in those feeds | | `SKIP_ROWS` keeps the user's private feed and their friends |
 | 23 | `iTunesBackupInfo` | Installed apps only in `-t itunes` mode | Reads the backup's root `Info.plist` | `installed_apps()` reads it (`phone_installed_apps`) |
+| 25 | `whatsApp` (`whatsAppMessages`, line ~468) | In a group, every message from someone else has the group's name as its Sender Name | `sender = ZPARTNERNAME` for incoming messages, which is the chat's name; who wrote a group message is `ZWAMESSAGE.ZGROUPMEMBER` → `ZWAGROUPMEMBER`, which the module doesn't read | `ileapp.py` takes the sender from `ChatStorage.sqlite` (`whatsapp.group_senders`: the backup's copy, then this Mac's), matched by group, text and time; else "someone in the group" |
 
 **No module yet**: Skype, Xiaohongshu, Apple Journal, and food and shopping apps (order and search histories).
 

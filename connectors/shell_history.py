@@ -9,7 +9,7 @@ import re
 
 from common import HOME, Writer, from_unix
 
-AVENUE = ("Local text files: ~/.zsh_history and ~/.zsh_sessions/*.history (Terminal's per-window history), "
+AVENUE = ("Local text files: ~/.zsh_history (and ~/.zhistory, Prezto's), ~/.zsh_sessions/*.history (Terminal's per-window history), "
           "~/.bash_history and ~/.bash_sessions/*.history, ~/.local/share/fish/fish_history. zsh lines are "
           "': <unix time>:<seconds>;<command>' with EXTENDED_HISTORY, else bare commands with no time.")
 
@@ -81,12 +81,14 @@ def fish_entries(text):
             cmd = line[7:].replace("\\n", "\n").replace("\\\\", "\\")
             entries.append((None, cmd))
         elif line.strip().startswith("when: ") and entries and entries[-1][0] is None and cmd is not None:
-            entries[-1] = (int(line.split(":", 1)[1]), cmd)
+            when = line.split(":", 1)[1].strip()
+            if when.isdigit():
+                entries[-1] = (int(when), cmd)
     return entries
 
 
 FILES = [
-    ("zsh", lambda: [HOME / ".zsh_history", *sorted((HOME / ".zsh_sessions").glob("*.history"))], zsh_entries, True),
+    ("zsh", lambda: [HOME / ".zsh_history", HOME / ".zhistory", *sorted((HOME / ".zsh_sessions").glob("*.history"))], zsh_entries, True),
     ("bash", lambda: [HOME / ".bash_history", *sorted((HOME / ".bash_sessions").glob("*.history"))], bash_entries, False),
     ("fish", lambda: [HOME / ".local/share/fish/fish_history"], fish_entries, False),
 ]
@@ -98,7 +100,11 @@ def main():
             for p in paths():
                 if not p.is_file():
                     continue
-                data = p.read_bytes()
+                try:
+                    data = p.read_bytes()
+                except OSError:  # not this user's to read: the others still are
+                    w.notes["unreadable"] = sorted({*w.notes.get("unreadable", []), p.name})
+                    continue
                 text = unmetafy(data) if metafied else data.decode("utf-8", "replace")
                 seen = {}
                 for when, cmd in parse(text):

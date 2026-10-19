@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, test } from 'node:test';
-import { act, clickAction, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
+import { act, clickAction, confirmClaudeSheet, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -76,6 +76,15 @@ test('Do It for Me asks once, requests in Chrome, stops for a sign-in, and carri
   assert.equal(await sheet.locator('[data-testid=agent-downloads]').isChecked(), true, 'downloads start by themselves unless you say not');
   await shot(p, 'agent-opt-in');
   await sheet.locator('button[data-action=agent-on]').click();
+  // Then Anthropic's data settings, as Ask has them: nothing starts, or is turned on, until they're confirmed.
+  const check = p.locator('[data-testid=ask-retention]');
+  assert.match(await check.innerText(), /Help improve Claude/);
+  assert.equal(find(await snap(p), 'instagram').status, 'Not requested yet', 'Claude hasn\'t started');
+  await shot(p, 'agent-data-settings');
+  await check.locator('button', { hasText: 'Cancel' }).click();
+  assert.notEqual((await snap(p)).settings.agentExports, true, 'cancelled: Do It for Me isn\'t left on');
+  await sheet.locator('button[data-action=agent-on]').click(); // back to what it does, to turn it on or not
+  await confirmClaudeSheet(p);
   // It works in Chrome, a step at a time, then stops for the sign-in.
   await p.locator('[data-testid=status]', { hasText: 'Opening Instagram\'s export page' }).waitFor({ timeout: 10_000 });
   await shot(p, 'agent-working');
@@ -166,17 +175,20 @@ test('without Claude Code on this Mac, nothing offers Do It for Me, and it can\'
   const m = await another({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin' });
   try {
     const p = m.run.page;
-    let s = await snap(p);
+    // Claude Code picked: with Codex on this Mac, Codex would be until AI is agreed to, and Do It for Me would say it's coming.
+    await p.evaluate(() => (window as unknown as { api: { settings(x: object): Promise<unknown> } }).api.settings({ aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true }));
+    await p.evaluate(() => (window as unknown as { api: { ask(x: object): Promise<unknown> } }).api.ask({ op: 'settings', patch: { provider: 'claude-code' } }));
+    let s = await until(p, 'Claude Code picked', (x) => x.ask.settings.provider === 'claude-code');
     assert.equal(s.agentInstalled, false);
     for (const id of ['instagram', 'discord', 'x']) assert.ok(!find(s, id).actions.some((a) => a.id.startsWith('agent-')), `${id}: ${find(s, id).actions.map((a) => a.id)}`);
     assert.equal(find(s, 'instagram').actions.find((a) => a.primary)?.id, 'open', 'opening the page yourself is the next step');
-    await p.evaluate(() => (window as unknown as { api: { settings(x: object): Promise<unknown> } }).api.settings({ aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true }));
     const r = await act(p, 'instagram', 'agent-request');
     assert.equal(r.ok, false);
     assert.match(r.error ?? '', /needs Claude Code/);
     s = await until(p, 'still not requested', (x) => find(x, 'instagram').status === 'Not requested yet');
     await selectSource(p, 'instagram');
-    assert.equal(await p.locator('[data-testid=detail] button[data-action=agent-request]').count(), 0);
+    // (once the window has heard Claude Code is the one picked: until then it was Codex's "coming soon")
+    await p.locator('[data-testid=detail] button[data-action=agent-request]').waitFor({ state: 'detached', timeout: 5_000 });
     await p.screenshot({ path: path.join(SHOTS, 'no-claude-code.png') });
     assert.deepEqual(m.run.errors, []);
   } finally {
@@ -195,6 +207,7 @@ test('the Claude in Chrome extension not connected: said as the sheet opens, and
     assert.match(await sheet.innerText(), /every few hours/, 'and it says Claude looks for exports every few hours');
     await p.screenshot({ path: path.join(SHOTS, 'opt-in-chrome-not-connected.png') });
     await sheet.locator('button[data-action=agent-on]').click();
+    await confirmClaudeSheet(p);
     const s = await until(p, 'needs you', (x) => find(x, 'instagram').status === 'Needs you: turn on Claude in Chrome', 20_000);
     assert.deepEqual(find(s, 'instagram').actions.map((a) => a.id), ['open-chrome', 'agent-request', 'agent-dismiss']);
     await p.locator('[data-testid=detail] button[data-action=open-chrome]').waitFor();

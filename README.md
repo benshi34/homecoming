@@ -15,7 +15,7 @@ Homecoming is a Mac app that brings it home. It gathers your data into one libra
 Homecoming is made for one kind of setup, and works best inside it:
 
 - **A Mac with Apple silicon** (M1 or later). It's built and tested on macOS 26 (Tahoe).
-- **Apple's own apps**, read on this Mac: Messages, Mail, Photos, Notes, Calendar, Contacts, Reminders, Voice Memos, Podcasts, Screen Time and call history.
+- **Apple's own apps**, read on this Mac: Messages, Mail, Photos, Notes, Calendar, Contacts, Reminders, Voice Memos, Podcasts, Books, Maps, Screen Time and call history. Also WhatsApp for Mac, and the documents in your cloud drives (OneDrive, Google Drive, Dropbox, Box) and Obsidian vaults.
 - **An iPhone**, read from an encrypted backup made in Finder. Android phones aren't read; Google Takeout still brings in what Google keeps from one (location, Fit, Chrome).
 - **English.** The app is in English, and it reads exports as English-language accounts write them. Google, Instagram, Facebook and the others name their files and labels in your account's language, so an export in another language can come in with less in it (searches as plain page visits, say, or no dates on chats). If an account is set to another language, switch it to English before you request its export.
 - **Browsers:** browsing history from Safari, Chrome, Arc, Edge, Brave, Vivaldi, Opera, Firefox and Zen, every profile. Do It for Me works in Chrome, Edge, Brave, Arc, Vivaldi or Opera (the ones the Claude in Chrome extension runs in).
@@ -25,14 +25,14 @@ What the app finds on your Mac (your browsers, Mail's accounts, your region) is 
 
 ## Your data, and where it goes
 
-Everything Homecoming collects stays on your Mac, in your library: the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what iLEAPP reads from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
+Everything Homecoming collects stays on your Mac, in your library (readable by your account only): the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what iLEAPP reads from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
 
 Only four things ever leave your Mac, and each is something you start:
 
 - **Asking a question.** Ask sends the model you pick (Claude through Claude Code, or a model through Codex) what it looks up to answer you: the text with secrets such as passwords and keys blanked out, and any photo it looks at as it is. Before a company's model is used for the first time, the app shows what that company keeps and how to turn off training on your data, and waits for you. You can also pick a model that runs on your Mac (through Codex, with Ollama or LM Studio).
-- **An export the app doesn't know yet.** It can ask Claude how that export is laid out. The request holds file and field names, plus one example value per field only if you tick that box, and you see it and approve it before it's sent. Without the Claude Code CLI or an API key, you copy the request into any Claude chat yourself.
+- **An export the app doesn't know yet.** It can ask the AI you picked in AI Settings how that export is laid out. The request holds file and field names, plus one example value per field only if you tick that box, and you see it and approve it before it's sent. Without one on this Mac, you copy the request into any AI chat yourself.
 - **Requesting your data.** Download pages open in your own browser, signed in as you, like any other site you visit.
-- **Do It for Me**, if you turn it on: Claude Code works in your browser through the Claude in Chrome extension, on each service's export page and, if you let it, in the inboxes you pick, for the "your data is ready" email. What's on those pages goes to Anthropic, as when you use Claude in Chrome yourself.
+- **Do It for Me**, if you turn it on: Claude Code works in your browser through the Claude in Chrome extension, on each service's export page and, if you let it, in the inboxes turned on in AI Settings (only those), for the "your data is ready" email. What's on those pages goes to Anthropic, as when you use Claude in Chrome yourself.
 
 There's no analytics, no account, no update check and no telemetry.
 
@@ -42,7 +42,7 @@ It reads, and changes only what you tell it to:
 
 - **Photos and files in iCloud, read only:** photos others shared with you (shared albums, Shared with You, a Shared Library) are kept, but apart from yours, so where they were taken isn't counted as where you were. Documents and files that are only in iCloud ("Optimize Mac Storage") are listed by name, not downloaded.
 - **Mail, read only:** every account in Mail on this Mac is read into your library, like Messages and Notes. An email you also have from an export (Gmail in Google Takeout, say) is kept once.
-- **Notifications, read only:** while an export is on its way, the app looks for the service's "your data is ready" notification on this Mac, and its email in Mail. Nothing else in your notifications is kept. Either can be turned off in General.
+- **Notifications, read only:** while an export is on its way, the app looks for the service's "your data is ready" notification on this Mac, and its email in Mail. They're read from a private copy kept on this Mac (in Caches), and nothing else from them goes into your library. Either can be turned off in General, which removes its copy.
 - **Downloads you're expecting** move from `~/Downloads` into your library's `imports/` folder when they arrive. Files on another drive are copied, not moved. Anything you weren't expecting waits for a yes.
 - **Two settings, only if you click Keep:** Claude Code's `cleanupPeriodDays` in `~/.claude/settings.json`, so it stops deleting transcripts after 30 days, and a few lines at the end of `~/.zshrc`, marked `# Added by Homecoming`, so Terminal keeps every command and when it ran.
 - **Settings in other apps:** Messages, Safari, your iPhone and Google can delete old history. For each one, the app shows you how to keep it, and you change it there yourself.
@@ -50,9 +50,9 @@ It reads, and changes only what you tell it to:
 ## What to expect
 
 - **It takes a few days, not an afternoon.** What's on your Mac is read first, while you request the rest. Some services take hours to prepare your download and others take weeks (Spotify can take 30 days), and some links expire within days. The app tracks each one, reminds you, and picks the file up from Downloads.
-- **AI, in one place** (optional, off until you turn it on): the Setup Assistant asks once, and AI Settings (under Settings in the sidebar) lets you pick the agent (Claude Code or Codex, with your own sign-in, an API key, or a model on this Mac), shows whether it's signed in, and turns Do It for Me on or off. Ask and making sense of a download send nothing until you ask. Everything that uses AI carries a sparkle mark.
+- **AI, in one place** (optional, off until you turn it on): the Setup Assistant asks once, and AI Settings (under Settings in the sidebar) lets you pick the agent (Claude Code or Codex, with your own sign-in, an API key, or a model on this Mac), shows whether it's signed in, and turns Do It for Me on or off. Everything that uses AI uses the one picked: Ask, making sense of a download, and Do It for Me. Ask and making sense of a download send nothing until you ask. Everything that uses AI carries a sparkle mark.
 - **Do It for Me** (optional): Claude Code requests each export in your browser (Chrome, or the one you pick in AI Settings), where you're signed in, and when the service's "your data is ready" email arrives, it downloads it (the one whose link expires soonest first). It stops only when you need to sign in or enter a code, and carries on when you click Continue, or by itself once you've signed in.
-- **Ask for Everything**: one sheet, from the Overview, with every export still to ask for. The app checks which services the browser Claude works in is signed in to (from its session cookies' names and expiry dates, never their values or your passwords), so Claude asks for those one after another while you do something else, and says what needs you once, at the end. The rest you sign in to first (your saved password, a passkey or your password manager fills it in), and Claude does those too. Services you added with a known export page are done by Claude like the built-in ones. Reddit and Patreon are yours to do (Claude in Chrome isn't allowed there), and a service you added with no page but an address gets its request by email, sent from Mail once you say so. The first time, Claude opens each service's site once before it starts, so Claude in Chrome can ask you to allow it on each in the first minute or two, while you're there; after that it runs by itself. The Setup Assistant offers it too, on its exports list (Ask Claude for All), and each export page leads with Do It for Me. While Claude works, the top of the Overview (and a strip in the Setup Assistant) shows each service it's at, how many are done, and anything it's waiting for you to do in your browser, with Stop for one or Stop All.
+- **Ask for Everything**: one sheet, from the Overview, with every export still to ask for. The app checks which services the browser Claude works in is signed in to (from its session cookies' names and expiry dates, never their values or your passwords), so Claude asks for those one after another while you do something else. A sign-in or a site to allow it on is said right away; the rest, once, at the end. The rest you sign in to first (your saved password, a passkey or your password manager fills it in), and Claude does those too. Services you added with a known export page are done by Claude like the built-in ones. Reddit and Patreon are yours to do (Claude in Chrome isn't allowed there), and a service you added with no page but an address gets its request by email, sent from Mail once you say so. The first time, Claude opens each service's site once before it starts, so Claude in Chrome can ask you to allow it on each in the first minute or two, while you're there; after that it runs by itself. The Setup Assistant offers it too, on its exports list (Ask Claude for All), and each export page leads with Do It for Me. While Claude works, the top of the Overview (and a strip in the Setup Assistant) shows each service it's at, how many are done, and anything it's waiting for you to do in your browser, with Stop for one or Stop All.
 - **Your iPhone** is read from an encrypted backup on this Mac, made in Finder. The app walks you through it. You'll need the backup's password, and making the backup can take a while.
 - **Free space:** the app warns you below 20 GB. A big Google or Photos download can be tens of gigabytes.
 
@@ -107,15 +107,14 @@ Then:
 1. **Open Homecoming** from Applications.
 2. **Turn on Full Disk Access** when the app asks: System Settings → Privacy & Security → Full Disk Access → Homecoming. Then quit and reopen it.
 
-**Updating:** run the same commands, starting with `git pull`. Your library and progress stay where they are.
+**Updating:** run the same commands, starting with `git pull`. Your library and progress stay where they are. Each step runs only if the one before it worked, so a failed download or build leaves the Homecoming you have in place.
 
 ```bash
 cd ~/Developer/homecoming
-git pull
-cd desktop
-npm ci
-npm run install-app
+git pull --ff-only && cd desktop && npm ci && npm run install-app
 ```
+
+After an update, macOS can turn Full Disk Access off for Homecoming without saying so (the new build is a different app to it). If Homecoming says so, open System Settings → Privacy & Security → Full Disk Access, turn Homecoming off and on again, then quit and reopen it.
 
 ### Claude Code or Codex
 
@@ -174,10 +173,7 @@ If you cloned it:
 
 ```bash
 cd ~/Developer/homecoming
-git pull
-cd desktop
-npm ci
-npm start
+git pull --ff-only && cd desktop && npm ci && npm start
 ```
 
 If you downloaded the ZIP, download it again and put the new folder in place of the old one. Keep the old folder's `corpus/`: it's everything you've collected. Move it into the new folder first.
@@ -195,19 +191,20 @@ Each source's detail pane has a **Progress** log, and when you run from source, 
 ## Removing everything
 
 1. Quit Homecoming.
-2. Delete your library: `~/Homecoming`, or `corpus/` in the folder you ran it from. That's everything it collected, including the exports it filed.
+2. Delete your library: `~/Homecoming`, or `corpus/` in the folder you ran it from. That's everything it collected, including the exports it filed. If you chose Keep It on This Mac, the library is in `corpus.nosync` (or `Homecoming.nosync`) beside a shortcut of the old name: delete both.
 3. Delete `~/Library/Application Support/q1_user_model`: the decrypted copy of your iPhone backup and what iLEAPP read from it.
-4. Delete `~/Library/Application Support/Homecoming`: its progress, settings and Ask conversations.
-5. Drag Homecoming from Applications to the Trash (or delete the folder you ran it from).
-6. Turn Homecoming (or Terminal) off in System Settings → Privacy & Security → Full Disk Access.
-7. If you clicked Keep for them: remove the lines under `# Added by Homecoming` at the end of `~/.zshrc`, and `cleanupPeriodDays` from `~/.claude/settings.json`.
+4. Delete `~/Library/Application Support/Homecoming`: its progress, settings and Ask conversations. If there's a `~/Library/Application Support/User Model` (the app's name before), delete it too. And `~/Library/Caches/Homecoming`: its copies of Mail's index and of your notifications, kept so they aren't copied again every few minutes.
+5. If you used Do It for Me: delete the folders in `~/.claude/projects` whose names contain `homecoming-agent`. They're Claude Code's saved sessions of its work in your browser.
+6. Drag Homecoming from Applications to the Trash (or delete the folder you ran it from).
+7. Turn Homecoming (or Terminal) off in System Settings → Privacy & Security → Full Disk Access.
+8. If you clicked Keep for them: remove the lines under `# Added by Homecoming` at the end of `~/.zshrc`, and `cleanupPeriodDays` from `~/.claude/settings.json`.
 
 ## Known limits
 
 - **Not signed with an Apple Developer ID**, so it isn't offered as a download. Built on your Mac (above), it opens like any other app.
 - **Apple silicon only**, and when run from source, Python 3.14 only, for the iPhone step.
 - **Running from source, it works only while it's open.** The app built with `npm run install-app` keeps working in the menu bar when you close its window, and opens at login (General → Keep working when the window is closed).
-- **Do It for Me needs Claude Code, signed in with a claude.ai account on Pro, Max, Team or Enterprise, and the Claude in Chrome extension in Chrome, Edge, Brave, Arc, Vivaldi or Opera.** Claude Code turns the browser off when it's signed in with an API key, and Safari and Firefox can't run the extension; AI Settings says which of these is missing. It's Claude even if you pick Codex for the rest: Codex can drive a browser only inside its own app, not when another app runs it. It stops when a service wants you to sign in, enter a code or prove you're not a robot. Without it, export pages open in your browser and the steps are in the app.
+- **Do It for Me needs Claude Code, signed in with a claude.ai account on Pro, Max, Team or Enterprise, and the Claude in Chrome extension in Chrome, Edge, Brave, Arc, Vivaldi or Opera.** Claude Code turns the browser off when it's signed in with an API key, and Safari and Firefox can't run the extension; AI Settings says which of these is missing. With Codex picked, Do It for Me isn't there yet (it's coming): Codex can drive a browser only inside its own app, not when another app runs it, so pressing Do It for Me says so, and the export's steps are on its page. Before Claude first works in your browser, the app shows what Anthropic keeps and waits for you, as Ask does. It stops when a service wants you to sign in, enter a code or prove you're not a robot. Without it, export pages open in your browser and the steps are in the app.
 - **English-language accounts and a Mac with an iPhone** (see [What it works with](#what-it-works-with)).
 
 How it all works: [desktop/README.md](desktop/README.md).

@@ -5,7 +5,8 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { test } from 'node:test';
 import { e164, keyOf, setPhoneRegion } from '../../src/shared/identity.ts';
-import { agentBrowser, agentReady, type BrowserFound, inboxesOn, pageBrowser, setupEnv } from '../../src/shared/setup.ts';
+import { providerLabel } from '../../src/shared/ask.ts';
+import { agentBrowser, agentProvider, agentReady, type BrowserFound, claudeInboxes, inboxesOn, macDefault, notYetTitle, pageBrowser, setupEnv } from '../../src/shared/setup.ts';
 
 const REPO = path.resolve(import.meta.dirname, '../../..');
 
@@ -30,6 +31,14 @@ test('export pages open in the browser chosen, if its app is here; otherwise the
   assert.equal(pageBrowser([b('firefox')], ''), null);
 });
 
+test('the Mac\'s default browser is one of those found, by the name the probe gives it', () => {
+  const found = [b('chrome', { app: '/Applications/Google Chrome.app' }), b('firefox')];
+  assert.equal(macDefault(found, 'Google Chrome')?.name, 'Chrome', 'macOS says "Google Chrome": it\'s Chrome, not a second browser');
+  assert.equal(macDefault([b('safari', { default: true }), ...found], 'Google Chrome')?.id, 'safari', 'Launch Services, as the probe read it, first');
+  assert.equal(macDefault(found, 'Orion'), null, 'one not found here: just its name, from macOS');
+  assert.equal(macDefault(found, null), null);
+});
+
 test('whether Do It for Me can run, and if not, why in a sentence', () => {
   const chrome = b('chrome');
   const at = new Date().toISOString();
@@ -44,6 +53,30 @@ test('whether Do It for Me can run, and if not, why in a sentence', () => {
   assert.equal(key.fix, 'plan');
   assert.match(key.why!, /^Claude Code is signed in with an API key, and Claude works in a browser only with a claude\.ai account/);
   assert.equal(agentReady({ claudeCode: true, browser: chrome, signIn: { state: 'in', how: 'claude.ai', plan: 'Free plan', at } }).fix, 'plan');
+});
+
+test('Do It for Me follows the AI picked: Claude Code with claude.ai can, Codex is coming, an Anthropic API key can\'t', () => {
+  assert.deepEqual(agentProvider('claude-code', providerLabel('claude-code')), { ok: true });
+  for (const id of ['codex', 'openai', 'local']) {
+    const r = agentProvider(id, providerLabel(id));
+    assert.deepEqual([r.ok, r.fix, r.soon], [false, 'provider', true], id);
+    assert.equal(notYetTitle(r), 'Do It for Me isn\'t here yet with this AI');
+  }
+  assert.match(agentProvider('codex', providerLabel('codex')).why!, /^Do It for Me doesn't work with Codex \(your ChatGPT account\) yet: it's coming soon\./);
+  const key = agentProvider('anthropic', providerLabel('anthropic'));
+  assert.deepEqual([key.ok, key.fix, key.soon], [false, 'provider', undefined], 'not promised: Claude in Chrome needs a claude.ai account');
+  assert.match(key.why!, /with an API key, Claude Code can't work in your browser/);
+  assert.equal(notYetTitle(key), 'Do It for Me needs your claude.ai account');
+});
+
+test('Claude is told only the inboxes that are on: with all of them on too, and the one the service named unless it\'s off', () => {
+  const mine = ['ada@gmail.com', 'ada@work.example'];
+  assert.deepEqual(claudeInboxes(mine), { inboxes: mine, to: undefined }, 'every one on: still only these');
+  assert.deepEqual(claudeInboxes(mine, ['ada@work.example']), { inboxes: ['ada@gmail.com'], to: undefined });
+  assert.deepEqual(claudeInboxes(mine, [], 'ada@alumni.example.edu'), { inboxes: [...mine, 'ada@alumni.example.edu'], to: 'ada@alumni.example.edu' },
+    'the address the service said it writes to, though it isn\'t one this Mac knows');
+  assert.deepEqual(claudeInboxes(mine, ['ada@work.example'], 'Ada@Work.example'), { inboxes: ['ada@gmail.com'], to: undefined }, 'turned off: not even then');
+  assert.deepEqual(claudeInboxes([], [], 'ada@gmail.com'), { to: 'ada@gmail.com' }, 'none known: no list (AI Settings says it may look in any)');
 });
 
 test('what the connectors are told, and the inboxes Claude may look in', () => {

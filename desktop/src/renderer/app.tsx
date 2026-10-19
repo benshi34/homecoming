@@ -12,14 +12,15 @@ import { Celebrations } from './celebrate.tsx';
 import { ExportSheet } from './export_sheet.tsx';
 import { Glyph } from './icons.tsx';
 import { MainWindow, type Nav } from './main_window.tsx';
-import { animate } from './ui.tsx';
+import { animate, ReadOnly } from './ui.tsx';
+import { READ_ONLY_NOTE } from '../shared/status.ts';
 
 // What changes the layout: which section each source is in, and the order. Status text alone doesn't.
 const layoutOf = (s: Snapshot) => s.sources.map((v) => `${v.id}:${v.section}:${v.blockedBy ?? ''}`).join('|');
 
 function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
-  const [toasts, setToasts] = useState<{ id: number; text: string; kind: string; undo?: { sourceId: string; action: string } }[]>([]);
+  const [toasts, setToasts] = useState<{ id: number; text: string; kind: string; undo?: { sourceId: string; action: string }; about?: string }[]>([]);
   const [assistant, setAssistant] = useState<boolean | null>(null); // null: follow onboarding.done
   const [exportOpen, setExportOpen] = useState(false); // Export Your Library
   const [adding, setAdding] = useState(false);
@@ -56,7 +57,8 @@ function App() {
     let n = 0;
     const offT = api.onToast((t) => {
       const id = ++n;
-      setToasts((ts) => [...ts.filter((x) => x.text !== t.text).slice(-2), { id, ...t }]);
+      // A newer one about the same source takes the older one's place (skipped, then set aside: only the last is so).
+      setToasts((ts) => [...ts.filter((x) => x.text !== t.text && !(t.about && x.about === t.about)).slice(-2), { id, ...t }]);
       setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), t.kind === 'error' || t.undo ? 9000 : 5000);
     });
     const offM = api.onMenu((cmd) => {
@@ -124,6 +126,7 @@ function App() {
   const exit = () => leave({ skippedAt: new Date().toISOString() });
   const style = snap.accent ? ({ '--accent': snap.accent } as CSSProperties) : undefined;
   return (
+    <ReadOnly.Provider value={snap.readOnly && !snap.demo ? READ_ONLY_NOTE : null}>
     <div style={{ height: '100%', ...style }} data-testid="app" data-mode={showAssistant ? 'assistant' : 'main'}>
       {showAssistant
         ? <Assistant snap={snap} onFinish={finish} onExit={exit} />
@@ -146,6 +149,7 @@ function App() {
       {/* A source coming home, an export asked for: worth a moment, in the Setup Assistant and the window alike. */}
       <Celebrations sources={snap.sources} loaded={snap.loaded !== false} />
     </div>
+    </ReadOnly.Provider>
   );
 }
 

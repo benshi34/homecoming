@@ -19,14 +19,23 @@ Cleaning, all counted in the manifest's notes:
   stage and heart-rate reading twice per sync and re-syncs nights.
 - physically impossible samples are dropped (more than CAPS per minute, intervals under a minute counted as
   one minute): e.g. a 2019 phone glitch logged 72,722 steps and 40 km in six minutes.
+
+Older and newer databases (iOS 15-18 and the ones before) are read alike: a sample with no provenance row, or none that
+matches, is kept (in UTC); one whose object has no type isn't a deleted one; tz_name, category_samples or the app names
+in healthdb.sqlite may be missing. iOS 15 on, a series sample (a Watch's heart rate during a workout) can keep its
+readings only in quantity_series_data, through quantity_sample_series.hfd_key, as iLEAPP's health_heart_rate and the
+HealthDB project read them: each reading is then a sample of its own ("sample:<id>@<time>"). A sample with no start
+time is counted (no_time), not guessed. A database with no samples table (made, never written to) leaves what was read
+before as it is.
 """
 
+import sqlite3
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from common import Writer, connect, phone
+from common import Writer, columns, connect, phone, phone_unencrypted, tables
 
 DB = phone("HealthDomain", "Health/healthdb_secure.sqlite")
 AVENUE = "iPhone encrypted local backup → connectors/iphone_backup.py → HealthDomain/Health/healthdb_secure.sqlite"
@@ -69,10 +78,87 @@ SAMPLE_NAMES = {7: ("Steps", "steps", 1), 8: ("Walking + running distance", "m",
 
 def main():
     if not DB.exists():
-        print(f"[health] no {DB}; run connectors/iphone_backup.py first")
+        if phone_unencrypted():
+            print("[health] this iPhone backup isn't encrypted, and Finder leaves Health out of those: turn on "
+                  "\"Encrypt local backup\" in Finder and back up again to have it")
+        else:
+            print(f"[health] no {DB}; run connectors/iphone_backup.py first")
+        return
+    try:
+        with closing(connect(DB)) as con:
+            have = tables(con)
+    except sqlite3.DatabaseError as e:
+        print(f"[health] {DB.name} can't be read ({e}); what was read before stays")
+        return
+    if "samples" not in have:
+        print(f"[health] no samples in {DB.name} (made, never written to?); what was read before stays")
         return
     summaries()
     samples()
+
+
+def readings(con, order):
+    """Every live sample as a dict (data_id, data_type, start_date, end_date, quantity, value, tz_name,
+    origin_product_type, source_id, at): at is None for a sample, else the time of one reading of a series sample that
+    has no value of its own. Joins are LEFT and a column this version lacks is null, so no sample is lost to them."""
+    have = tables(con)
+    cols = {t: columns(con, t) for t in ("objects", "data_provenances", "quantity_samples", "category_samples") if t in have}
+    joins, pick = [], {}
+    if "provenance" in cols.get("objects", ()):
+        joins.append("left join objects o on o.data_id = s.data_id")
+        if "data_provenances" in cols:
+            joins.append("left join data_provenances p on p.ROWID = o.provenance")
+            pick.update({c: f"p.{c}" for c in ("tz_name", "origin_product_type", "source_id") if c in cols["data_provenances"]})
+    for table, alias, c in (("quantity_samples", "q", "quantity"), ("category_samples", "c", "value")):
+        if c in cols.get(table, ()):
+            joins.append(f"left join {table} {alias} on {alias}.data_id = s.data_id")
+            pick[c] = f"{alias}.{c}"
+    live = "where o.type is not 2" if "type" in cols.get("objects", ()) and "provenance" in cols["objects"] else ""  # 2: deleted
+    want = ("quantity", "value", "tz_name", "origin_product_type", "source_id")
+    picked = ", ".join(f"{pick.get(c, 'null')} {c}" for c in want)
+    sql = f"select s.data_id, s.data_type, s.start_date, s.end_date, {picked} from samples s {' '.join(joins)} {live} order by s.{order}"
+    series = series_readings(con, have)
+    for r in con.execute(sql):
+        r = dict(r)
+        points = series.get(r["data_id"]) if r["quantity"] is None and r["value"] is None else None
+        if not points:
+            r["at"] = None
+            yield r
+            continue
+        for at, v, duration in points:
+            yield {**r, "start_date": at, "end_date": at + (duration or 0), "quantity": v, "at": at}
+
+
+def series_readings(con, have):
+    """data_id -> [(time, value, duration)] of each series sample with no quantity of its own (iOS 15 on)."""
+    if not {"quantity_sample_series", "quantity_series_data"} <= have or \
+            not {"data_id", "hfd_key"} <= columns(con, "quantity_sample_series") or \
+            not {"series_identifier", "timestamp", "value"} <= columns(con, "quantity_series_data"):
+        return {}
+    own = "left join quantity_samples q on q.data_id = ss.data_id where q.quantity is null" if "quantity" in columns(
+        con, "quantity_samples") else ""
+    duration = "d.duration" if "duration" in columns(con, "quantity_series_data") else "0"
+    out = {}
+    for r in con.execute(f"""select ss.data_id, d.timestamp, d.value, {duration} from quantity_sample_series ss
+                              join quantity_series_data d on d.series_identifier = ss.hfd_key {own}
+                              order by ss.data_id, d.timestamp"""):
+        if r[1] is not None and r[2] is not None:
+            out.setdefault(r[0], []).append((r[1], r[2], r[3]))
+    return out
+
+
+def timed(r):
+    """(start, end) in Apple seconds, an end missing taken as the start; None if there's no start, or one out of range."""
+    s, e = r["start_date"], r["end_date"]
+    if not isinstance(s, (int, float)):
+        return None
+    e = e if isinstance(e, (int, float)) else s
+    try:
+        APPLE_EPOCH + timedelta(seconds=max(s, e))
+        APPLE_EPOCH + timedelta(seconds=min(s, e))
+    except OverflowError:
+        return None
+    return s, e
 
 
 def samples():
@@ -86,15 +172,13 @@ def _samples(con):
     apps = {}
     other = DB.with_name("healthdb.sqlite")
     if other.exists():
-        with closing(connect(other)) as names:
-            apps = {r[0]: r[1] for r in names.execute("select ROWID, name from sources")}
-    rows = con.execute("""select s.data_id, s.data_type, s.start_date, s.end_date, q.quantity, c.value,
-                                 p.tz_name, p.origin_product_type, p.source_id
-                          from samples s join objects o on o.data_id = s.data_id
-                          join data_provenances p on p.ROWID = o.provenance
-                          left join quantity_samples q on q.data_id = s.data_id
-                          left join category_samples c on c.data_id = s.data_id
-                          where o.type != 2 order by s.start_date""")
+        try:
+            with closing(connect(other)) as names:
+                if "sources" in tables(names) and "name" in columns(names, "sources"):
+                    apps = {r[0]: r[1] for r in names.execute("select ROWID, name from sources")}
+        except sqlite3.DatabaseError:
+            pass  # app names are a nicety: the samples are read without them
+    rows = readings(con, "start_date")
     # Type 76 is the daily Activity rings summary; its numbers live in activity_caches, not the sample tables.
     # Older Health databases have no such table, or fewer of its columns.
     has_rings = con.execute("select 1 from sqlite_master where type = 'table' and name = 'activity_caches'").fetchone()
@@ -108,6 +192,11 @@ def _samples(con):
             if q is None and v is None and ring is None:
                 notes["no_value"] += 1
                 continue
+            when = timed(r)
+            if not when:
+                notes["no_time"] = notes.get("no_time", 0) + 1
+                continue
+            r["start_date"], r["end_date"] = when
             key = (t, r["source_id"], r["start_date"], r["end_date"], q, v)
             if key in seen:
                 notes["duplicates"] += 1
@@ -136,7 +225,7 @@ def _samples(con):
             a, b = local(r["start_date"], r["tz_name"]), local(r["end_date"], r["tz_name"])
             app = apps.get(r["source_id"])
             span = f"{a:%Y-%m-%d %H:%M}" + (f"–{b:%H:%M}" if r["end_date"] != r["start_date"] else "")
-            w.add(id=f"sample:{r['data_id']}", kind="health_sample",
+            w.add(id=f"sample:{r['data_id']}" + (f"@{round(r['at'], 3)}" if r["at"] is not None else ""), kind="health_sample",
                   ts=(APPLE_EPOCH + timedelta(seconds=r["start_date"])).isoformat(),
                   ts_end=(APPLE_EPOCH + timedelta(seconds=r["end_date"])).isoformat(), author="me", is_me=True,
                   title=name, text=f"{name}: {shown}, {span} ({r['tz_name'] or 'UTC'})" + (f", {app}" if app else ""),
@@ -151,19 +240,18 @@ def summaries():
 
 
 def _summaries(con):
-    rows = con.execute("""select s.data_id, s.data_type, s.start_date, s.end_date, q.quantity, c.value,
-                                 p.tz_name, p.origin_product_type, p.source_id
-                          from samples s join objects o on o.data_id = s.data_id
-                          join data_provenances p on p.ROWID = o.provenance
-                          left join quantity_samples q on q.data_id = s.data_id
-                          left join category_samples c on c.data_id = s.data_id
-                          where o.type != 2 order by s.data_id""")
+    rows = readings(con, "data_id")
     sums = defaultdict(lambda: defaultdict(float))     # (day, field, device) -> total
     avgs = defaultdict(lambda: [0.0, 0, None, None])   # (day, field) -> [sum, n, min, max]
     tzs, sleep, body, skipped, seen = {}, [], [], defaultdict(int), set()
     dropped = {"duplicates": 0, "implausible": 0}
     for r in rows:
         t, tz = r["data_type"], r["tz_name"]
+        when = timed(r)
+        if not when:
+            dropped["no_time"] = dropped.get("no_time", 0) + 1
+            continue
+        r["start_date"], r["end_date"] = when
         key = (t, r["source_id"], r["start_date"], r["end_date"], r["quantity"], r["value"])
         if key in seen:
             dropped["duplicates"] += 1
@@ -242,7 +330,7 @@ def _summaries(con):
 
         for r, (field, mult) in body:
             when = local(r["start_date"], r["tz_name"])
-            w.add(id=f"body:{r['data_id']}", kind="measurement", ts=(APPLE_EPOCH + timedelta(seconds=r["start_date"])).isoformat(),
+            w.add(id=f"body:{r['data_id']}" + (f"@{round(r['at'], 3)}" if r["at"] is not None else ""), kind="measurement", ts=(APPLE_EPOCH + timedelta(seconds=r["start_date"])).isoformat(),
                   author="me", is_me=True, title=field.replace("_", " "),
                   text=f"{field.replace('_', ' ')}: {r['quantity'] * mult:g} ({when.date().isoformat()})",
                   meta={field: r["quantity"] * mult})

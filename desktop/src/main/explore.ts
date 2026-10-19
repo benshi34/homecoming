@@ -39,8 +39,10 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
   let running: string | null = null;
   const waiting: Job[] = [];
   const jobs = new Map<string, Job>(); // waiting or being built, by key
-  // What's been built, while the database is as it was then.
+  // What's been built, while the database is as it was then; and what couldn't be (an error, out of time), which
+  // isn't built ahead again until the database changes (asked for, it's tried again).
   const kept = new Map<string, unknown>();
+  const failed = new Map<string, unknown>();
   let keptFor = '';
   const db = path.join(p.corpus, 'corpus.db');
   const stamp = () => {
@@ -57,6 +59,7 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
     if (now === keptFor) return now;
     if (keptFor) onProgress('*', { changed: true });
     kept.clear();
+    failed.clear();
     keptFor = now;
     return now;
   };
@@ -115,7 +118,13 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
       // Kept if the database didn't change while it was built; the stream's files, once written, change what it says.
       if (job.op === 'stream-build') {
         for (const k of [...kept.keys()]) if (k.startsWith('stream:')) kept.delete(k);
-      } else if (!isError(r) && at && fresh() === at) kept.set(job.key, r);
+      } else if (at && fresh() === at) {
+        if (isError(r)) failed.set(job.key, r);
+        else {
+          kept.set(job.key, r);
+          failed.delete(job.key);
+        }
+      }
       job.resolve(r);
       next();
     });
@@ -125,6 +134,7 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
     const key = `${op}:${JSON.stringify(strs)}`;
     fresh();
     if (kept.has(key)) return Promise.resolve(kept.get(key));
+    if (ahead && failed.has(key)) return Promise.resolve(failed.get(key));
     const had = jobs.get(key);
     if (had) {
       // Asked for now: no longer behind what's built ahead, only the one being built (it's told which).

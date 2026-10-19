@@ -86,6 +86,15 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(sorted(r["id"] for r in rs), ["codex:R:1", "codex:R:2", "codex:R:3"])
         self.assertEqual({r["id"]: r["text"] for r in rs}["codex:R:3"], "second")
 
+    def test_archived_threads_are_read_too(self):
+        arch = self.home / ".codex/archived_sessions"
+        arch.mkdir(parents=True)
+        (arch / "rollout-2026-09-22T09-44-37-A.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [
+            meta("A", "2026-09-22T09:44:37Z"), msg("user", "an old thread", "2026-09-22T09:44:40Z")]))
+        self.rollout("07", "2026-10-07T15-45-15-S", [meta("S", "2026-10-07T15:45:15Z"), msg("user", "hello", "2026-10-07T15:45:16Z")])
+        rs = run(self.home, self.corpus)
+        self.assertEqual(sorted(r["id"] for r in rs), ["codex:A:1", "codex:S:1"])
+
     def test_an_ordinary_session_keeps_the_ids_it_always_had(self):
         self.rollout("07", "2026-10-07T15-45-15-S", [meta("S", "2026-10-07T15:45:15Z"), msg("user", "hello", "2026-10-07T15:45:16Z"),
                                                     msg("user", "<environment_context>noise", "2026-10-07T15:45:17Z"),

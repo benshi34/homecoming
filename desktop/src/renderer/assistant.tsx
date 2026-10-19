@@ -12,6 +12,7 @@ import { Glyph, GlyphTile, SourceIcon } from './icons.tsx';
 import { AiAgreement, AiSettings } from './ai.tsx';
 import { Hub, type HubFilter } from './hub.tsx';
 import { Timeline } from './main_window.tsx';
+import { agentGate, AgentGateSheet, type Gate } from './agent_gate.tsx';
 import { AccountForm, AddServiceSheet, AgentButton, AgentOptIn, InboxButton, ContentsLines, evidenceLine, IdentityPicker, PasswordForm, PhoneParts, SkipForm, Steps, vt } from './parts.tsx';
 import { AiMark, animate, Banner, Button, Checkmark, Group, GroupRow, ProgressBar, reducedMotion, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
 import { Tick, WaitClock } from './moments.tsx';
@@ -29,11 +30,18 @@ interface PageSpec {
   wide?: boolean;
 }
 
+// "a, b, and c"; "a and b".
+const and = (xs: string[]) => (xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')}, and ${xs[xs.length - 1]}`);
+// Read-only mode (not the demo): nothing chosen on a page is kept, so its controls are disabled, with the note.
+const lockedHere = (ctx: { snap: Snapshot }) => ctx.snap.readOnly && !ctx.snap.demo;
+const lockTitle = (locked: boolean) => (locked ? READ_ONLY_NOTE : undefined);
+
 export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish: (showId?: string) => void; onExit: () => void }) {
   const views = snap.sources;
   const steps = useMemo(() => assistantSteps(views, snap.onboarding.chosen), [views, snap.onboarding.chosen]);
   // The page, by id: when the step list changes (accounts chosen, one dropped), the same page stays up.
-  const [at, setAt] = useState(() => steps[stepIndex(steps, snap.onboarding.step)].id);
+  // Opened again once it's all done: from the start, as General's "Go through setting up again" says (part-way, where it was).
+  const [at, setAt] = useState(() => steps[stepIndex(steps, snap.onboarding.done && snap.onboarding.step === 'done' ? 'welcome' : snap.onboarding.step)].id);
   // What you last chose, plus services added since (from the hub, or the main window) that you haven't turned down.
   const [draft, setDraft] = useState<Set<string>>(() => new Set([...(snap.onboarding.chosen ?? defaultChosen(views)),
     ...views.filter((x) => BY_ID[x.id]?.custom && x.section !== 'unavailable').map((x) => x.id)]));
@@ -45,10 +53,16 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
   if (step.kind === 'export') seen.current.add(step.sourceId!);
   // Do It for Me from the footer, the first time: its one-time choice, then it carries on.
   const [optIn, setOptIn] = useState<(() => void) | null>(null);
+  const [gate, setGate] = useState<{ g: Exclude<Gate, null>; go: () => void } | null>(null);
   const doIt = (id: string, then: () => void) => {
     const go = () => void api.action(id, 'agent-request').then((r) => r.ok && then());
-    if (snap.settings.agentExports && snap.settings.aiOn === true) go();
-    else setOptIn(() => go);
+    // Not yet with the AI picked: said at once. Otherwise what it does (the first time, which asks Anthropic's data
+    // settings itself), or the data settings when they're due (agent_gate.tsx).
+    const g = agentGate(snap);
+    if (g === 'not-yet') setGate({ g, go });
+    else if (!snap.settings.agentExports || snap.settings.aiOn !== true) setOptIn(() => go);
+    else if (g === 'retention') setGate({ g, go });
+    else go();
   };
 
   const goTo = (n: number, dir: 'forward' | 'back') => {
@@ -93,6 +107,7 @@ export function Assistant({ snap, onFinish, onExit }: { snap: Snapshot; onFinish
           className={page.primary.done ? 'is-done' : ''}>{page.primary.done && <Tick size={13} />}{page.primary.label}</Button>}
       </div>
       {optIn && <AgentOptIn snap={snap} onClose={() => setOptIn(null)} onOn={() => { optIn(); setOptIn(null); }} />}
+      {gate && <AgentGateSheet snap={snap} gate={gate.g} onClose={() => setGate(null)} onOk={() => { const x = gate; setGate(null); x.go(); }} />}
     </div>
   );
 }
@@ -163,6 +178,7 @@ function renderStep(step: Step, ctx: Ctx): PageSpec {
       // Found services you ticked become sources first, so their export pages join the steps. What you chose is then
       // those sources, so going Back shows them under Your accounts (not as found ones to add again).
       const apply = () => {
+        if (lockedHere(ctx)) return ctx.next(); // read-only: the accounts stay as they are
         const picked = [...ctx.draft];
         void api.action('*', 'choose-services', { slugs: picked.filter((x) => x.startsWith('found:')).map((x) => x.slice(6)),
           domains: picked.filter((x) => x.startsWith('sender:')).map((x) => x.slice(7)) })
@@ -191,10 +207,12 @@ function welcome(ctx: Ctx): PageSpec {
 }
 
 function identity(ctx: Ctx): PageSpec {
+  // Read-only mode keeps who you are as it is (the form says so): Continue just goes on.
+  const locked = lockedHere(ctx);
   return {
-    primary: { label: 'Continue', onClick: () => (document.getElementById('identity-step') as HTMLFormElement | null)?.requestSubmit() },
+    primary: { label: 'Continue', onClick: locked ? ctx.next : () => (document.getElementById('identity-step') as HTMLFormElement | null)?.requestSubmit() },
     // Not now is fine: it's asked again at the top of To Do, and collecting doesn't wait for it.
-    secondary: ctx.v('identity').section !== 'done' ? <Button onClick={ctx.next} testAction="identity-later">Skip for Now</Button> : undefined,
+    secondary: ctx.v('identity').section !== 'done' && !locked ? <Button onClick={ctx.next} testAction="identity-later">Skip for Now</Button> : undefined,
     body: <IdentityPage ctx={ctx} />,
   };
 }
@@ -203,7 +221,7 @@ function IdentityPage({ ctx }: { ctx: Ctx }) {
   const view = ctx.v('identity');
   const [err, setErr] = useState('');
   const save = (id: unknown, dismissed: string[]) => void api.action('identity', 'save-identity', { identity: id, dismissed })
-    .then((r) => (r.ok ? ctx.next() : setErr(`Couldn't save it: ${r.error ?? 'something went wrong'}. Try again, or skip it for now.`)));
+    .then((r) => (r.ok ? ctx.next() : setErr(r.error === 'read-only' ? READ_ONLY_NOTE : `Couldn't save it: ${r.error ?? 'something went wrong'}. Try again, or skip it for now.`)));
   const found = ctx.snap.identityCandidates ?? [];
   const looking = !found.length && !ctx.snap.identityCandidatesReady;
   return (
@@ -310,9 +328,10 @@ function LibraryPage({ ctx }: { ctx: Ctx }) {
 const KEEP_COPY: Record<string, { title: string; risk: string; setting: string }> = {
   retention_messages: { title: 'Messages', risk: 'Messages can delete conversations once they\'re 30 days or a year old.', setting: 'Messages → Settings → General → Keep messages: Forever' },
   retention_safari: { title: 'Safari', risk: 'Safari deletes browsing history after a year unless told otherwise.', setting: 'Safari → Settings → General → Remove history items: Manually' },
-  retention_claude: { title: 'Claude Code', risk: 'Claude Code deletes conversation transcripts after 30 days.', setting: 'Keep Them changes that one setting in Claude Code, and says first exactly what it changes.' },
+  // No risk of its own: the row's status says it, from the real setting ("Transcripts are deleted after 7 days").
+  retention_claude: { title: 'Claude Code', risk: '', setting: 'Keep Them changes that one setting in Claude Code, and says first exactly what it changes.' },
   retention_codex: { title: 'Codex', risk: '', setting: '' },
-  retention_shell: { title: 'Terminal', risk: 'Terminal keeps only your last 1,000 commands, and doesn\'t record when you ran them.', setting: 'Keep Every Command adds a few lines to your Terminal settings, and says first exactly what it adds.' },
+  retention_shell: { title: 'Terminal', risk: '', setting: 'Keep Every Command adds a few lines to your Terminal settings, and says first exactly what it adds.' },
   retention_iphone_messages: { title: 'Messages on the iPhone', risk: 'The iPhone has its own Keep Messages setting and can delete conversations after 30 days or a year.', setting: 'iPhone Settings → Apps → Messages → Keep Messages: Forever' },
   retention_maps: { title: 'Google Maps Timeline', risk: 'Timeline deletes visits older than 3 months unless told otherwise.', setting: 'Google Maps → Your Timeline → ⋯ → Location & privacy settings → Auto-delete Timeline: Don\'t auto-delete' },
   retention_google: { title: 'Google activity and YouTube', risk: 'Newer Google accounts delete search and app activity after 18 months, and YouTube history after 36.', setting: 'Activity controls → Web & App Activity and YouTube History → Auto-delete: Don\'t auto-delete. Tick "Include Chrome history" too.' },
@@ -324,7 +343,7 @@ function KeepRow({ x, run }: { x: SourceView; run: (id: string, a: Action) => vo
   return (
     <GroupRow testId={`check-${x.id}`} icon={<SourceIcon id={x.id} size={26} />}
       title={<>{copy.title}{x.section === 'done' && <span className="tag">Already keeps everything</span>}</>}
-      subtitle={x.section === 'done' ? `${x.status}.` : <><span style={{ color: 'var(--orange)' }}>{copy.risk}</span><br />{copy.setting}</>}
+      subtitle={x.section === 'done' ? `${x.status}.` : <><span style={{ color: 'var(--orange)' }}>{copy.risk || `${x.status}.`}</span><br />{copy.setting}</>}
       trailing={x.section === 'done' ? <Checkmark size={18} /> : (
         <>
           {/* A list of settings: plain buttons, as in System Settings, not a row of blue ones. */}
@@ -413,11 +432,18 @@ const iphoneToDo = (v: SourceView) => v.section === 'todo' || !!v.needsYou || (v
 function IphonePage({ ctx }: { ctx: Ctx }) {
   const view = ctx.v('iphone_backup');
   const [busy, setBusy] = useState(false);
+  // Read-only: what only looks or opens a page works; the rest is disabled, and says why.
+  const locked = lockedHere(ctx);
+  const off = (aid: string) => locked && !READ_ONLY_OK.has(aid);
   const pw = view.actions.find((a) => a.id === 'iphone-run');
+  const forget = view.actions.find((a) => a.id === 'forget-phone');
   const act = iphoneToDo(view); // something to do on this page: read it, unlock it, make a backup, allow access
-  const read = (password?: string) => {
+  // Over what was read from another device: asked first, as its page does (status.ts), with Take It Out.
+  const [asking, setAsking] = useState<{ password?: string } | null>(null);
+  const read = (password?: string, confirmed = false) => {
+    if (pw?.confirm && !confirmed) return setAsking({ password });
     setBusy(true);
-    void api.action('iphone_backup', 'iphone-run', password ? { password } : undefined).finally(() => setBusy(false));
+    void api.action('iphone_backup', 'iphone-run', { ...(password ? { password } : {}), ...(confirmed ? { confirmed } : {}) }).finally(() => setBusy(false));
   };
   return (
     <>
@@ -431,24 +457,42 @@ function IphonePage({ ctx }: { ctx: Ctx }) {
             {view.section === 'working' && !view.needsYou && <ProgressBar />}
           </div>
         </div>
-        {act && pw && !pw.input && <div className="actions"><Button kind="primary" onClick={() => read()} disabled={busy}>Read Backup</Button></div>}
+        {act && pw && !pw.input && <div className="actions"><Button kind="primary" onClick={() => read()} disabled={busy || off('iphone-run')} title={lockTitle(off('iphone-run'))}>Read Backup</Button></div>}
         {/* Waiting on something else (Full Disk Access, a Python package): its own buttons, from the status. */}
         {act && !pw && (
           <div className="actions">
             {view.actions.filter((a) => a.id !== 'skip').map((a) => (
-              <Button key={a.id} kind={a.primary ? 'primary' : 'default'} onClick={() => void api.action(a.id === 'open-fda-settings' ? 'fda' : 'iphone_backup', a.id)} testAction={a.id}>{a.label}</Button>
+              <Button key={a.id} kind={a.primary ? 'primary' : 'default'} onClick={() => void api.action(a.id === 'open-fda-settings' ? 'fda' : 'iphone_backup', a.id)} testAction={a.id}
+                disabled={off(a.id)} title={lockTitle(off(a.id))}>{a.label}</Button>
             ))}
           </div>
         )}
-        {view.section === 'unavailable' && <div className="actions"><Button onClick={() => void api.action('iphone_backup', 'unskip')}>Include It Again</Button></div>}
+        {view.section === 'unavailable' && <div className="actions"><Button onClick={() => void api.action('iphone_backup', 'unskip')} disabled={locked} title={lockTitle(locked)}>Include It Again</Button></div>}
       </div>
-      {act && pw?.input === 'password' && <Group title="Unlock the backup"><PasswordForm onSubmit={read} busy={busy} /></Group>}
+      {act && pw?.input === 'password' && <Group title="Unlock the backup"><PasswordForm onSubmit={(p) => read(p)} busy={busy || locked} /></Group>}
+      {forget && view.notes?.map((n) => <div key={n} className="note" data-testid="iphone-other"><Glyph name="warning" size={13} /><span>{n}</span></div>)}
+      {asking && (
+        <Sheet onClose={() => setAsking(null)} testId="confirm">
+          <h2>Read Backup?</h2>
+          <p>{pw?.confirm}</p>
+          <div className="sheet-actions">
+            <Button onClick={() => setAsking(null)}>Cancel</Button>
+            {forget && <Button kind="destructive" onClick={() => { setAsking(null); void api.action('iphone_backup', 'forget-phone', { confirmed: true }); }} testAction="forget-phone">Take It Out First</Button>}
+            <Button kind="primary" onClick={() => { const x = asking; setAsking(null); read(x.password, true); }} testAction="iphone-run-anyway">Read Anyway</Button>
+          </div>
+        </Sheet>
+      )}
       {view.warnings.map((w, k) => <div key={k} style={{ marginTop: 12 }}><Banner kind="warning">{w}</Banner></div>)}
-      {view.steps && act && <Group title="Make a backup"><Steps view={view} /></Group>}
+      {view.steps && act && <Group title="Make a backup"><Steps view={view} locked={locked} /></Group>}
       {view.section === 'done' && <PhoneParts view={view} />}
       {view.section === 'working' && view.notes?.map((n) => <div key={n} className="note"><Glyph name="info" size={13} /><span>{n}</span></div>)}
       {view.section === 'working' && <div className="note"><Glyph name="info" size={13} /><span>This keeps going in the background. Continue whenever you like.</span></div>}
-      {act && view.section !== 'done' && <div style={{ textAlign: 'center', marginTop: 12 }}><Button kind="plain" onClick={() => void api.action('iphone_backup', 'skip', { reason: 'No iPhone backup for now' }).then(ctx.next)}>I don't have an iPhone backup</Button></div>}
+      {/* Later is set aside (it comes back in To Do); no iPhone at all is said once, for its checks too. */}
+      {act && view.section !== 'done' && <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginTop: 12 }}>
+        <Button kind="plain" onClick={() => void api.action('iphone_backup', 'skip', { reason: 'Not now' }).then(ctx.next)} testAction="iphone-later" disabled={locked} title={lockTitle(locked)}>Back Up Later</Button>
+        <Button kind="plain" onClick={() => void api.action('iphone_backup', 'skip', { reason: 'No iPhone' }).then(ctx.next)} testAction="iphone-none" disabled={locked} title={lockTitle(locked)}>I Don't Have an iPhone</Button>
+      </div>}
+      {locked && <div className="note" data-testid="iphone-locked"><Glyph name="info" size={13} /><span>{READ_ONLY_NOTE}</span></div>}
     </>
   );
 }
@@ -494,13 +538,14 @@ function AccountsPage({ ctx }: { ctx: Ctx }) {
   }, 'move');
   const [browsing, setBrowsing] = useState<HubFilter | null>(null);
   const [naming, setNaming] = useState<string | null>(null); // adding one that isn't listed, by name
+  const locked = lockedHere(ctx);
   const row = (a: Account, on: boolean) => (
     <GroupRow key={a.id} testId={`account-${a.id}`} style={vt(`acct-${a.id.replace(/[^A-Za-z0-9_-]/g, '-')}`)}
       icon={<SourceIcon id={a.id} group="web" size={26} name={a.name} />}
       title={<>{a.name}{a.tag && <span className="tag">{a.tag}</span>}</>} subtitle={a.subtitle}
       trailing={on
-        ? <Button size="small" onClick={() => move(a.id, false)} testAction="remove-account" ariaLabel={`Remove ${a.name}`}>Remove</Button>
-        : <Button size="small" onClick={() => move(a.id, true)} testAction="add-account" ariaLabel={`Add ${a.name}`}>Add</Button>} />
+        ? <Button size="small" onClick={() => move(a.id, false)} testAction="remove-account" ariaLabel={`Remove ${a.name}`} disabled={locked} title={lockTitle(locked)}>Remove</Button>
+        : <Button size="small" onClick={() => move(a.id, true)} testAction="add-account" ariaLabel={`Add ${a.name}`} disabled={locked} title={lockTitle(locked)}>Add</Button>} />
   );
   return (
     <>
@@ -513,6 +558,7 @@ function AccountsPage({ ctx }: { ctx: Ctx }) {
       <div className="group-box" data-testid="accounts" style={vt('acct-mine')}>
         {mine.length ? mine.map((a) => row(a, true)) : <div className="grow"><div className="grow-main"><div className="grow-sub">None yet: add the ones you use from below.</div></div></div>}
       </div>
+      {locked && <div className="note" data-testid="accounts-locked"><Glyph name="info" size={13} /><span>{READ_ONLY_NOTE}</span></div>}
       {rec.length > 0 && (
         <div style={vt('acct-rec')}>
           <h3 className="page-sub">Recommended</h3>
@@ -543,11 +589,14 @@ function exportsList(ctx: Ctx): PageSpec {
   const left = ids.filter((x) => !exportHandled(ctx.v(x)));
   // The ones Claude can ask for (shared/request_all.ts): with any, that's the way in, and one by one the other.
   const plan = requestPlan(ctx.snap.sources);
-  const claude = [...plan.claude, ...plan.signIn].filter((v) => ids.includes(v.id));
+  // Do It for Me said no to: one by one, yourself (it's still on each page, and in AI Settings).
+  const claude = ctx.snap.settings.agentExports === false || ctx.snap.setup?.agent?.fix === 'provider' ? [] : [...plan.claude, ...plan.signIn].filter((v) => ids.includes(v.id));
   const after = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, ids[ids.length - 1], new Set(ids)));
   return {
     primary: left.length ? { label: `${claude.length ? 'One by One: ' : 'Start with '}${ctx.v(left[0]).name}`, onClick: () => ctx.jump(`export:${left[0]}`), quiet: claude.length > 0 }
       : { label: 'Continue', onClick: () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources)) },
+    // The rest can wait: they stay in To Do, not started, and the setup goes on.
+    secondary: left.length ? <Button onClick={after} testAction="exports-later">Do the Rest Later</Button> : undefined,
     body: (
       <>
         <Hero icon={<GlyphTile glyph="tray" color="blue" size={64} />} title="Ask for your data">
@@ -597,7 +646,7 @@ function AskAllBox({ ctx, n, onAsked }: { ctx: Ctx; n: number; onAsked: () => vo
 // How the app hears that an export is ready, and the one setting that helps: the iPhone's notifications on this Mac.
 function ReadyNotice({ ctx }: { ctx: Ctx }) {
   const n = ctx.snap.sources.find((x) => x.id === 'iphone_notifications');
-  if (!n || n.section === 'unavailable') return null;
+  if (!n || n.section === 'unavailable' || ctx.snap.settings.notificationChecks === false) return null;
   return (
     <>
       <h3 className="page-sub">Knowing when it's ready</h3>
@@ -624,7 +673,8 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
   const onward = () => ctx.jump(nextExportStep(ctx.steps, ctx.snap.sources, id, ctx.seen));
   const markAndNext = () => void api.action(id, 'mark-requested').then(() => ctx.confirmed(id, onward));
   // Claude can ask for it: that's the footer's button (it works on while you go on), and saying you did is in the page.
-  const agent = !asked && view.actions.find((a) => a.id === 'agent-request');
+  // Not when it was said no to, or isn't there yet with the AI picked: then the page leads with doing it yourself.
+  const agent = !asked && ctx.snap.settings.agentExports !== false && ctx.snap.setup?.agent?.fix !== 'provider' && view.actions.find((a) => a.id === 'agent-request');
   // Saying you asked for it is the footer's button while that's the next thing to say (not yet asked, or asked for a
   // new one after the link ran out); otherwise the footer just moves on, quietly when the page has its own next step.
   const mark = view.actions.find((a) => a.id === 'mark-requested');
@@ -651,7 +701,7 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
           {view.section === 'working' && !view.waiting && !view.needsYou && <ProgressBar value={view.progress} small />}
         </div>
       </div>
-      {view.section !== 'done' && <ExportActions ctx={ctx} view={view} skip={['skip', ...(agent ? ['agent-request'] : sayAsked ? ['mark-requested'] : [])]} />}
+      {view.section !== 'done' && <ExportActions ctx={ctx} view={view} skip={['skip', ...(agent ? ['agent-request'] : sayAsked ? ['mark-requested'] : [])]} onMark={markAndNext} />}
     </div>
   );
   return {
@@ -660,8 +710,9 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
       <>
         <Hero icon={<SourceIcon id={id} size={64} />} title={`Request your ${view.name} data`}>{view.blurb}</Hero>
         <div style={{ marginTop: 22 }}>{statusBox}</div>
-        {view.section !== 'done' && !view.actions.some((a) => a.id === 'import-found') && <div className="group-footer">When the download lands in Downloads, the app takes it from there: this page turns green.</div>}
-        {view.steps && view.section !== 'done' && <Group title="Steps"><Steps view={view} /></Group>}
+        {view.section !== 'done' && !view.actions.some((a) => a.id === 'import-found') && <div className="group-footer">{ctx.snap.settings.watchDownloads
+          ? 'When the download lands in Downloads, the app takes it from there: this page turns green.' : 'When it\'s downloaded, drop it on this window: this page turns green.'}</div>}
+        {view.steps && view.section !== 'done' && <Group title="Steps"><Steps view={view} locked={lockedHere(ctx)} /></Group>}
         {view.notes && view.notes.length > 0 && <div style={{ marginTop: 12 }}>{view.notes.map((n, k) => <div key={k} className="note"><Glyph name="info" size={13} /><span>{n}</span></div>)}</div>}
       </>
     ),
@@ -670,15 +721,26 @@ function exportPage(ctx: Ctx, id: string): PageSpec {
 
 // An export page's buttons: whatever its state offers (import what's in Downloads, try again, include it again, answer
 // Claude...), apart from the ones in the footer. Pages open in the person's own browser, signed in already.
-function ExportActions({ ctx, view, skip }: { ctx: Ctx; view: SourceView; skip: string[] }) {
+// onMark: saying you've requested it, as the footer's button does (a checkmark for a beat, then on).
+function ExportActions({ ctx, view, skip, onMark }: { ctx: Ctx; view: SourceView; skip: string[]; onMark?: () => void }) {
   const [reply, setReply] = useState('');
   const [form, setForm] = useState<Action | null>(null);
   const [confirm, setConfirm] = useState<Action | null>(null);
+  const [gate, setGate] = useState<{ g: Exclude<Gate, null>; go: () => void } | null>(null);
   const id = view.id;
   const src = BY_ID[id];
+  // Answering Claude, or carrying on: through the same gate as Do It for Me (the AI picked, Anthropic's data settings).
+  const carryOn = (aid: string) => {
+    const go = () => void api.action(id, aid, { reply });
+    const g = agentGate(ctx.snap);
+    if (g) setGate({ g, go });
+    else go();
+    setReply('');
+  };
   const run = (a: Action, payload?: unknown) => {
     if (a.confirm && !confirm) return setConfirm(a);
     if (a.input === 'skip-reason' && payload === undefined) return setForm(a);
+    if (a.id === 'mark-requested' && onMark) return onMark();
     void api.action(id, a.id, payload);
   };
   const label = (a: Action) => (a.id === 'open' && a.label === 'Open the Export Page' ? `Open ${view.name} in ${ctx.snap.defaultBrowser}`
@@ -694,17 +756,18 @@ function ExportActions({ ctx, view, skip }: { ctx: Ctx; view: SourceView; skip: 
       {answering && (
         <div className="agent-reply">
           <input type="text" value={reply} onChange={(e) => setReply(e.target.value)} placeholder={`Answer Claude here, or leave it empty once you've done it in ${ctx.snap.setup?.agentBrowser?.name ?? 'Chrome'}`}
-            onKeyDown={(e) => e.key === 'Enter' && (void api.action(id, 'agent-continue', { reply }), setReply(''))} data-testid="agent-reply" disabled={off('agent-continue')} />
+            onKeyDown={(e) => e.key === 'Enter' && carryOn('agent-continue')} data-testid="agent-reply" disabled={off('agent-continue')} />
         </div>
       )}
       <div className="actions" data-testid="export-actions">
         {acts.map((a) => (a.input === 'reply'
-          ? <Button key={a.id} kind={a.primary ? 'primary' : 'default'} ai={a.ai} disabled={off(a.id)} onClick={() => { void api.action(id, a.id, { reply }); setReply(''); }} testAction={a.id}>{a.label}</Button>
+          ? <Button key={a.id} kind={a.primary ? 'primary' : 'default'} ai={a.ai} disabled={off(a.id)} onClick={() => carryOn(a.id)} testAction={a.id}>{a.label}</Button>
           : a.id === 'open-inbox' ? <InboxButton key={a.id} view={view} action={a} />
           : a.id.startsWith('agent-') ? <AgentButton key={a.id} snap={ctx.snap} id={id} action={a} />
             : <Button key={a.id} kind={a.primary ? 'primary' : 'default'} disabled={off(a.id)} title={off(a.id) ? READ_ONLY_NOTE : undefined} onClick={() => run(a)} testAction={a.id}>{label(a)}</Button>))}
       </div>
       {form && <SkipForm view={view} action={form} onSubmit={(reason) => { run(form, { reason }); setForm(null); }} onCancel={() => setForm(null)} />}
+      {gate && <AgentGateSheet snap={ctx.snap} gate={gate.g} onClose={() => setGate(null)} onOk={() => { const x = gate; setGate(null); x.go(); }} />}
       {confirm && (
         <Sheet onClose={() => setConfirm(null)} testId="confirm">
           <h2>{confirm.label}?</h2>
@@ -779,7 +842,7 @@ function notifications(ctx: Ctx): PageSpec {
           Homecoming tells you when an export is ready, when one lands in Downloads, and when Claude needs you to sign in or confirm it's you. macOS asks once whether to allow them.
         </Hero>
         <NotificationsBox snap={ctx.snap} />
-        <div className="note"><Glyph name="info" size={13} /><span>Alerts stay on screen until you look; banners go after a few seconds. Settings → Notifications in Homecoming checks them again any time.</span></div>
+        <div className="note"><Glyph name="info" size={13} /><span>Alerts stay on screen until you look; banners go after a few seconds. General → Notifications in Homecoming checks them again any time.</span></div>
       </>
     ),
   };
@@ -812,16 +875,24 @@ function done(ctx: Ctx): PageSpec {
   const free = ctx.snap.sources.filter((v) => !v.blockedBy && !v.optional);
   const needs = free.filter((v) => v.needsYou);
   const todo = free.filter((v) => !v.needsYou && v.section === 'todo');
-  const left = [...needs, ...todo];
+  // Sources not started are in To Do; the checks left, in Setup Checks (and who you are, in Your Setup).
+  const notStarted = todo.filter((v) => v.group !== 'setup');
+  const checks = todo.filter((v) => v.group === 'setup' && v.id !== 'identity');
+  // Set aside with Not now: not done either, so it isn't "all set".
+  const aside = ctx.snap.sources.filter((v) => v.deferred);
+  const left = [...needs, ...todo, ...aside];
   return {
     primary: { label: 'Open Overview', onClick: () => ctx.onFinish() },
     wide: false,
     body: (
       <>
         <Hero icon={<Checkmark size={72} />} title={left.length ? 'That\'s the setup done' : 'You\'re all set for now'}>
-          The app keeps going on its own: it reads this Mac every day, imports each export as it lands in Downloads, and lets you know when one should be ready.
+          {`The app keeps going on its own: it ${and([ctx.snap.settings.autoRefresh ? 'reads this Mac every day' : '', ctx.snap.settings.watchDownloads ? 'imports each export as it lands in Downloads' : '',
+            'lets you know when one should be ready'].filter(Boolean))}.`}
           {needs.length ? ` ${needs.length === 1 ? 'One thing needs' : `${needs.length} things need`} you: they're at the top of To Do.` : ''}
-          {todo.length ? ` ${todo.length === 1 ? 'One source hasn\'t' : `${todo.length} sources haven't`} started yet: ${todo.length === 1 ? 'it\'s' : 'they\'re'} in To Do.` : ''}
+          {notStarted.length ? ` ${notStarted.length === 1 ? 'One source hasn\'t' : `${notStarted.length} sources haven't`} started yet: ${notStarted.length === 1 ? 'it\'s' : 'they\'re'} in To Do.` : ''}
+          {aside.length ? ` ${aside.length === 1 ? 'One is' : `${aside.length} are`} set aside for now, under Optional in To Do.` : ''}
+          {checks.length ? ` ${checks.length === 1 ? 'One check is' : `${checks.length} checks are`} left in Setup Checks.` : ''}
         </Hero>
         <Group title={`${Math.round(prog.percent * 100)}% collected · ${prog.collected} of ${prog.applicable} sources`}><Timeline phases={prog.phases} /></Group>
         {([['Needs you', needs, 'done-needs'], ['Still to do', todo, 'done-todo']] as const).filter(([, rows]) => rows.length).map(([title, rows, id]) => (

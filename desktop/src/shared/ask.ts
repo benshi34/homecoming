@@ -21,9 +21,15 @@ export const PROVIDERS: ProviderInfo[] = [
   { id: 'anthropic', harness: 'claude-code', name: 'Claude Code', auth: 'An Anthropic API key', short: 'API key', cloud: true, needsKey: 'anthropic', models: CLAUDE_MODELS },
   { id: 'codex', harness: 'codex', name: 'Codex', auth: 'Your ChatGPT account', short: 'ChatGPT account', cloud: true, models: ['default'] },
   { id: 'openai', harness: 'codex', name: 'Codex', auth: 'An OpenAI API key', short: 'API key', cloud: true, needsKey: 'openai', models: ['default'] },
-  { id: 'local', harness: 'codex', name: 'Codex', auth: 'A model on this Mac', short: 'local model', cloud: false, models: ['default'] },
+  // Codex only as the harness (the free CLI that runs the lookups): the model is the one on this Mac, no OpenAI account.
+  { id: 'local', harness: 'codex', name: 'Codex harness', auth: 'A model on this Mac', short: 'local model', cloud: false, models: ['default'] },
 ];
 export const PROVIDER = Object.fromEntries(PROVIDERS.map((p) => [p.id, p])) as Record<AskProvider, ProviderInfo>;
+// "Codex (your ChatGPT account)", "Claude Code (an Anthropic API key)": the AI picked, in a sentence.
+export const providerLabel = (id: string) => {
+  const p = PROVIDER[id as AskProvider];
+  return p ? `${p.name} (${p.auth.charAt(0).toLowerCase()}${p.auth.slice(1)})` : 'the AI picked';
+};
 
 // Local model servers Codex can use (codex --oss): Ollama or LM Studio, with their usual addresses.
 export const LOCAL_SERVERS = {
@@ -53,7 +59,8 @@ export function hostOf(url: string): string {
 
 // Whether something answers at the local model's address (main/ask.ts checks it, on this Mac only). up is null until
 // it's been checked.
-export interface LocalStatus { url: string; up: boolean | null; at: string }
+// models: the ones the server says it has (its /models), when it answered.
+export interface LocalStatus { url: string; up: boolean | null; at: string; models?: string[] }
 
 // Where to get what an agent needs, opened in the person's browser.
 export const LINKS = {
@@ -72,7 +79,7 @@ export const RETENTION: Partial<Record<AskProvider, Retention>> = {
     short: 'Make sure "Help improve Claude" is off in claude.ai → Settings → Privacy, so your data isn\'t used for training or kept for years.',
     done: '"Help improve Claude" is off.',
     detail: [
-      'Questions, and the records and photos the assistant looks at to answer them, go to Anthropic under your claude.ai plan.',
+      'Questions, and the records and photos the assistant looks at to answer them, go to Anthropic under your claude.ai plan, as do the pages Claude works on in your browser for Do It for Me.',
       'In claude.ai, open Settings → Privacy and turn off "Help improve Claude". Off, your chats aren\'t used to train models and are kept 30 days. On, they can be used for training and kept up to 5 years.',
       'Rating an answer with thumbs up or down keeps that conversation longer, whatever the setting.',
     ],
@@ -154,7 +161,8 @@ export type AgentNeed =
   | { kind: 'sign-in'; harness: 'claude-code' | 'codex' }
   | { kind: 'key'; key: 'anthropic' | 'openai' }
   | { kind: 'local'; url: string; server: LocalServer } // nothing answers there
-  | { kind: 'local-address'; url: string }; // not an address on this Mac
+  | { kind: 'local-address'; url: string } // not an address on this Mac
+  | { kind: 'local-model'; server: LocalServer; models: string[] }; // no model picked that the server has
 
 export function agentNeed(v: AgentState, p: AskProvider = v.settings.provider): AgentNeed | null {
   const info = PROVIDER[p];
@@ -167,6 +175,11 @@ export function agentNeed(v: AgentState, p: AskProvider = v.settings.provider): 
     const url = v.settings.localUrl;
     if (!isLocalAddress(url)) return { kind: 'local-address', url };
     if (v.local?.url === url && v.local.up === false) return { kind: 'local', url, server: v.settings.localServer };
+    // One it has, picked: with none ("default"), or one it doesn't have, Codex downloads its own (gpt-oss, ~13 GB).
+    const m = v.settings.models.local;
+    if (v.local?.url === url && v.local.up && v.local.models && (!m || m === 'default' || !v.local.models.includes(m))) {
+      return { kind: 'local-model', server: v.settings.localServer, models: v.local.models };
+    }
   }
   return null;
 }
@@ -180,6 +193,9 @@ export function needText(n: AgentNeed): string {
     case 'key': return n.key === 'anthropic' ? 'Claude Code needs your Anthropic API key to answer.' : 'Codex needs your OpenAI API key to answer.';
     case 'local': return `Nothing is answering at ${hostOf(n.url)}. Open ${LOCAL_SERVERS[n.server]?.name ?? 'the model server'}, then try again.`;
     case 'local-address': return `${hostOf(n.url)} isn't on this Mac. Use the address your model server shows, like ${LOCAL_SERVERS.ollama.url}.`;
+    case 'local-model': return n.models.length
+      ? `Pick one of the models ${LOCAL_SERVERS[n.server]?.name ?? 'your model server'} has (${n.models.slice(0, 4).join(', ')}${n.models.length > 4 ? '…' : ''}). With none picked, Codex would download its own, about 13 GB.`
+      : `${LOCAL_SERVERS[n.server]?.name ?? 'Your model server'} has no models yet. Download one there (gpt-oss works best), then pick it.`;
   }
 }
 
@@ -199,6 +215,21 @@ export function explainError(provider: AskProvider, raw: string, opts: { localUr
   const r = raw || '';
   const server = LOCAL_SERVERS[opts.localServer ?? 'ollama']?.name ?? 'the model server';
   if (/isn't on this Mac/i.test(r)) return { text: r.split('\n')[0], fix: 'install' };
+  // What the app itself said, already in plain words.
+  if (/^Pick one of the models/.test(r)) return { text: r.split('\n')[0], fix: 'model' };
+  if (/^(The app's lookup tools didn't start|It took more steps than an answer gets)/.test(r)) return { text: r.split('\n')[0] };
+  // A model on this Mac's own troubles: no tools, the server too old for Codex, or the question not fitting.
+  if (provider === 'local' && /does not support tools|doesn't support tools|tools? (is|are) not supported|no tool support/i.test(r)) {
+    return { text: `${opts.model && opts.model !== 'default' ? `“${opts.model}”` : 'That model'} can't use tools, so it can't look anything up. Pick one that can, like gpt-oss, under AI Settings.`, fix: 'model' };
+  }
+  if (provider === 'local' && (/is too old|requires (ollama|lm studio)|update (ollama|lm studio)|minimum version/i.test(r) || (/\b404\b/.test(r) && /responses/i.test(r)))) {
+    return { text: `${server} is too old for Codex. Update it, then try again.`, fix: 'local' };
+  }
+  if (/context (length|window)|maximum context|num_ctx|prompt is too long|too many tokens|input is too long/i.test(r)) {
+    return provider === 'local'
+      ? { text: `The question and Codex's instructions don't fit in what ${server} keeps of a conversation. Raise its context length (64k or more) in ${server}'s settings, then try again.`, fix: 'local' }
+      : { text: 'That was too much for one answer. Start a new conversation, or ask about less at once.' };
+  }
   if (/^Add your .* API key first/i.test(r)) return { text: r.split('\n')[0], fix: 'key' };
   if (provider === 'local' && /ECONNREFUSED|connection refused|error sending request|failed to connect|couldn't connect|connect error|tcp connect|os error 61|no running|not running|ollama serve|is it running|unreachable/i.test(r)) {
     return { text: `Nothing is answering at ${hostOf(opts.localUrl ?? LOCAL_SERVERS.ollama.url)}. Open ${server}, then try again.`, fix: 'local' };
@@ -305,7 +336,7 @@ export function describeTool(name: string, input: unknown): string {
     case 'sql': return line(a.query);
     case 'search': {
       const filters = ['source', 'kind', 'thread', 'author', 'after', 'before'].filter((k) => a[k]).map((k) => `${k} ${line(a[k])}`);
-      return [`"${line(a.query)}"`, ...filters].join(' · ');
+      return [line(a.query) ? `"${line(a.query)}"` : 'by time', ...filters].join(' · '); // no words: records by time
     }
     case 'python': return String(a.code ?? '').split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) ?? '';
     case 'read_file':

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
-import { act, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, snap, until } from './harness.ts';
+import { act, confirmClaude, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, snap, until } from './harness.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -35,13 +35,15 @@ after(async () => {
 test('Claude looks for it, finds it not ready, looks again, then downloads it', async () => {
   const p = run.page;
   await p.evaluate(() => (window as unknown as { api: { settings(x: object): Promise<unknown> } }).api.settings({ aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true, agentDownloads: true })); // as its sheet does
+  await confirmClaude(p);
   await act(p, 'discord', 'mark-requested');
   let s = await until(p, 'looked', (x) => (find(x, 'discord').notes ?? []).some((n) => /Claude looked for it .*not ready yet/.test(n)), 20_000);
   assert.equal(find(s, 'discord').section, 'working', 'still on its way');
   const look = runs().find((r) => r.mode === 'download');
   assert.match(look.prompt, /search for mail from discord\.com or discordapp\.com since/);
   assert.match(look.prompt, /Their addresses: ada@example\.com/, 'which inboxes are theirs');
-  assert.match(look.prompt, /every account signed in to Chrome/);
+  assert.match(look.prompt, /look in the accounts of those addresses signed in to Chrome, one after another in the same tab/);
+  assert.match(look.prompt, /- Use one tab: the one you open first/, "one tab, closed at the end");
   assert.equal(runs().filter((r) => r.mode === 'download').length, 1, 'once, then it waits');
   s = await until(p, 'downloading', (x) => find(x, 'discord').status === 'Downloading in Chrome', 20_000);
   assert.equal(runs().filter((r) => r.mode === 'download').length, 2);
@@ -70,6 +72,7 @@ test('a look you stop, or take over from, isn\'t started again on the next tick;
   try {
     const p = r2.page;
     await until(p, 'first probe', (x) => !!x.probeTime);
+    await confirmClaude(p);
     await p.evaluate(() => (window as unknown as { api: { settings(x: object): Promise<unknown> } }).api.settings({ aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true, agentDownloads: true }));
     await act(p, 'x', 'mark-requested');
     // The first look, stopped part way: the page says it's waiting again, and no look starts on the next ticks.

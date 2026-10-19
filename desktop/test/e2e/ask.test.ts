@@ -63,7 +63,7 @@ test('Ask starts empty, and says the default (Claude Code) needs its data settin
   await look('ask-ai-agreement');
   await p.locator('button[data-action=ai-on]').click();
   await p.locator('[data-testid=ask-empty]').waitFor();
-  assert.match(await p.locator('[data-testid=ask-privacy]').innerText(), /check that it won't be kept/);
+  assert.match(await p.locator('[data-testid=ask-privacy]').innerText(), /check how long it's kept, and that it isn't used for training/);
   await shot(p, 'ask-empty');
 });
 
@@ -73,8 +73,13 @@ test('Codex on a local model answers with no confirmation, shows its lookups, an
   const sheet = p.locator('[data-testid=ask-provider-sheet]');
   assert.equal(await sheet.locator('h2').innerText(), 'Who does the work', 'the same name as on AI Settings');
   await p.locator('[data-testid=provider-local]').click();
+  // Everything AI does uses it: Do It for Me isn't there with Codex yet, and it says so.
+  await p.locator('[data-testid=agent-not-yet]', { hasText: /doesn't work with Codex harness \(a model on this Mac\) yet: it's coming soon/ }).waitFor();
+  await p.locator('[data-testid=agent-not-yet] button[data-action=agent-not-yet-ok]').click();
   // What it needs is right under it: the server, its address, whether it answers, and the model.
   const detail = sheet.locator('[data-testid=provider-detail]');
+  // Codex only as the harness: said so, with no account.
+  assert.match(await sheet.locator('[data-testid=local-harness-note]').innerText(), /^Codex is only the harness here: it runs the lookups, and the model answering is the one in .* on this Mac\. No ChatGPT account or OpenAI key is used, and nothing leaves this Mac\.$/);
   await p.locator('[data-testid=ask-local-server]').selectOption('lmstudio');
   await p.waitForFunction(() => (document.querySelector('[data-testid=ask-local-url]') as HTMLInputElement | null)?.value.includes(':1234'));
   assert.equal((await askState()).settings.localUrl, 'http://localhost:1234/v1', 'its usual address');
@@ -87,7 +92,9 @@ test('Codex on a local model answers with no confirmation, shows its lookups, an
   await p.locator('[data-testid=ask-local-url]').press('Enter');
   await p.locator('[data-testid=ask-local-status]', { hasText: 'LM Studio is answering here.' }).waitFor();
   await p.locator('[data-testid=provider-local]', { hasText: /LM Studio is running at 127\.0\.0\.1:\d+/ }).waitFor();
-  assert.equal(await p.locator('[data-testid=ask-model]').getAttribute('placeholder'), 'default (Codex chooses)', 'empty is the default, and says so');
+  // One it has, picked: with none, Codex would download its own (gpt-oss, ~13 GB), so the box waits for one.
+  assert.equal(await p.locator('[data-testid=ask-model]').getAttribute('placeholder'), 'Pick one LM Studio has');
+  await p.locator('[data-testid=agent-need]', { hasText: /Pick one of the models LM Studio has \((qwen-test|gpt-oss:20b), (qwen-test|gpt-oss:20b)\)\. With none picked, Codex would download its own/ }).waitFor();
   await p.locator('[data-testid=ask-model]').fill('qwen-test');
   await look('ask-provider-sheet');
   await p.locator('[data-testid=ask-provider-sheet] button', { hasText: 'Done' }).click();
@@ -97,7 +104,7 @@ test('Codex on a local model answers with no confirmation, shows its lookups, an
   assert.equal(s.settings.localUrl, `${models.url}/v1`);
   assert.equal(s.settings.models.local, 'qwen-test');
   assert.match(await p.locator('[data-testid=ask-privacy]').innerText(), /nothing leaves it/);
-  assert.match(await p.locator('[data-testid=ask-provider]').innerText(), /Codex\s*local model · qwen-test/);
+  assert.match(await p.locator('[data-testid=ask-provider]').innerText(), /Codex harness\s*local model · qwen-test/);
 
   plan('codex', { notes: false, steps: [{ tool: 'search', input: { query: 'dinner', source: 'imessage' } }],
     answer: `## Dinner\nYou had dinner with **Grace** at Tasca.\n\n**How I know**\n- She asked about it [in your chat](record:${dinner}).` });
@@ -113,7 +120,7 @@ test('Codex on a local model answers with no confirmation, shows its lookups, an
   assert.match(await p.locator('[data-testid=ask-lookup]').first().innerText(), /Search\s+"dinner" · source imessage/);
   await p.locator('.lookup-row').first().click();
   assert.match(await p.locator('.lookup-detail').innerText(), /Tasca/);
-  assert.match(await p.locator('.turn-meta').innerText(), /Codex \(local model\) · qwen-test/);
+  assert.match(await p.locator('.turn-meta').innerText(), /Codex harness \(local model\) · qwen-test/);
   await look('ask-answer');
 
   await p.locator('[data-testid=ask-cite]').click();
@@ -176,7 +183,7 @@ test('Claude Code with an API key waits for its data settings to be confirmed, t
   await p.locator('[data-testid=ask-send]').click();
   const sheet = p.locator('[data-testid=ask-retention]');
   await sheet.waitFor();
-  assert.match(await sheet.innerText(), /Make sure Anthropic doesn't keep your data/);
+  assert.match(await sheet.innerText(), /Check what Anthropic keeps/);
   assert.match(await sheet.innerText(), /deletes API requests and responses within 30 days/);
   const go = sheet.locator('button[data-action=confirm-retention]');
   assert.equal(await go.isDisabled(), true);
@@ -212,11 +219,45 @@ test('stopping an answer', async () => {
   assert.equal(await p.locator('[data-testid=ask-turn]').nth(1).locator('[data-action=ask-retry]', { hasText: 'Try Again' }).count(), 1);
 });
 
+test('lookups an agent gets wrong come back in plain words, through Claude Code\'s tools, and the answer still comes', async () => {
+  const p = run.page;
+  plan('claude', { notes: false, answer: 'Nothing like that.', steps: [
+    { tool: 'search', input: { query: '"dinner' } },
+    { tool: 'search', input: { query: 'dinner', after: 'last week' } },
+    { tool: 'search', input: { query: 'dinner', source: 'nosuchapp' } },
+    { tool: 'search', input: { after: '2026-04-01', before: '2026-01-01' } },
+    { tool: 'sql', input: 'select 1' },
+    { tool: 'sql', input: { query: "attach 'x.db' as x" } },
+  ] });
+  await p.locator('[data-testid=ask-input]').fill('Anything odd?');
+  await p.locator('[data-testid=ask-send]').click();
+  await p.locator('[data-testid=ask-answer]', { hasText: 'Nothing like that.' }).waitFor({ timeout: 60_000 });
+  const turn = p.locator('[data-testid=ask-turn]').last();
+  await turn.locator('.lookups-head').click();
+  const lookups = turn.locator('[data-testid=ask-lookup]');
+  assert.equal(await lookups.count(), 6);
+  const said: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    await lookups.nth(i).locator('.lookup-row').click();
+    said.push(await lookups.nth(i).locator('.lookup-detail .out').innerText());
+  }
+  assert.match(said[0], /^Search error: unterminated string/);
+  assert.match(said[1], /after isn't a date or time: write it like 2024-05-01/);
+  assert.match(said[2], /there's no source nosuchapp\. The library's sources: calendar, documents, imessage, photos/);
+  assert.match(said[3], /isn't before before/);
+  assert.match(said[4], /sql needs an object of arguments/);
+  assert.match(said[5], /not authorized/);
+  for (const s of said) assert.doesNotMatch(s, /Traceback|File "/, 'never a traceback');
+  assert.match(await lookups.nth(3).locator('.lookup-what').innerText(), /^by time · after 2026-04-01/, 'a search with no words, said plainly');
+  assert.equal(await lookups.locator('.lookup-time', { hasText: 'failed' }).count(), 5, 'all but the search that found nothing, and said why');
+});
+
 test('without its key, the box says so and fixes it in place, and nothing is sent', async () => {
   const p = run.page;
   await p.locator('[data-testid=ask-new]').click();
   await p.locator('[data-testid=ask-provider]').click();
   await p.locator('[data-testid=provider-openai]').click();
+  await p.locator('[data-testid=agent-not-yet] button[data-action=agent-not-yet-ok]').click();
   // Picked: its key field, right under it, with where to get one; focused to paste into.
   const sheet = p.locator('[data-testid=ask-provider-sheet]');
   await sheet.locator('[data-testid=provider-openai]', { hasText: 'Needs a key' }).waitFor();

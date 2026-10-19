@@ -55,7 +55,7 @@ export const PHONE_SOURCES: Record<string, [string, PhoneGroup]> = {
 
   health: ['Health by day: activity totals and sleep', H],
   health_samples: ['Health readings: steps, distance, energy, heart rate and more', H],
-  phone_health: ['Health achievements and awards', H],
+  phone_health: ['Health workouts, achievements and awards', H],
 
   phone_netflix: ['Netflix: what you watched, profiles and settings', W],
   phone_spotify: ['Spotify account', W],

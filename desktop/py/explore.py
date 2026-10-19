@@ -56,13 +56,13 @@ DB = CORPUS / "corpus.db"
 CACHE = Path(os.environ.get("UMP_EXPLORE_CACHE") or Path(tempfile.gettempdir()) / "ump-explore")
 VERSION = 2  # bump when an artifact's shape changes, so old cached results aren't served
 
-CHATS = ("imessage", "instagram", "messenger", "discord", "phone_whatsapp")
+CHATS = ("imessage", "instagram", "messenger", "discord", "phone_whatsapp", "whatsapp")
 ONE_SIDED = {"discord"}  # exports that keep only your own messages
 SEARCHES = (("google_activity", "search"), ("browser_history", "search"), ("chrome_synced", "search"))
 VISITS = (("browser_history", "visit"), ("chrome_synced", "visit"), ("google_activity", "visit"))
 APP_NAMES = {"imessage": "Messages", "instagram": "Instagram", "messenger": "Messenger", "discord": "Discord",
-             "phone_whatsapp": "WhatsApp", "calls": "Calls", "gmail": "Gmail", "hotmail": "Outlook", "mail": "Mail", "x": "X",
-             "reddit": "Reddit", "linkedin": "LinkedIn", "tiktok": "TikTok", "spotify": "Spotify", "chatgpt": "ChatGPT",
+             "phone_whatsapp": "WhatsApp", "whatsapp": "WhatsApp", "calls": "Calls", "gmail": "Gmail", "hotmail": "Outlook",
+             "mail": "Mail", "x": "X", "reddit": "Reddit", "linkedin": "LinkedIn", "tiktok": "TikTok", "spotify": "Spotify", "chatgpt": "ChatGPT",
              "claude_ai": "Claude", "google_chat": "Google Chat", "notion": "Notion", "photos": "Photos",
              "git_commits": "Git", "phone_venmo": "Venmo", "phone_splitwise": "Splitwise", "phone_uberclient": "Uber",
              "phone_airbnb": "Airbnb", "phone_united_airlines": "United", "apple_notes": "Notes", "calendar": "Calendar",
@@ -100,9 +100,17 @@ def zone_of(tz):
         return None
 
 
+# A time before 1990 or after tomorrow, or the very first second of Apple's clock, is a clock or a conversion gone
+# wrong (a missing time read as 0: 1970, 2001; a date years ahead), not when something happened: it counts as no
+# time at all, as it does for the years Your Year offers and the days On This Day looks at.
+FIRST_YEAR = 1990
+LATEST = datetime.now(timezone.utc) + timedelta(days=1)
+APPLE_ZERO = datetime(2001, 1, 1, tzinfo=timezone.utc)
+
+
 def parse(ts, tz=None):
     """An ISO time from the corpus as a local datetime (UTC when it has no zone), in the record's own zone when it
-    has one, else this Mac's; or None."""
+    has one, else this Mac's; or None (no time, or one that can't be right)."""
     if not ts:
         return None
     try:
@@ -111,7 +119,44 @@ def parse(ts, tz=None):
         return None
     if t.tzinfo is None:
         t = t.replace(tzinfo=timezone.utc)
-    return t.astimezone(zone_of(tz) or TZ)
+    if t.year < FIRST_YEAR or t > LATEST or t == APPLE_ZERO:
+        return None
+    try:
+        return t.astimezone(zone_of(tz) or TZ)
+    except (OverflowError, ValueError):
+        return None
+
+
+def num(v):
+    """A number from what a record holds (12, 12.5, "12.5"); 0 when it isn't one."""
+    if isinstance(v, bool):
+        return 0.0
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) else 0.0
+
+
+def steps_of(meta):
+    """A Health day's steps (0 when it says none, or something that isn't a count)."""
+    return max(0.0, num(meta_of(meta).get("steps")))
+
+
+def local_date(ts):
+    """The day a record's time was here (this Mac's time zone), or None."""
+    t = parse(ts)
+    return t.date() if t else None
+
+
+def day_of(ts):
+    """A whole day's record (Health's, at midnight without a zone) as its date; None when it has none that can be
+    right."""
+    try:
+        d = date.fromisoformat(str(ts)[:10])
+    except (TypeError, ValueError):
+        return None
+    return d if FIRST_YEAR <= d.year and d <= LATEST.date() and d != APPLE_ZERO.date() else None
 
 
 class Progress:
@@ -179,11 +224,14 @@ def connect():
 
 
 def me_names():
+    """You, by every name you go by (loosely, as key() compares them); and "me" and "you", which is how some exports
+    write you."""
     try:
         d = json.loads((CORPUS / "identity.json").read_text())
     except (OSError, ValueError):
-        return set()
-    return {key(n) for n in d.get("names", []) + d.get("usernames", []) if n}
+        d = {}
+    d = d if isinstance(d, dict) else {}
+    return {key(n) for n in (d.get("names") or []) + (d.get("usernames") or []) if n and key(n)} | {"me", "you"}
 
 
 def key(name):
@@ -192,10 +240,12 @@ def key(name):
 
 
 def meta_of(m):
+    """A record's meta as a dict: {} when it has none, or it isn't one (a list, a string, something cut off)."""
     try:
-        return json.loads(m) if m else {}
-    except ValueError:
+        d = json.loads(m) if m else {}
+    except (ValueError, TypeError):
         return {}
+    return d if isinstance(d, dict) else {}
 
 
 # Country names as Apple's Photos writes them (English), to tell a country from a region, sea or landmark in a
@@ -314,8 +364,10 @@ MESSAGES = f"kind = 'message' and source in ({','.join(repr(s) for s in CHATS)})
 
 
 def message_rows(con, mine, pg=None):
-    """(person key, display name, source, local time, is_me, rowid, thread) for every one-on-one message."""
-    q = f"select rowid, source, ts, is_me, thread, thread_name, participants, meta from records where {MESSAGES}"
+    """(person key, display name, source, local time, is_me, rowid, thread) for every one-on-one message, oldest
+    first (in the database's order: a library's times are UTC, so it's the order they happened, and nothing has to
+    hold every message to sort them)."""
+    q = f"select rowid, source, ts, is_me, thread, thread_name, participants, meta from records where {MESSAGES} order by ts"
     for i, (rowid, source, ts, is_me, thread, thread_name, participants, meta) in enumerate(con.execute(q)):
         if pg:
             pg.tick(i)
@@ -350,7 +402,7 @@ def _people(con, mine, pg):
         return p
 
     pg.step(0, count_where(con, MESSAGES))
-    for k, name, source, t, is_me, rowid, thread in sorted(message_rows(con, mine, pg), key=lambda r: r[3]):
+    for k, name, source, t, is_me, rowid, thread in message_rows(con, mine, pg):
         p = person(k, name)
         p["messages"] += 1
         p["sent"] += is_me
@@ -374,7 +426,7 @@ def _people(con, mine, pg):
             continue
         p = person(k, thread_name)
         p["calls"] += 1
-        p["call_minutes"] += float(meta_of(meta).get("seconds") or 0) / 60
+        p["call_minutes"] += num(meta_of(meta).get("seconds")) / 60
     alias = merge_initials(P)
     # Photos often names people by first name alone ("Ada"): that's the one person you talk to with that first
     # name, when there's only one (of the people you've exchanged ten or more messages with): two Graces, no match.
@@ -471,7 +523,7 @@ def _person(con, mine, k, entry, keys, photo_keys, pg):
             m = meta_of(meta)
             t = parse(ts)
             if t:
-                calls.append({"ts": t.isoformat(), "rowid": rowid, "minutes": round(float(m.get("seconds") or 0) / 60, 1),
+                calls.append({"ts": t.isoformat(), "rowid": rowid, "minutes": round(num(m.get("seconds")) / 60, 1),
                               "type": m.get("type"), "direction": m.get("direction")})
     photos = []
     for rowid, ts, text, meta in con.execute("select rowid, ts, text, meta from records where source = 'photos' and text like '%People:%' order by ts"):
@@ -494,11 +546,15 @@ def _person(con, mine, k, entry, keys, photo_keys, pg):
 def on_this_day(md=None):
     con = connect()
     today = datetime.now(TZ).date()
-    month, day = (int(x) for x in (md or today.strftime("%m-%d")).split("-"))
+    try:
+        month, day = (int(x) for x in (md or today.strftime("%m-%d")).split("-"))
+        date(2000, month, day)
+    except ValueError:
+        return {"error": f"There's no day {md} in the year."}
     mine = me_names()
     merged = merged_names()
     first = con.execute("select min(ts) from records where ts > '1990'").fetchone()[0]
-    start_year = parse(first).year if first else today.year
+    start_year = int(first[:4]) if first and first[:4].isdigit() else today.year
     years = []
     for y in range(today.year, start_year - 1, -1):
         try:
@@ -507,11 +563,14 @@ def on_this_day(md=None):
             continue
         if d > today:
             continue
-        lo = datetime(y, month, day, tzinfo=TZ).astimezone(timezone.utc)
-        hi = lo + timedelta(days=1)
-        rows = con.execute("select rowid, source, kind, ts, is_me, author, thread, thread_name, participants, title, text, meta "
-                           "from records where ts >= ? and ts < ? order by ts",
-                           (lo.strftime("%Y-%m-%dT%H:%M:%S"), hi.strftime("%Y-%m-%dT%H:%M:%S"))).fetchall()
+        # A day either side in UTC, for times written with an offset rather than Z; then only what was on this day
+        # here (a day with a clock change is 23 or 25 hours).
+        lo = datetime(y, month, day, tzinfo=TZ) - timedelta(days=1)
+        hi = datetime(y, month, day, tzinfo=TZ) + timedelta(days=2)
+        rows = [r for r in con.execute("select rowid, source, kind, ts, is_me, author, thread, thread_name, participants, title, text, meta "
+                                       "from records where ts >= ? and ts < ? order by ts",
+                                       (lo.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"), hi.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")))
+                if r[1] != "health" and local_date(r[3]) == d]  # Health's days: by date, below
         if not rows:
             continue
         photos, places, threads, searches, watched, made, events, calls, steps = [], collections.Counter(), {}, [], [], [], [], [], None
@@ -549,7 +608,7 @@ def on_this_day(md=None):
                     watched.append({"title": title[:120], "rowid": rowid})
             elif source == "calls":
                 calls.append({"name": merged.get(key(thread_name), (None, thread_name))[1], "rowid": rowid,
-                              "minutes": round(float(meta_of(meta).get("seconds") or 0) / 60, 1)})
+                              "minutes": round(num(meta_of(meta).get("seconds")) / 60, 1)})
             elif source in ("calendar", "google_calendar") and kind == "event":
                 events.append({"title": (title or "")[:100], "rowid": rowid})
             elif source == "health":
@@ -560,7 +619,7 @@ def on_this_day(md=None):
         # Health days are stored at local midnight without a zone: look them up by date.
         r = con.execute("select meta from records where source = 'health' and kind = 'health_day' and ts like ?", (f"{d.isoformat()}%",)).fetchone()
         if r:
-            steps = int(meta_of(r[0]).get("steps") or 0) or None
+            steps = int(steps_of(r[0])) or None
         top = []
         for t in sorted(threads.values(), key=lambda t: -t["messages"]):
             busiest = t.pop("by_thread").most_common(1)[0][0]
@@ -819,11 +878,10 @@ def _rhythms(con, kinds, pg):
     steps_by_day = [[] for _ in range(7)]
     steps_by_month = collections.defaultdict(list)
     for ts, meta in con.execute("select ts, meta from records where source = 'health' and kind = 'health_day'"):
-        try:
-            d = date.fromisoformat(ts[:10])
-        except (TypeError, ValueError):
+        d = day_of(ts)
+        if not d:
             continue
-        s = float(meta_of(meta).get("steps") or 0)
+        s = steps_of(meta)
         if s:
             steps_by_day[d.weekday()].append(s)
             steps_by_month[d.strftime("%Y-%m")].append(s)
@@ -848,7 +906,7 @@ def _firsts(con, mine, pg):
     pg.step(0)
     talked = {key(p["name"]) for p in cached("people", people)["people"] if p["messages"] >= 20}
     pg.step(0, count_where(con, MESSAGES))
-    for k, who, source, t, is_me, rowid, _ in sorted(message_rows(con, mine, pg), key=lambda r: r[3]):
+    for k, who, source, t, is_me, rowid, _ in message_rows(con, mine, pg):
         if k not in seen:
             seen.add(k)
             items.append({"kind": "person", "what": who, "ts": t.isoformat(), "rowid": rowid, "detail": APP_NAMES.get(source, source)})
@@ -868,24 +926,31 @@ def _firsts(con, mine, pg):
     repos = set()
     for rowid, ts, thread_name, title in con.execute("select rowid, ts, thread_name, title from records where source = 'git_commits' "
                                                      "and is_me = '1' and ts is not null order by ts"):
-        if thread_name and thread_name not in repos:
+        t = parse(ts)
+        if t and thread_name and thread_name not in repos:
             repos.add(thread_name)
-            t = parse(ts)
             items.append({"kind": "project", "what": thread_name, "ts": t.isoformat(), "rowid": rowid, "detail": (title or "")[:80]})
+    def first_of(source):
+        """A source's first record with a time that can be right: (rowid, local time), or None."""
+        for rowid, ts in con.execute("select rowid, ts from records where source = ? and ts > '1995' order by ts limit 200", (source,)):
+            t = parse(ts)
+            if t:
+                return rowid, t
+        return None
+
     apps = {}
     for source, label in APP_NAMES.items():
         if source in ("photos", "calendar", "apple_notes", "git_commits"):
             continue  # milestones below
-        r = con.execute("select rowid, ts from records where source = ? and ts > '1995' order by ts limit 1", (source,)).fetchone()
-        t = parse(r[1]) if r else None
-        if t and (label not in apps or t.isoformat() < apps[label]["ts"]):
-            apps[label] = {"kind": "app", "what": label, "ts": t.isoformat(), "rowid": r[0], "detail": None}
+        r = first_of(source)
+        if r and (label not in apps or r[1].isoformat() < apps[label]["ts"]):
+            apps[label] = {"kind": "app", "what": label, "ts": r[1].isoformat(), "rowid": r[0], "detail": None}
     items += apps.values()
     for kind_, src in (("photo", "photos"), ("note", "apple_notes"), ("commit", "git_commits")):
-        r = con.execute("select rowid, ts from records where source = ? and ts > '1995' order by ts limit 1", (src,)).fetchone()
-        if r and parse(r[1]):
+        r = first_of(src)
+        if r:
             items.append({"kind": "milestone", "what": {"photo": "Your first photo", "note": "Your first note", "commit": "Your first commit"}[kind_],
-                          "ts": parse(r[1]).isoformat(), "rowid": r[0], "detail": None})
+                          "ts": r[1].isoformat(), "rowid": r[0], "detail": None})
     items.sort(key=lambda i: i["ts"])
     return {"items": items, "counts": dict(collections.Counter(i["kind"] for i in items))}
 
@@ -896,7 +961,7 @@ def made():
     con = connect()
     kinds = {
         "code": ("Code", "source = 'git_commits' and is_me = '1'"),
-        "ai": ("AI conversations", "source in ('ai_coding', 'chatgpt', 'claude_ai') and is_me = '1'"),
+        "ai": ("AI conversations", "(source in ('ai_coding', 'chatgpt', 'claude_ai') or (source = 'x' and kind = 'ai_turn')) and is_me = '1'"),  # x: Grok
         "writing": ("Writing", "source in ('apple_notes', 'notion', 'notion_export') or (source = 'documents' and is_me = '1')"),
         "posts": ("Posts", "kind = 'post'"),
         "photos": ("Photos", "source = 'photos'"),
@@ -979,7 +1044,7 @@ def plays(con, pg=None):
             artist, secs, via = channel[: -len(" - Topic")], None, "YouTube"
         t = parse(ts)
         if t and title and artist:
-            out.append((t, str(title).strip(), str(artist).strip(), secs if isinstance(secs, (int, float)) else None, rowid, via))
+            out.append((t, str(title).strip(), str(artist).strip(), num(secs) if isinstance(secs, (int, float)) else None, rowid, via))
     out.sort(key=lambda p: p[0])
     return out
 
@@ -1079,12 +1144,9 @@ def _movement(con, pg):
     days = {}
     for rowid, ts, meta in con.execute("select rowid, ts, meta from records where source = 'health' and kind = 'health_day'"):
         m = meta_of(meta)
-        try:
-            d, steps = date.fromisoformat(str(ts)[:10]), float(m.get("steps") or 0)
-        except (TypeError, ValueError):
-            continue
-        if steps > 0:
-            days[d] = (steps, float(m.get("distance_km") or 0), float(m.get("flights") or 0), rowid)
+        d, steps = day_of(ts), steps_of(meta)
+        if d and steps > 0:
+            days[d] = (steps, num(m.get("distance_km")), num(m.get("flights")), rowid)
     ordered = sorted(days)
     years = collections.defaultdict(list)
     months = collections.defaultdict(list)
@@ -1114,7 +1176,7 @@ def _movement(con, pg):
     for rowid, ts, end, meta in con.execute("select rowid, ts, ts_end, meta from records where source = 'health' and kind = 'sleep' and ts is not null"):
         m = meta_of(meta)
         a, b = parse(ts, m.get("tz")), parse(end, m.get("tz")) if end else None
-        mins = float(m.get("asleep_min") or 0) or float(m.get("in_bed_min") or 0)
+        mins = num(m.get("asleep_min")) or num(m.get("in_bed_min"))
         if not a or not b or mins < 120:  # a nap, or a night the watch was off
             continue
         bed = a.hour + a.minute / 60 + (24 if a.hour < 15 else 0)  # 1 am is 25: late is later
@@ -1453,17 +1515,18 @@ def _watching(con, pg):
 # What advertisers and the services keep about you, from your exports (connectors/imports.py: kind advertiser,
 # inference, off_platform and ad). An older import kept some of it under the file it came from: that's read too.
 SERVICE_OF = {"facebook_activity": "Facebook", "instagram_activity": "Instagram", "x": "X", "linkedin": "LinkedIn",
-              "tiktok": "TikTok", "google_activity": "Google"}
+              "tiktok": "TikTok", "google_activity": "Google", "spotify": "Spotify"}
 WHAT_OF_FILE = {"interest_categories": "interest", "see_less_topics": "see less", "inferences_about_you.csv": "Inferences",
                 "other_categories_used_to_reach_you": "category"}
 # Guesses at who you are (as against what you're into), and what you're into.
 GUESSES = {"gender", "age", "language", "location", "audiences", "category", "Member Age", "Member Gender", "Member Traits",
            "High Value Audience Segments", "Standard Audience Segments", "Buyer Groups", "Job Seniorities", "Years of Experience",
-           "Inferred personal characteristics", "Career inferences", "Profile Locations", "Job Functions", "Inferences"}
+           "Inferred personal characteristics", "Career inferences", "Profile Locations", "Job Functions", "Inferences", "segment"}
 INTERESTS = {"interest", "Member Interests", "Inferred interests", "partner interest", "show", "see less"}
 WHAT_LABEL = {"interest": "Interests", "show": "Shows you watch", "category": "Categories you're reached under", "gender": "Your gender",
               "age": "Your age", "language": "Languages", "location": "Where you are", "audiences": "Audiences you're in",
-              "see less": "Topics you asked to see less of", "partner interest": "Interests from its partners"}
+              "see less": "Topics you asked to see less of", "partner interest": "Interests from its partners",
+              "segment": "Ad segments you're in", "artist listener": "The kind of listener you are, artist by artist"}
 AD_FILES = ("ads_viewed",)
 
 
@@ -1670,8 +1733,8 @@ def _groups(con, mine, pg):
              "shapes": {}, "emoji": collections.Counter(), "n": 0} for k in chosen}
     shapes_seen = {}  # shape -> [times, up to three of the people who wrote it]
     try:
-        mine_words = [n.casefold() for n in json.loads((CORPUS / "identity.json").read_text()).get("names", []) if n]
-    except (OSError, ValueError):
+        mine_words = [str(n).casefold() for n in json.loads((CORPUS / "identity.json").read_text()).get("names") or [] if n]
+    except (OSError, ValueError, AttributeError, TypeError):
         mine_words = []
     threads = sorted({th for _, th in chosen})
     done = 0
@@ -1720,7 +1783,8 @@ def _groups(con, mine, pg):
             # Words are kept by the message's shape (its text without its author's name or numbers), so lines an app
             # writes itself ("Grace sent an attachment.", "Membership updated") can be told apart afterwards.
             low = URLS.sub(" ", body).casefold().replace("’", "'")
-            names = ["you", "me", *mine_words] if who == "You" else [author.casefold(), author.casefold().split()[0]] if author else []
+            names = ["you", "me", *mine_words] if who == "You" else [author.casefold(), *author.casefold().split()[:1]] if author else []
+            names = [n for n in names if n.strip()]
             shape = re.sub(r"\d+", "#", re.sub("|".join(rf"\b{re.escape(n)}\b" for n in names), " ", low) if names else low)
             shape = " ".join(shape.split())
             e = g["shapes"].get(shape)
@@ -1978,6 +2042,8 @@ def located(con, pg=None, step=0):
             lat, lon = float(m["lat"]), float(m["lon"])
         except (KeyError, TypeError, ValueError):
             continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):  # not a place on Earth (nor NaN)
+            continue
         if abs(lat) < 0.01 and abs(lon) < 0.01:  # "no location" written as 0,0
             continue
         if re.sub(r"\W", "", str(m.get("imported_by") or "")).casefold() in SAVED_FROM:
@@ -2008,7 +2074,7 @@ YEAR_KINDS = {"message": "messages", "photo": "photos", "video": "videos", "emai
 YEAR_OWN = ("message", "photo", "video", "email", "call", "voice_memo", "event", "transaction")
 BUSY_SKIP = ("visit", "media", "song", "event", "transaction", "activity")
 NOT_YOURS = ("health_sample", "health_day", "sleep", "app_usage", "app_usage_day", "interaction", "contact", "record", "app",
-             "profile", "inference", "follow", "invitation")
+             "profile", "inference", "follow", "invitation", "ad", "advertiser", "off_platform")  # the last: what They Know has
 
 
 def middle_out(ids):
@@ -2028,8 +2094,8 @@ def viewable(con, rowids):
 
 def years_present(con):
     """Years with something of what you did in them (twenty records or more), newest first."""
-    rows = con.execute(f"select substr(ts, 1, 4) y, count(*) from records where ts > '1990' and kind not in "
-                       f"({','.join(repr(k) for k in NOT_YOURS)}) group by y").fetchall()
+    rows = con.execute(f"select substr(ts, 1, 4) y, count(*) from records where ts > '1990' and ts not like '2001-01-01T00:00:00%' "
+                       f"and kind not in ({','.join(repr(k) for k in NOT_YOURS)}) group by y").fetchall()
     today = datetime.now(TZ).year
     return [y for y, n in sorted(rows, reverse=True) if n >= 20 and y.isdigit() and int(y) <= today]
 
@@ -2117,7 +2183,7 @@ def _year(con, y, P, PL, J, R, F, M, media, pg):
         prev = cur
     msgs = R["kinds"].get("messages")
     hours = msgs["years"].get(y) if msgs else None
-    steps = [(ts[:10], float(meta_of(m).get("steps") or 0)) for ts, m in con.execute(
+    steps = [(ts[:10], steps_of(m)) for ts, m in con.execute(
         "select ts, meta from records where kind = 'health_day' and ts like ?", (f"{y}-%",))]
     steps = [(d, s) for d, s in steps if s]
     best_steps = max(steps, key=lambda x: x[1]) if steps else None
@@ -2161,6 +2227,8 @@ def thread(rowid, direction=None, edge=None, limit=60):
     thread that local day (or the 300 nearest, on a very long day), plus a dozen before and after so it doesn't
     start mid-sentence. With direction "before"/"after" and the edge message's time, the next `limit` that way."""
     con = connect()
+    if not re.fullmatch(r"\d+", str(rowid)):
+        return {"error": "not a message in a conversation"}
     r = con.execute("select rowid, source, kind, thread, thread_name, participants, ts, meta from records where rowid = ?",
                     (int(rowid),)).fetchone()
     if not r or r[2] not in ("message", "reaction") or not r[3]:
@@ -2175,6 +2243,11 @@ def thread(rowid, direction=None, edge=None, limit=60):
 
     if direction in ("before", "after") and edge:
         rows = take("ts < ?", (edge,), "desc", limit) if direction == "before" else take("ts > ?", (edge,), "asc", limit)
+    elif not parse(ts):
+        # A message with no time that can be right: the ones kept either side of it, and it.
+        rows = take("ts < ?", (ts,), "desc", 30) + take("ts >= ?", (ts,), "asc", 30) if ts else []
+        if not any(x[0] == int(rowid) for x in rows):
+            rows += con.execute(f"select {cols} from records where rowid = ?", (int(rowid),)).fetchall()
     else:
         t = parse(ts)
         lo = datetime(t.year, t.month, t.day, tzinfo=TZ).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
@@ -2200,7 +2273,7 @@ def _messages(rows):
         files = [f for f in (meta_of(m).get("files") or []) if isinstance(f, str)]
         body = re.sub(r"\s*\[attachment: [^\]]*\]", "", text or "").strip()
         lt = parse(ts_)
-        out.append({"rowid": rid, "ts": lt.isoformat() if lt else ts_, "at": ts_, "me": str(is_me) == "1", "author": author,
+        out.append({"rowid": rid, "ts": lt.isoformat() if lt else None, "at": ts_, "me": str(is_me) == "1", "author": author,
                     "kind": kind, "text": body, "files": len(files),
                     "image": any(Path(f).suffix.lower() in IMAGE_EXT for f in files)})
     return out
@@ -2285,7 +2358,7 @@ def stream_month(m=None):
     st = _stream()
     con = connect()
     have = st.months(con)
-    if not m or not re.fullmatch(r"\d{4}-\d\d", m):
+    if not m or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", m) or not FIRST_YEAR <= int(m[:4]) <= LATEST.year:
         m = have[0]["month"] if have else datetime.now(TZ).strftime("%Y-%m")
     with Progress(["Reading the month", "Putting it in order"]) as pg:
         pg.step(0)
@@ -2393,7 +2466,8 @@ def main(argv):
     elif cmd == "people":
         out = cached("people", people)
     elif cmd == "person":
-        out = cached(f"person-{key(rest[0])}", person, key(rest[0]))
+        k = key(rest[0] if rest else "")
+        out = cached(f"person-{k}", person, k) if k else {"error": "Which person?"}
     elif cmd == "places":
         out = cached("places", places)
     elif cmd == "rhythms":
@@ -2415,7 +2489,7 @@ def main(argv):
         if not y:
             ys = years_present(connect())
             y = ys[0] if ys else str(datetime.now(TZ).year)
-        out = cached(f"year-{y}", year, y)
+        out = cached(f"year-{int(y)}", year, str(int(y))) if FIRST_YEAR <= int(y) <= LATEST.year else {"error": f"Nothing could be from {y}."}
     elif cmd == "stream":
         m = rest[0] if rest else None
         out = cached(f"stream-{m or 'latest'}-v{_stream().VERSION}", stream_month, m)  # new rules, new events
@@ -2425,13 +2499,14 @@ def main(argv):
         index = _stream().build(log=lambda line: None)
         out = {"months": len(index), "events": sum(v["events"] for v in index.values())}
     elif cmd == "records":
-        out = records_brief([int(x) for x in rest[0].split(",") if x.strip().isdigit()][:2000])
+        out = records_brief([int(x) for x in (rest[0] if rest else "").split(",") if x.strip().isdigit()][:2000])
     elif cmd == "thread":
-        out = thread(rest[0], *(rest[1:3] if len(rest) >= 3 else ()))
+        out = thread(rest[0] if rest else "", *(rest[1:3] if len(rest) >= 3 else ()))
     elif cmd == "embed":
         out = embed(rest[0] if rest else "", rest[1] if len(rest) > 1 else "")
     elif cmd == "thumbs":
-        out = thumbs([int(x) for x in rest[0].split(",") if x.strip().isdigit()][:60], int(rest[1]) if len(rest) > 1 else 360)
+        size = int(rest[1]) if len(rest) > 1 and rest[1].isdigit() else 360
+        out = thumbs([int(x) for x in (rest[0] if rest else "").split(",") if x.strip().isdigit()][:60], max(32, min(size, 2048)))
     else:
         sys.exit(f"unknown command {cmd}")
     sys.stdout.write(json.dumps(out, ensure_ascii=False))

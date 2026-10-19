@@ -1,7 +1,10 @@
 // Calls into desktop/py/bridge.py. One-shot commands return parsed JSON; long runs stream one event per line.
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import { childEnv, type Paths } from './paths.ts';
+
+const TASKPOLICY = '/usr/sbin/taskpolicy';
 
 export type BridgeEvent =
   | { type: 'start'; connector: string }
@@ -61,8 +64,11 @@ export class Bridge {
   }
 
   // detached: each run gets its own process group, so stopping it also stops what it started (iLEAPP, git).
-  private spawn(args: string[], detached = false): ChildProcess {
-    return spawn(this.paths.python, ['-u', this.paths.bridge, ...args], {
+  // background: macOS runs it, and what it starts, at background priority (spare CPU, disk when nothing else wants it).
+  private spawn(args: string[], detached = false, background = false): ChildProcess {
+    const cmd = [this.paths.python, '-u', this.paths.bridge, ...args];
+    if (background && fs.existsSync(TASKPOLICY)) cmd.unshift(TASKPOLICY, '-b');
+    return spawn(cmd[0], cmd.slice(1), {
       cwd: this.paths.repo,
       env: childEnv(this.paths, this.env),
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -100,8 +106,8 @@ export class Bridge {
     });
   }
 
-  stream(args: string[], stdin: string | undefined, onEvent: (e: BridgeEvent) => void): { done: Promise<StreamResult>; kill(): void } {
-    const p = this.spawn(args, true);
+  stream(args: string[], stdin: string | undefined, onEvent: (e: BridgeEvent) => void, background = false): { done: Promise<StreamResult>; kill(): void } {
+    const p = this.spawn(args, true, background);
     const errors: Record<string, string> = {};
     let failed: string[] = [];
     const handle = (line: string) => {

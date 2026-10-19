@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { CATALOG } from '../../src/shared/catalog.ts';
-import { computeSources, gapYears, LAW_HINT, latestBackup, mirrorIsCurrent, nextUp, otherPhoneRead, phoneDevices, READ_ONLY_OK, robustFirst, summarize, totals } from '../../src/shared/status.ts';
+import { computeSources, fdaLost, gapYears, LAW_HINT, latestBackup, mirrorIsCurrent, nextUp, otherPhoneRead, phoneDevices, READ_ONLY_OK, robustFirst, summarize, totals } from '../../src/shared/status.ts';
 import type { Backup, JobView } from '../../src/shared/types.ts';
 import { actionIds, H, hoursAgo, input, NOW, probe, state, stats, view, views } from './helpers.ts';
 // Where it lives (its stage), and whether it needs you there.
@@ -60,6 +60,22 @@ describe('setup', () => {
     assert.deepEqual(actionIds(no), ['open-fda-settings', 'recheck']);
     assert.equal(view('fda', { probe: probe({ fda: null }) }).section, 'unavailable');
     assert.equal(view('fda').section, 'done');
+  });
+
+  test('Full Disk Access turned off by an update says so', () => {
+    const off = probe({ fda: false, sources: { imessage: 'blocked', photos: 'blocked', ai_coding: 'ok' } });
+    // Seen on before (the app remembers), or Messages read before and closed now: macOS dropped it when the app was rebuilt.
+    for (const inp of [{ state: state((s) => (s.fdaOnAt = hoursAgo(30))) }, { stats: stats({ imessage: { count: 12 } }) }]) {
+      const v = view('fda', { probe: off, ...inp });
+      assert.deepEqual(place(v), ['todo', true]);
+      assert.equal(v.status, 'Turned off after the update');
+      assert.match(v.detail!, /turn it off and on again in System Settings/);
+      assert.deepEqual(actionIds(v), ['open-fda-settings', 'recheck']);
+      assert.ok(fdaLost(off, inp.stats ?? stats(), inp.state ?? state()));
+    }
+    // A first run without it, or something read without it (Claude Code's transcripts): only "needed".
+    assert.equal(view('fda', { probe: off, stats: stats({ ai_coding: { count: 3 } }) }).status, 'Needed for 3 sources on this Mac');
+    assert.ok(!fdaLost(probe(), stats(), state((s) => (s.fdaOnAt = hoursAgo(1)))), 'on now: nothing lost');
   });
 
   test('Python packages', () => {
@@ -200,6 +216,18 @@ describe('Mac sources', () => {
     assert.equal(view('voice_memos', { stats: stats({ voice_memos: { count: 0 } }) }).section, 'unavailable');
   });
 
+  test('Mail with no accounts: nothing to read, said so; once read, what it read stays', () => {
+    const none = view('apple_mail', { probe: probe({ mail_accounts: [] }) });
+    assert.equal(none.section, 'unavailable');
+    assert.equal(none.status, 'No accounts in Mail');
+    assert.deepEqual(actionIds(none), ['open-internet-accounts', 'recheck']);
+    assert.equal(view('apple_mail', { probe: probe({ mail_accounts: ['ada@example.com'] }) }).status, 'Ready to read');
+    assert.equal(view('apple_mail').status, 'Ready to read', 'accounts not looked at: read as before');
+    assert.equal(view('apple_mail', { probe: probe({ mail_accounts: [] }), stats: stats({ mail: { count: 40 } }) }).section, 'done');
+    const blocked = view('apple_mail', { probe: probe({ fda: false, mail_accounts: [], sources: { ...probe().sources, mail_app: 'blocked' } }) });
+    assert.equal(blocked.blockedBy, 'fda', 'without Full Disk Access, that\'s what it needs');
+  });
+
   test('errors show until a later successful run', () => {
     const err = state((s) => (s.sources.calls = { lastError: 'database is locked', lastErrorAt: hoursAgo(0.5) }));
     const failed = view('calls', { state: err, stats: stats({ calls: { count: 3, ran_at: hoursAgo(5) } }) });
@@ -215,7 +243,7 @@ describe('Mac sources', () => {
     const running = view('imessage', { jobs: [all] });
     assert.equal(running.section, 'working');
     assert.match(running.status, /^Reading… \(started/);
-    assert.equal(running.detail, '[imessage] 400k records');
+    assert.equal(running.detail, undefined, 'its own log line ("[imessage] 400k records") is for the Progress log, not the page');
     assert.equal(view('photos', { jobs: [all] }).status, 'Waiting its turn');
     assert.equal(view('contacts', { jobs: [all] }).status, 'Read; the others are still being read');
     const indexing = { ...all, current: 'build_index', finished: ['contacts', 'imessage', 'photos'] };
@@ -351,6 +379,14 @@ describe('iPhone backup', () => {
       state: state((st) => (st.settings.iphoneDevice = 'U-SAM')) });
     assert.match(v.detail!, /^Sam's iPhone/);
     assert.ok(v.actions.some((a) => a.id === 'show-setup'), 'a way to pick another');
+    assert.ok(!v.actions.some((a) => a.id === 'forget-phone'), 'nothing read from Ada\'s yet: nothing to take out');
+    // Ada's was read (its records are in the library) and Sam's is picked: said here, with Take It Out, and reading Sam's asks first.
+    const mixed = view('iphone_backup', { probe: probe({ backups: all, mirror: { backup: 'ada', udid: 'U-ADA', device: "Ada's iPhone" } }),
+      stats: stats({ phone_whatsapp: { count: 120 } }), state: state((st) => (st.settings.iphoneDevice = 'U-SAM')) });
+    assert.ok(mixed.notes?.some((n) => /^What was read from Ada's iPhone is still in your library\. If it isn't yours, take it out before reading this one\./.test(n)), String(mixed.notes));
+    assert.deepEqual(mixed.actions.map((a) => a.id), ['forget-phone', 'iphone-run', 'show-setup', 'skip']);
+    assert.match(mixed.actions[0].confirm ?? '', /^Take out what was read from Ada's iPhone\?/);
+    assert.match(mixed.actions[1].confirm ?? '', /stays in your library, mixed in with Sam's iPhone's: once it's read, it can't be taken out by itself/);
   });
 });
 
@@ -376,6 +412,18 @@ describe('web exports', () => {
     assert.ok(!view('reddit').notes!.includes(LAW_HINT), 'Reddit\'s own steps already walk through its form');
     for (const id of ['other_mail', 'maps_timeline']) assert.ok(!view(id).notes!.includes(LAW_HINT), `${id}: set up by hand, no request form`);
     assert.match(LAW_HINT, /never deletion/);
+  });
+
+  test('the link\'s days count from its ready email: Instagram\'s 4 days are up on day 5, not day 6', () => {
+    const at = (requested: number, ready: number) => view('instagram', { state: state((s) => (s.sources.instagram = { requestedAt: hoursAgo(requested),
+      readySignal: { at: hoursAgo(ready), via: 'Mail', sender: 'Instagram', text: 'Your information is ready' } })) });
+    assert.equal(at(4 * 24, 4 * 24 - 2).onTheWay, 'ready', 'ready 2 hours after asking, 4 days ago less 2 hours: still good');
+    const gone = at(5 * 24, 5 * 24 - 2);
+    assert.deepEqual([gone.onTheWay, gone.status.endsWith('The link has probably expired.')], ['expired', true], 'ready 5 days ago: gone, though asked only 5 days ago');
+    // Without a ready email, it's counted from the longest usual wait (2 days), then its 4 days.
+    const quiet = (h: number) => view('instagram', { state: state((s) => (s.sources.instagram = { requestedAt: hoursAgo(h) })) }).onTheWay;
+    assert.equal(quiet(5 * 24), 'late');
+    assert.equal(quiet(6 * 24 + 1), 'expired');
   });
 
   test('a notification that looks like the service saying it is ready: "looks ready", with its words, never certain', () => {
@@ -406,6 +454,8 @@ describe('web exports', () => {
     const told = view('iphone_notifications', { state: state((s) => (s.sources.iphone_notifications = { doneAt: hoursAgo(1) })) });
     assert.equal(told.status, 'Turned on by you');
     assert.equal(view('iphone_notifications', { state: state((s) => (s.sources.iphone_backup = { skipped: 'No iPhone' })) }).section, 'unavailable');
+    assert.notEqual(view('iphone_notifications', { state: state((s) => (s.sources.iphone_backup = { skipped: 'Not now' })) }).section, 'unavailable',
+      'a backup set aside for later still has an iPhone');
   });
 
   test('every export page opens in your own browser, X included, and Claude can do it for you', () => {
@@ -450,6 +500,31 @@ describe('web exports', () => {
     assert.ok(!failed.actions.some((a) => a.label === 'Try Again'), 'not Try Again, which can only fail');
     assert.ok(failed.steps?.length);
     assert.ok(actionIds(view('instagram')).includes('agent-request'), 'with it there (or not known), Do It for Me is offered');
+  });
+
+  test('Claude Code there but it can\'t run (signed out, say): the page says what\'s missing, and AI Settings fixes it', () => {
+    const why = 'Claude Code isn\'t signed in. Sign in with your claude.ai account (Pro, Max, Team or Enterprise).';
+    const v = view('instagram', { claudeCode: false, agentWhy: { why, fix: 'sign-in' }, state: state((s) => (s.sources.instagram = {
+      agent: { mode: 'request', status: 'failed', at: hoursAgo(0), note: 'Not signed in.', reason: 'no-claude' } } as never)) });
+    assert.equal(v.status, 'Do It for Me can\'t run yet');
+    assert.match(v.detail!, /isn't signed in[\s\S]*Or do it yourself/);
+    assert.ok(actionIds(v).includes('show-ai'), 'Open AI Settings');
+    assert.ok(!actionIds(v).includes('get-claude-code'), 'not "get Claude Code": it\'s there');
+  });
+
+  test('the AI picked can\'t do it yet (Codex): Do It for Me is still there, to say so, after opening the page yourself', () => {
+    const agentWhy = { ok: false, fix: 'provider' as const, soon: true, why: 'Do It for Me doesn\'t work with Codex (your ChatGPT account) yet: it\'s coming soon.' };
+    const v = view('instagram', { claudeCode: false, agentWhy });
+    assert.equal(v.actions.find((a) => a.primary)?.id, 'open', 'the page yourself first');
+    assert.ok(actionIds(v).includes('agent-request'), 'pressed, it says it\'s coming');
+    assert.ok(!actionIds(view('instagram', { claudeCode: false })).includes('agent-request'), 'without Claude Code, as before: none');
+  });
+
+  test('Do It for Me said no to: still offered, but opening the page yourself comes first', () => {
+    const v = view('instagram', { state: state((s) => Object.assign(s.settings, { aiOn: true, agentExports: false })) });
+    assert.equal(v.actions.find((a) => a.primary)?.id, 'open');
+    assert.ok(actionIds(v).includes('agent-request'), 'Do It for Me is still there, to turn on');
+    assert.equal(view('instagram').actions.find((a) => a.primary)?.id, 'agent-request', 'not decided: Do It for Me first');
   });
 
   test('Do It for Me turned off sets aside what Claude was doing, as AI off does', () => {
@@ -517,9 +592,10 @@ describe('web exports', () => {
   });
 
   test('Claude\'s checks: Stop Checking while they\'re on, a quiet note when one didn\'t finish, and asking again turns them back on', () => {
-    const on = (src: object) => state((s) => {
+    const on = (src: object, id = 'discord') => state((s) => {
       Object.assign(s.settings, { aiOn: true, agentExports: true, agentDownloads: true });
-      s.sources.discord = src as never;
+      s.ask.retention['claude-code'] = hoursAgo(1); // Anthropic's data settings checked
+      s.sources[id] = src as never;
     });
     const waiting = view('discord', { state: on({ requestedAt: hoursAgo(30) }) });
     assert.ok(actionIds(waiting).includes('agent-no-checks'));
@@ -536,6 +612,32 @@ describe('web exports', () => {
       s.sources.discord = { requestedAt: hoursAgo(30) };
     }) });
     assert.ok(!actionIds(off).includes('agent-no-checks'), 'checks turned off in Settings: nothing to stop');
+    // Claude doesn't look, so nothing says it does, and an export that should be ready needs you: the data settings never
+    // checked, a site Claude can't work on, or nowhere it may look (every inbox off, for one that only emails its link).
+    const due = { requestedAt: hoursAgo(24 * 20) };
+    const unchecked = view('discord', { state: state((s) => {
+      Object.assign(s.settings, { aiOn: true, agentExports: true, agentDownloads: true });
+      s.sources.discord = due;
+    }) });
+    const blocked = view('reddit', { state: on(due, 'reddit') });
+    const inboxOn = view('discord', { mail: { emails: ['ada@example.com'], appleMail: false }, state: on(due) });
+    const allOff = view('discord', { mail: { emails: ['ada@example.com'], appleMail: false }, state: state((s) => {
+      Object.assign(s.settings, { aiOn: true, agentExports: true, agentDownloads: true, inboxesOff: ['ada@example.com'] });
+      s.ask.retention['claude-code'] = hoursAgo(1);
+      s.sources.discord = due;
+    }) });
+    for (const [name, x] of [['data settings never checked', unchecked], ['Reddit', blocked], ['every inbox off', allOff]] as const) {
+      assert.ok(!actionIds(x).includes('agent-no-checks'), `${name}: no Stop Checking`);
+      assert.equal(x.needsYou, true, `${name}: it needs you`);
+    }
+    assert.ok(actionIds(inboxOn).includes('agent-no-checks'), 'an inbox on: Claude looks');
+    // Six looks for this request, and it stops looking by itself: said, and it needs you.
+    const r = hoursAgo(24 * 20);
+    const tired = view('discord', { state: on({ requestedAt: r, looks: { since: r, n: 6 } }) });
+    assert.ok(!actionIds(tired).includes('agent-no-checks'));
+    assert.equal(tired.needsYou, true);
+    assert.ok(tired.notes!.some((n) => /^Claude looked for it 6 times and didn't find it, so it stopped looking by itself\. Look for It asks it again\./.test(n)));
+    assert.ok(actionIds(view('discord', { state: on({ requestedAt: r, looks: { since: hoursAgo(24 * 40), n: 6 } }) })).includes('agent-no-checks'), 'counted for an older request: not this one');
   });
 
   test('with Watch Downloads off, no page promises to pick the file up from Downloads', () => {
@@ -596,6 +698,21 @@ describe('web exports', () => {
     assert.equal(v.priority, 4.5, 'a file waiting in Downloads comes before settings to change');
     assert.match(v.detail!, /^package\.zip \(6\.0 MB\)\n/);
     assert.match(v.detail!, /You hadn't asked Discord for your data in the app, so it waits for a yes\. Importing moves it out of Downloads/, 'why it asks');
+    assert.deepEqual(actionIds(v), ['import-found', 'ignore-found']);
+  });
+
+  test('macOS won\'t let it look in Downloads: export pages say so, and how to fix it', () => {
+    const v = view('discord', { probe: probe({ downloads: 'blocked' }) });
+    assert.ok(v.warnings.some((w) => /can't look in your Downloads folder/.test(w)));
+    assert.deepEqual(view('discord').warnings, [], 'readable: nothing to say');
+    assert.deepEqual(view('imessage', { probe: probe({ downloads: 'blocked' }) }).warnings, [], 'only where an export lands there');
+  });
+
+  test('a new download for a source already collected: it stays in Collected, and importing it adds what\'s new', () => {
+    const st = state((s) => s.found.push({ path: '/d/package.zip', name: 'package.zip', kind: 'discord', valid: true, size: 6e6, foundAt: hoursAgo(0), sourceId: 'discord' }));
+    const v = view('discord', { state: st, stats: stats({ discord: { count: 40 } }) });
+    assert.deepEqual([v.section, v.needsYou, v.status], ['done', true, 'Found the export in Downloads']);
+    assert.match(v.detail!, /Discord is in your library already\. Importing it adds what's new/);
     assert.deepEqual(actionIds(v), ['import-found', 'ignore-found']);
   });
 

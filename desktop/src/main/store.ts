@@ -56,6 +56,9 @@ export function normalize(raw: unknown): AppState {
       .map(({ account: _, ...x }: ServiceEntry & { account?: unknown }) => ({ ...x, domains: Array.isArray(x.domains) ? x.domains : [] })) : [],
     ask: normalizeAsk(r.ask),
     notifyCheck: r.notifyCheck && typeof r.notifyCheck === 'object' && typeof r.notifyCheck.state === 'string' ? r.notifyCheck : undefined,
+    agentPausedAt: typeof r.agentPausedAt === 'string' ? r.agentPausedAt : undefined,
+    readers: typeof r.readers === 'number' ? r.readers : undefined,
+    fdaOnAt: typeof r.fdaOnAt === 'string' ? r.fdaOnAt : undefined,
   };
 }
 

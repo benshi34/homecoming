@@ -16,9 +16,17 @@ from apple_notes import _fields
 
 
 def records(path):
-    """Yield (time, protobuf_bytes) for live records in one SEGB file."""
-    b = Path(path).read_bytes()
-    if b[:4] == b"SEGB":
+    """Yield (time, protobuf_bytes) for live records in one SEGB file. One being written (cut short) yields what it has;
+    one that can't be read, nothing."""
+    try:
+        b = Path(path).read_bytes()
+        yield from _records(b)
+    except (OSError, struct.error):
+        return
+
+
+def _records(b):
+    if b[:4] == b"SEGB" and len(b) >= 32:
         n = struct.unpack_from("<i", b, 4)[0]
         start = 32
         for i in range(n):
@@ -30,7 +38,7 @@ def records(path):
             if state == 1 and start + 8 < end <= len(b):
                 yield ts, b[start + 8:end]
             start = (end + 3) & ~3
-    elif b[52:56] == b"SEGB":
+    elif b[52:56] == b"SEGB" and len(b) >= 56:
         end_of_data = struct.unpack_from("<i", b, 0)[0]
         pos = 56
         while pos + 32 <= min(end_of_data, len(b)):
@@ -63,8 +71,10 @@ def decode(buf):
                 except UnicodeDecodeError:
                     pass
             elif wt == 1:
+                if len(v) < 8:  # cut off
+                    break
                 v = struct.unpack("<d", v)[0]
             out[f] = v
-    except (IndexError, ValueError):
+    except (IndexError, ValueError, struct.error):
         pass
     return out

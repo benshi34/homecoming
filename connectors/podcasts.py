@@ -3,7 +3,7 @@
 The library keeps one row per episode, so only the latest play of each is known; daily runs keep earlier
 plays of episodes played again (accumulate)."""
 
-from common import LIB, Writer, columns, connect, from_apple, snapshot_sqlite
+from common import LIB, Writer, columns, connect, from_apple, select, snapshot_sqlite, tables
 
 DB = LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"
 AVENUE = ("Local SQLite: ~/Library/Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite "
@@ -16,16 +16,23 @@ def main():
         if not DB.exists():
             return
         con = connect(snapshot_sqlite(DB, "podcasts/MTLibrary.sqlite"))
+        if not {"ZMTPODCAST", "ZMTEPISODE"} <= tables(con):  # made, never written to
+            w.notes["empty"] = 1
+            return
+        # Each column only if this version of Podcasts has it: one missing mustn't lose every show and play.
         shows = {}
-        for r in con.execute("select * from ZMTPODCAST"):
+        for r in con.execute(select(con, "ZMTPODCAST", ("Z_PK", "ZUUID", "ZTITLE", "ZAUTHOR", "ZSUBSCRIBED", "ZADDEDDATE",
+                                                        "ZWEBPAGEURL", "ZFEEDURL"))):
             shows[r["Z_PK"]] = r
             if r["ZSUBSCRIBED"]:
                 w.add(id=f"show:{r['ZUUID'] or r['Z_PK']}", kind="subscription", ts=from_apple(r["ZADDEDDATE"]),
                       author="me", is_me=True, title=r["ZTITLE"], text=f"Follows {r['ZTITLE']}" + (f" by {r['ZAUTHOR']}" if r["ZAUTHOR"] else ""),
                       url=r["ZWEBPAGEURL"], meta={"author": r["ZAUTHOR"], "feed": r["ZFEEDURL"]})
         cols = columns(con, "ZMTEPISODE")
-        played = "ZLASTDATEPLAYED is not null or ZPLAYCOUNT > 0" + (" or ZHASBEENPLAYED = 1" if "ZHASBEENPLAYED" in cols else "")
-        for r in con.execute(f"select * from ZMTEPISODE where {played}"):
+        played = " or ".join(test for test, c in (("ZLASTDATEPLAYED is not null", "ZLASTDATEPLAYED"), ("ZPLAYCOUNT > 0", "ZPLAYCOUNT"),
+                                                  ("ZHASBEENPLAYED = 1", "ZHASBEENPLAYED")) if c in cols) or "0"
+        want = ("Z_PK", "ZUUID", "ZTITLE", "ZPODCAST", "ZLASTDATEPLAYED", "ZPLAYCOUNT", "ZPLAYHEAD", "ZDURATION", "ZPUBDATE", "ZWEBPAGEURL")
+        for r in con.execute(select(con, "ZMTEPISODE", want) + f" where {played}"):
             show = shows.get(r["ZPODCAST"])
             when = from_apple(r["ZLASTDATEPLAYED"])
             # One record per play we've seen: an episode played again later is a new record.

@@ -81,6 +81,15 @@ test('agents\' errors in plain words, with the way forward', () => {
   const login = explainError('claude-code', 'Invalid API key · Please run /login\nClaude Code stopped (exit 1)');
   assert.deepEqual(login, { text: 'Claude Code isn\'t signed in. Sign In opens claude.ai\'s sign-in in your browser.', fix: 'sign-in' });
   assert.deepEqual(explainError('anthropic', 'Invalid API key · Please run /login'), { text: 'Anthropic didn\'t accept the key. Check it under AI Settings.', fix: 'key' });
+  // A model on this Mac: no tools, a server too old for Codex, a conversation that doesn't fit; and the app's own words.
+  const onMac = { localServer: 'ollama' as const, model: 'llama3.2' };
+  assert.deepEqual(explainError('local', 'registry.ollama.ai/library/llama3.2 does not support tools', onMac),
+    { text: '“llama3.2” can\'t use tools, so it can\'t look anything up. Pick one that can, like gpt-oss, under AI Settings.', fix: 'model' });
+  assert.deepEqual(explainError('local', 'Ollama 0.3.1 is too old. Codex requires Ollama 0.6 or newer', onMac), { text: 'Ollama is too old for Codex. Update it, then try again.', fix: 'local' });
+  assert.equal(explainError('local', 'unexpected status 404 Not Found: POST /v1/responses', onMac).fix, 'local');
+  assert.match(explainError('local', 'the input exceeds the context length (4096)', onMac).text, /^The question and Codex's instructions don't fit in what Ollama keeps/);
+  assert.deepEqual(explainError('local', 'Pick one of the models your local server has first, in AI Settings.'), { text: 'Pick one of the models your local server has first, in AI Settings.', fix: 'model' });
+  assert.match(explainError('claude-code', 'The app\'s lookup tools didn\'t start for Claude Code (failed), so it stopped rather than answer without your data.').text, /^The app's lookup tools didn't start/);
   const codex = explainError('codex', 'unexpected status 401 Unauthorized: Your authentication token has expired. Please try signing in again.');
   assert.deepEqual(codex, { text: 'Codex\'s sign-in has expired. Sign In opens ChatGPT\'s sign-in in your browser, to sign in again.', fix: 'sign-in' });
   assert.equal(explainError('openai', '401 Unauthorized: Incorrect API key provided').text, 'OpenAI didn\'t accept the key. Check it under AI Settings.');
@@ -120,6 +129,7 @@ test('names and one-line descriptions', () => {
   assert.equal(modelLabel('default'), 'Default model');
   assert.equal(describeTool('sql', { query: 'select\n  count(*)\nfrom records' }), 'select count(*) from records');
   assert.equal(describeTool('search', { query: 'dinner', source: 'imessage', limit: 5 }), '"dinner" · source imessage');
+  assert.equal(describeTool('search', { source: 'imessage' }), 'by time · source imessage', 'no words: not ""');
   assert.equal(describeTool('python', { code: '# count\nimport json\nprint(1)' }), 'import json');
   assert.equal(describeTool('view_image', { rowid: 12, file: 1 }), 'record #12, file 1');
   assert.equal(describeTool('shell', { command: 'ls' }), 'ls');

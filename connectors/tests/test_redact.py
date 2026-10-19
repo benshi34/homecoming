@@ -39,5 +39,30 @@ class RedactTests(unittest.TestCase):
                 self.assertEqual(redact(text), text)
 
 
+
+class MoreSecretsTests(unittest.TestCase):
+    """What slipped past before (an audit, 2026-10-18), on made-up values."""
+
+    def test_more_kinds(self):
+        from redact import redact
+        for text, gone in [("the password for chase is hunter2!", "hunter2"), ("DB_PASSWORD=s3cr3tvalue", "s3cr3tvalue"),
+                           ("PGPASSWORD=abc123xyz", "abc123xyz"), ("postgres://ada:Sup3rS3cret@db.example.com/app", "Sup3rS3cret"),
+                           ("SSN: 123-45-6789", "6789"), ("my social security number is 123 45 6789", "6789"),
+                           ("routing number 021000021", "021000021"), ("account number 123456789012", "123456789012"),
+                           ("ya29.a0AfH6SMBabcdefghijklmnopqrstuvwxyz", "a0AfH6"), ("glpat-abcdefghijklmnopqrstuv", "abcdefghij"),
+                           ("npm_abcdefghijklmnopqrstuvwxyz0123456789", "abcdefghij"), ("hf_abcdefghijklmnopqrstuvwxyzABCDEF12", "abcdefghij"),
+                           ("SG.abcdefghijklmnopqr.stuvwxyzABCDEFGHIJKLmnop", "abcdefghij"), ("card 2223 0031 2200 3222 exp 12/27", "3222"),
+                           ("?secret=abcdefghijklmnop", "abcdefghijklmnop")]:
+            self.assertNotIn(gone, redact(text), text)
+        for text in ("call me at 415-555-0100", "order 1234-56-7890 shipped", "the account was opened in 2019"):
+            self.assertEqual(redact(text), text, "not a secret")
+
+    def test_a_key_cut_short_or_followed_by_more(self):
+        from redact import redact
+        key = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj\n"
+        self.assertNotIn("BKcwggSj", redact(key + "and then " + "a long message. " * 800))
+        self.assertNotIn("MIIEvQ", redact(key))
+
+
 if __name__ == "__main__":
     unittest.main()

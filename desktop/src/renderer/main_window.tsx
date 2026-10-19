@@ -340,7 +340,14 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
   const [askAll, setAskAll] = useState(false);
   const toAsk = plan.claude.length + plan.signIn.length + plan.yourself.length + plan.email.length;
   const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-  const askSay = [plan.claude.length ? `Claude can ask for ${plan.claude.length === toAsk ? (toAsk === 1 ? 'it' : 'them all') : plan.claude.length} on its own` : '',
+  // Not with the AI picked yet: said, rather than "Claude can ask for them".
+  const notYet = snap.setup?.agent?.fix !== 'provider' ? null : snap.setup.agent.soon ? 'Do It for Me is coming soon with the AI you picked: for now, each has its steps'
+    : 'Do It for Me needs your claude.ai account (AI Settings): for now, each has its steps';
+  // Do It for Me said no to (Not Now, or off in AI Settings): they're yours to do, as the Setup Assistant says too.
+  const mine = plan.claude.length + plan.signIn.length + plan.yourself.length;
+  const declined = snap.settings.agentExports === false ? [mine ? `${mine} for you to do (Do It for Me is off)` : '', plan.email.length ? `${plural(plan.email.length, 'request')} by email` : '']
+    .filter(Boolean).join(' · ') : null;
+  const askSay = notYet ?? declined ?? [plan.claude.length ? `Claude can ask for ${plan.claude.length === toAsk ? (toAsk === 1 ? 'it' : 'them all') : plan.claude.length} on its own` : '',
     plan.signIn.length ? `sign in to ${plan.signIn.length === 1 ? plan.signIn[0].name : plural(plan.signIn.length, 'service')} first` : '',
     plan.email.length ? `${plural(plan.email.length, 'request')} by email` : '', plan.yourself.length ? `${plan.yourself.length} for you to do` : '']
     .filter(Boolean).join(' · ');

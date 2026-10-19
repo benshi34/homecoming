@@ -94,8 +94,10 @@ run(py, ['-c', 'import cryptography, pypdf, sqlite3, venv, ensurepip; print("pyt
 // Compiled ahead of time, checked by hash, so the app never writes .pyc files into itself.
 for (const d of [path.join(python, 'lib'), connectors, path.join(appDir, 'py')]) {
   try {
-    execFileSync(py, ['-m', 'compileall', '-q', '-j', '0', '--invalidation-mode', 'unchecked-hash', d], { stdio: ['ignore', 'ignore', 'inherit'] });
+    execFileSync(py, ['-m', 'compileall', '-q', '-j', '0', '--invalidation-mode', 'unchecked-hash', d], { stdio: ['ignore', 'inherit', 'inherit'] }); // -q: only errors
   } catch {
+    // Ours must all compile: one that doesn't would fail in the app, not here.
+    if (d !== path.join(python, 'lib')) throw new Error(`Python files under ${path.relative(STAGE, d)} don't compile (above): the app would be broken`);
     console.log(`  (some files under ${path.relative(STAGE, d)} don't compile for this Python; they're left as source)`);
   }
 }
@@ -120,6 +122,19 @@ fs.renameSync(path.join(built, `${PKG.productName}.app`), appPath);
 // Added here rather than as the packager's extraResource, which turns Python's relative links (bin/python3 ->
 // python3.14) into absolute ones pointing at this staging folder. ditto keeps them as they are.
 for (const d of [connectors, python]) run('ditto', [d, path.join(appPath, 'Contents', 'Resources', path.basename(d))]);
+// Electron's fuses, switches built into its framework, set before signing. Off: running as plain Node
+// (ELECTRON_RUN_AS_NODE), NODE_OPTIONS and the --inspect flags. Any of them would let another program run its own code
+// in this app, with its Full Disk Access.
+step('Fuses');
+const framework = path.join(appPath, 'Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework');
+const wire = fs.readFileSync(framework);
+const sentinel = wire.indexOf(Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'));
+if (sentinel < 0) throw new Error('Electron\'s fuses weren\'t found: is this Electron too new or too old for this script?');
+const at = sentinel + 32; // a version byte, the number of fuses, then '0' or '1' for each
+for (const fuse of [0, 2, 3]) if (fuse < wire[at + 1] && wire[at + 2 + fuse] !== 0x72) wire[at + 2 + fuse] = 0x30; // 'r': removed
+fs.writeFileSync(framework, wire);
+// A build for the end-to-end tests keeps the settings they use (src/main/env_guard.ts); one to install doesn't.
+if (process.argv.includes('--test-hooks')) fs.writeFileSync(path.join(appPath, 'Contents/Resources/app/.test-hooks'), '');
 // Ad hoc: every piece signed, so Apple silicon runs it; no Developer ID, so Gatekeeper asks once.
 run('find', [appPath, '-name', '._*', '-delete']);
 run('codesign', ['--force', '--deep', '--sign', '-', appPath]);

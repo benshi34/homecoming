@@ -75,7 +75,9 @@ if plan.get("crash"):
     raise RuntimeError("the fake Claude Code crashed")
 if mcp:
     rpc(0, "initialize", {"protocolVersion": "2025-06-18"})
-out({"type": "system", "subtype": "init", "tools": [t["name"] for t in rpc(1, "tools/list")["tools"]] if mcp else []})
+# As Claude Code says it: each tool server and whether it started. plan "mcp": the corpus server's status ("failed").
+out({"type": "system", "subtype": "init", "tools": [t["name"] for t in rpc(1, "tools/list")["tools"]] if mcp else [],
+     "mcp_servers": [{"name": "corpus", "status": plan.get("mcp", "connected")}] if mcp else []})
 if plan.get("error"):
     out({"type": "assistant", "message": {"content": [{"type": "text", "text": plan["error"]}]}})
     out({"type": "result", "subtype": "success", "is_error": True, "result": plan["error"]})

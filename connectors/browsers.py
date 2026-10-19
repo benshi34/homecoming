@@ -47,12 +47,28 @@ def skipped():
     return {s.strip() for s in os.environ.get("UMP_BROWSERS_SKIP", "").split(",") if s.strip()}
 
 
+# Safari 17's profiles each keep a history of their own, in Safari's container: Profiles/<id>/History.db (the default
+# profile's is still ~/Library/Safari/History.db), as DLEAPP reads them.
+SAFARI_DIRS = (HOME / "Library/Safari", HOME / "Library/Containers/com.apple.Safari/Data/Library/Safari")
+
+
 def chromium_profiles(root):
-    """(folder, History file) for each profile. Opera keeps its one profile in the data folder itself."""
+    """(folder, History file) for each profile. Opera kept its one profile in the data folder itself, and has since moved
+    it into Default: a History left behind there isn't read again as Default's."""
     found = sorted(root.glob("*/History"))
-    if (root / "History").is_file():
+    if (root / "History").is_file() and not (root / "Default/History").is_file():
         found.insert(0, root / "History")
     return [(p.parent.name if p.parent != root else "Default", p) for p in found]
+
+
+def safari_profiles(root):
+    """("default", History.db), then (profile folder, its History.db) for each other Safari profile."""
+    found = [("default", root / "History.db")] if (root / "History.db").exists() else []
+    for d in SAFARI_DIRS:
+        for p in sorted(d.glob("Profiles/*/History.db")):
+            if p.parent.name not in {x for x, _ in found}:
+                found.append((p.parent.name, p))
+    return found
 
 
 def firefox_profiles(root):
@@ -64,7 +80,7 @@ def history_files(bid):
     _, _, _, _, kind, root, _ = BY_ID[bid]
     try:
         if kind == "safari":
-            return [("default", root / "History.db")] if (root / "History.db").exists() else []
+            return safari_profiles(root)
         return chromium_profiles(root) if kind == "chromium" else firefox_profiles(root)
     except OSError:
         return []

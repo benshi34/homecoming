@@ -142,6 +142,30 @@ test('events update the running job and its log', () => {
   assert.equal(q.list()[0].startedAt, '2026-10-08T12:00:00.000Z');
 });
 
+test('a line is only progress; a start, an error or the end is a change (the window hears those at once)', async () => {
+  const { q, started } = harness();
+  const seen: boolean[] = [];
+  q.onChange((progress) => seen.push(progress));
+  q.add({ kind: 'import', label: 'i', sourceIds: ['spotify'], connectors: ['imports'] });
+  started[0].emit({ type: 'start', connector: 'imports' });
+  started[0].emit({ type: 'log', connector: 'imports', line: '[spotify] 3 records' });
+  started[0].emit({ type: 'raw', line: 'Traceback' });
+  started[0].emit({ type: 'error', connector: 'imports', error: 'boom' });
+  started[0].finish();
+  await tick();
+  assert.deepEqual(seen, [false, false, false, true, true, false, false]);
+});
+
+test('an import asked to read everything again keeps asking when another merges into it', () => {
+  const { q, started } = harness();
+  q.add({ kind: 'connectors', label: 'busy', sourceIds: ['imessage'], connectors: ['imessage'] });
+  q.add({ kind: 'import', label: 'again', sourceIds: ['spotify'], connectors: ['imports'], args: ['--reread'] });
+  const j = q.add({ kind: 'import', label: 'new', sourceIds: ['x'], connectors: ['imports'] });
+  assert.deepEqual(j.args, ['--reread']);
+  assert.deepEqual(j.sourceIds, ['spotify', 'x']);
+  assert.equal(started.length, 1);
+});
+
 test('errors land on the right sources', () => {
   const map = { imessage: 'imessage', photos: 'photos', iphone: 'iphone_backup' };
   const job = { id: 'j', kind: 'connectors', label: '', sourceIds: ['imessage', 'photos'], connectors: ['imessage', 'photos'], state: 'running', log: ['a', 'b', 'c', 'd'] } as Job;
@@ -161,7 +185,7 @@ test('import parser errors find the export that caused them', () => {
   const job = { id: 'j', kind: 'import', label: '', sourceIds: ['discord'], connectors: ['imports'], state: 'running', log: [] } as unknown as Job;
   const res = (errors: Record<string, string>) => ({ code: 1, signal: null, failed: Object.keys(errors), errors });
   // an old X export breaks while importing Discord: the error is X's, Discord is fine
-  const why = (m: string) => `The importer couldn't read this export (${m}). The site may have changed its format.`;
+  const why = (_m: string) => 'Couldn\'t read this export: the site may have changed its format. What went wrong is in the Progress log below.';
   assert.deepEqual(errorsBySource(job, res({ 'imports:x_archive': 'KeyError' }), {}, parsers), { x: why('KeyError') });
   // Meta's parser fails: blame the Meta export that has a file waiting
   assert.deepEqual(errorsBySource(job, res({ 'imports:meta': 'boom' }), {}, parsers, (id) => id === 'facebook'), { facebook: why('boom') });
@@ -173,7 +197,9 @@ test('import parser errors find the export that caused them', () => {
 });
 
 test('labels', () => {
-  assert.equal(labelFor({ kind: 'connectors', connectors: ['photos'] }), 'Reading photos');
+  assert.equal(labelFor({ kind: 'connectors', connectors: ['photos'] }), 'Reading Photos', 'by the source\'s name');
+  assert.equal(labelFor({ kind: 'connectors', connectors: ['calendar_events'] }), 'Reading Calendar');
+  assert.equal(labelFor({ kind: 'connectors', connectors: [] }), 'Reading this Mac', 'never "Reading undefined"');
   assert.equal(labelFor({ kind: 'connectors', connectors: ['a', 'b', 'c'] }), 'Reading 3 sources on this Mac');
   assert.equal(labelFor({ kind: 'iphone', connectors: [] }), 'Reading the iPhone backup');
   assert.equal(labelFor({ kind: 'import', connectors: [] }), 'Importing downloaded exports');

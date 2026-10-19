@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { act, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, shot, until } from './harness.ts';
+import { act, claudeChecked, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, shot, until } from './harness.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -26,7 +26,7 @@ before(async () => {
   const keep = ['instagram', 'spotify'];
   const sources = Object.fromEntries(Object.values(BY_ID).filter((s) => s.group === 'web' && !keep.includes(s.id)).map((s) => [s.id, { skipped: 'I don\'t use it' }]));
   fs.mkdirSync(sb.userData, { recursive: true });
-  fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({ version: 1, onboarding: { done: true }, sources,
+  fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({ version: 1, ask: claudeChecked(), onboarding: { done: true }, sources,
     settings: { autoRefresh: false, watchDownloads: true, aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true, agentDownloads: true, agentChecks: false } }));
   run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_AGENT_CMD: path.join(DESKTOP, 'test/fakes/fake_claude_browser.py'), FAKE_BROWSER_PLAN: file('plan.json'),
     FAKE_BROWSER_LOG: file('agent.log'), UMP_NOTIFICATIONS_DB: path.join(sb.home, 'no-notifications/db') }));

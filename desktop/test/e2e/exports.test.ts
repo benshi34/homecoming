@@ -3,6 +3,7 @@
 // exports into a throwaway corpus.
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -93,7 +94,18 @@ test('Takeout: once requested, its download page opens, and the parts that arriv
   const m = readJson(path.join(sb.corpus, 'manifest.json'));
   assert.equal(m.gmail.count, 2);
   assert.equal(m.chrome_synced.count, 1);
-  assert.equal(find(s, 'google_takeout').records, 3);
+  assert.equal(m.youtube.count, 1, 'a YouTube comment, as a comment');
+  assert.equal(m.google_tasks.count, 1);
+  assert.equal(find(s, 'google_takeout').records, 5);
+  // Its second part lands after the first is in: imported too, into the same folder, not left for you to click.
+  const part2 = path.join(sb.downloads, 'takeout-20250301T120000Z-1-002.zip');
+  const tasks = { kind: 'tasks#taskLists', items: [{ kind: 'tasks#tasks', id: 'L2', title: 'Errands', items: [
+    { kind: 'tasks#task', id: 't2', title: 'Post the letter', status: 'needsAction', created: '2024-01-04T09:00:00.000Z' }] }] };
+  execFileSync(process.env.UMP_PYTHON || '/usr/local/bin/python3', ['-c', 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1], "w"); z.writestr("Takeout/Tasks/Tasks.json", sys.argv[2]); z.close()',
+    part2, JSON.stringify(tasks)]);
+  await until(run.page, 'second part in', () => fs.existsSync(path.join(sb.corpus, 'imports/takeout-20250301/takeout-20250301T120000Z-1-002.zip')), 90_000);
+  const s2 = await until(run.page, 'both parts read', (x) => !x.jobs.length && readJson(path.join(sb.corpus, 'manifest.json')).google_tasks?.count === 2, 90_000);
+  assert.ok(!find(s2, 'google_takeout').actions.some((a) => a.id === 'import-found'), 'nothing waiting to be imported');
 });
 
 test('Downloads watcher: an expected export is imported on arrival', async () => {
@@ -383,7 +395,8 @@ test('a malformed export fails on its own row and blocks nothing else', async ()
   await act(run.page, 'spotify', 'add-file', { paths: [sb.exports.spotify] });
   const s = await until(run.page, 'imports settled', (x) => !x.jobs.length && !!find(x, 'x').needsYou && find(x, 'spotify').section === 'done', 90_000);
   assert.equal(find(s, 'x').status, 'The import failed');
-  assert.match(find(s, 'x').detail!, /KeyError/);
+  assert.match(find(s, 'x').detail!, /Couldn't read this export/, 'in plain words on its page');
+  assert.ok(s.log.some((l) => /KeyError/.test(l.line)), 'what went wrong, in the Progress log');
   assert.equal(find(s, 'spotify').records, 1);
   assert.equal(find(s, 'discord').section, 'done', 'earlier imports are unaffected');
   await selectSource(run.page, 'x');

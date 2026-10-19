@@ -169,13 +169,57 @@ test('Codex with an API key, and with a local model: a settings folder of its ow
   settings.localServer = 'lmstudio';
   settings.localUrl = 'http://localhost:1234/v1/';
   settings.models = {};
+  // No model picked: not run at all (Codex would download its own, ~13 GB, before answering).
+  const none = await answer('How much is there?');
+  assert.match(none.turn.errorDetail ?? '', /^Pick one of the models your local server has first, in AI Settings\.$/);
+  settings.models = { local: 'qwen3:8b' };
   const b = await answer('How much is there?');
   assert.equal(b.turn.error, undefined);
   ran = codexLog();
+  assert.equal(ran.args[ran.args.indexOf('--model') + 1], 'qwen3:8b', 'the one picked');
   assert.deepEqual(ran.env, ['CODEX_HOME', 'CODEX_OSS_BASE_URL'], 'no key');
   assert.equal(ran.oss_base_url, 'http://localhost:1234/v1');
   assert.deepEqual(ran.args.slice(ran.args.indexOf('--oss'), ran.args.indexOf('--oss') + 3), ['--oss', '--local-provider', 'lmstudio']);
-  assert.ok(!ran.args.includes('--model'), '"default" lets Codex choose');
+});
+
+test('Codex with your ChatGPT sign-in answers one question at a time: two at once take turns, and the second says so', async () => {
+  settings.provider = 'codex';
+  settings.models = {};
+  plan('codex-plan.json', { answer: 'Done.', notes: false, steps: [{ sleep: 1 }] });
+  sent = [];
+  const t0 = Date.now();
+  const a = ask.ask(null, 'First?');
+  const b = ask.ask(null, 'Second?');
+  const done = (id: string) => sent.find((x) => x.ch === 'ask-done' && x.p.id === id);
+  while (!(done(a.id) && done(b.id))) {
+    if (Date.now() - t0 > 60_000) throw new Error('no answers');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(Date.now() - t0 >= 2000, `one after the other (${Date.now() - t0} ms)`);
+  const second = done(b.id)!.p.conversation!.turns.at(-1)!;
+  assert.ok(second.events.some((e) => e.t === 'notice' && /^Waiting for Codex to finish another answer first/.test((e as { text: string }).text)));
+});
+
+test('Claude Code whose lookup tools didn\'t start: it stops, rather than answer without your data', async () => {
+  settings.provider = 'claude-code';
+  settings.models = {};
+  plan('claude-plan.json', { mcp: 'failed', answer: 'I can\'t see any records.', notes: false, steps: [] });
+  const a = await answer('Who did I text most?');
+  assert.equal(a.turn.answer, '', 'not taken for an answer');
+  assert.match(a.turn.errorDetail ?? '', /^The app's lookup tools didn't start for Claude Code \(failed\), so it stopped rather than answer without your data\./);
+});
+
+test('Codex with your ChatGPT account, the model field left empty: run with the model the field shows as its default', async () => {
+  settings.provider = 'codex';
+  settings.models = {};
+  const home = path.join(root, 'home');
+  fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.codex/config.toml'), 'model = "gpt-test-small"\n');
+  fs.writeFileSync(path.join(home, '.codex/models_cache.json'), JSON.stringify({ models: [{ slug: 'gpt-test-small' }, { slug: 'gpt-test-big' }] }));
+  plan('codex-plan.json', { answer: 'Seven.', notes: false, steps: [] });
+  await answer('How much is there?');
+  const ran = codexLog();
+  assert.equal(ran.args[ran.args.indexOf('--model') + 1], 'gpt-test-small', 'what the field says it uses (these runs ignore ~/.codex otherwise)');
 });
 
 test('an agent that fails says so in plain words, keeps its own under Details, isn\'t taken for the answer, and can be asked again', async () => {
@@ -246,7 +290,7 @@ test('making sense of a download: text in, text out, with the agent and sign-in 
   settings.provider = 'local';
   settings.localServer = 'ollama';
   settings.localUrl = 'http://localhost:11434/v1';
-  settings.models = {};
+  settings.models = { local: 'gpt-oss:20b' };
   plan('codex-plan.json', { answer: '{"items": []}', notes: false, steps: [] });
   assert.equal(await ask.complete('Write a mapping'), '{"items": []}');
   const cx = codexLog();
@@ -288,12 +332,12 @@ test('models: the built-in lists, and a local server\'s own', async () => {
   const srv = await fakeModelServer(['qwen3:8b', 'gpt-oss:20b']);
   settings.localUrl = `${srv.url}/v1`;
   try {
-    assert.deepEqual(await ask.models('local'), ['default', 'gpt-oss:20b', 'qwen3:8b']);
+    assert.deepEqual(await ask.models('local'), ['gpt-oss:20b', 'qwen3:8b'], 'its own only: "default" would download one');
   } finally {
     await srv.close();
   }
   settings.localUrl = 'http://127.0.0.1:9/v1';
-  assert.deepEqual(await ask.models('local'), ['default'], 'no server: Codex chooses');
+  assert.deepEqual(await ask.models('local'), ['default'], 'no server: nothing to pick yet (and Ask says so)');
 });
 
 test('conversations are listed newest first and can be removed; keys are kept encrypted', () => {

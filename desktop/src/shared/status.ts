@@ -2,7 +2,8 @@
 // view per source: which section it sits in, what it says, and what the user can do next. Pure, so the
 // tests can walk every source through every state.
 
-import { BY_ID, CATALOG, setServices, type Source } from './catalog.ts';
+import { BY_ID, CATALOG, downloadPage, reservedFolders, serviceKey, setServices, type Source } from './catalog.ts';
+import { claudeInboxes } from './setup.ts';
 import { contents } from './contents.ts';
 import { ago, bytes, count, day, list, range, waitRange } from './format.ts';
 import { describeNew, newCandidates } from './identity.ts';
@@ -20,11 +21,32 @@ export interface StatusInput {
   // Do It for Me can run: Claude Code is on this Mac, with a browser and a sign-in it works with. Left out (the tests),
   // it's taken to be.
   claudeCode?: boolean;
+  // Why it can't, when it can't (shared/setup.ts agentReady): not installed, no browser it works in, signed out, or a plan
+  // it doesn't work on. Left out, it's taken to be that Claude Code isn't on this Mac.
+  agentWhy?: { why?: string; fix?: string };
   browser?: string; // the browser Do It for Me works in (AI Settings), by name; Chrome when left out
   demo?: boolean; // the demo, where a stand-in plays Claude
   // Your email addresses and whether Mail is set up on this Mac: where to look for a service's "it's ready" email.
   mail?: { emails: string[]; appleMail: boolean };
   signIns?: SignInCheck | null; // which services Claude's browser is signed in to (bridge.py signins), once checked
+  readOnly?: boolean; // read-only mode (UMP_READONLY), or the demo: Claude's checks don't run
+}
+
+// Whether Claude looks for this export by itself every few hours while it's on its way: what main.ts maybeCheckExports
+// does, so its page and its reminder say the same. AI, Do It for Me, its downloads and its checks on; Claude able to run
+// here, with Anthropic's data settings checked once; a site Claude may work on; and somewhere to look, its own page or an
+// inbox it may open. Stop Checking, for one, is apart (st.noChecks).
+// It looks six times at most for one request, further apart each time (main.ts maybeCheckExports), then leaves it to
+// the Mail and notification checks and to you.
+export const MAX_LOOKS = 6;
+export const looksDone = (st: SourceState | undefined) => (st?.looks && st.looks.since === st.requestedAt ? st.looks.n : 0);
+
+export function claudeLooks(src: Source, st: SourceState | undefined, o: { state: AppState; claudeCode?: boolean; demo?: boolean; readOnly?: boolean; emails?: string[] }): boolean {
+  const set = o.state.settings ?? {};
+  if (o.readOnly || set.aiOn !== true || !set.agentExports || set.agentDownloads === false || set.agentChecks === false) return false;
+  if (o.claudeCode === false || !src.waitHours || src.agentBlocked || (!o.demo && !o.state.ask?.retention?.['claude-code'])) return false;
+  if (looksDone(st) >= MAX_LOOKS) return false;
+  return !!downloadPage(src) || claudeInboxes(o.emails ?? [], set.inboxesOff, st?.notifyEmail).inboxes?.length !== 0;
 }
 
 // What read-only mode (UMP_READONLY) still does: show things, and open pages and apps. Every other action is refused
@@ -56,7 +78,7 @@ const SAFARI_MANUAL_DAYS = 36500;
 export function producesFor(src: Source, probe: Probe | null, st: SourceState | undefined): string[] {
   if (src.id === 'other_mail') {
     const names = new Set(probe?.mailbox_sources ?? []);
-    if (st?.accountName) names.add(slug(st.accountName));
+    if (st?.accountName) names.add(mailSource(st.accountName));
     return [...names];
   }
   return src.produces ?? [];
@@ -64,6 +86,16 @@ export function producesFor(src: Source, probe: Probe | null, st: SourceState | 
 
 export function slug(name: string): string {
   return name.toLowerCase().replace(/\W+/g, '_').replace(/^_+|_+$/g, '') || 'other_mail';
+}
+
+// The folder under corpus/imports/ a mailbox goes in, and its source: the account's name (Hotmail, Work), but never another
+// source's. A mailbox named Mail would replace what Mail on this Mac read, one named Instagram be mixed in with Instagram's
+// messages: those get _mail after the name (mail_mail), as imports.py's mail_source names them.
+export function mailSource(accountName?: string): string {
+  const s = slug(accountName || 'other_mail');
+  const custom = CATALOG.some((x) => x.custom && [x.importDir ?? x.id, ...(x.produces ?? [])].map(serviceKey).includes(s));
+  const taken = s !== 'other_mail' && (reservedFolders().has(s) || custom || s.startsWith('phone_') || /_(other|files)$/.test(s));
+  return taken ? `${s}_mail` : s;
 }
 
 interface Totals {
@@ -161,7 +193,8 @@ function stepsView(src: Source, st: SourceState | undefined, watching = true) {
   const done = new Set(st?.stepsDone ?? []);
   const say = (t: string) => (watching ? t : t.replace(/ The app picks it up from Downloads\./, ' Then drop it on this window.')
     .replace(/leave it in Downloads: the app picks it up from there\. Or drop/, 'drop'));
-  return src.steps.map((s, i) => ({ ...s, text: say(s.text), done: done.has(i) }));
+  // A service you added: its download is picked up by itself only while Downloads is watched.
+  return src.steps.map((s, i) => ({ ...s, text: say(s.text), ...(s.detail && !watching ? { detail: s.detail.replace(/a download in Downloads with ("[^"]*") in its name is picked up by itself\./, 'drop the download on this window: one with $1 in its name.') } : {}), done: done.has(i) }));
 }
 
 function jobFor(id: string, jobs: JobView[]): JobView | undefined {
@@ -178,7 +211,8 @@ function jobStatus(job: JobView, now: Date, connector?: string): { status: strin
   }
   const since = job.startedAt ? ` (started ${ago(job.startedAt, now)})` : '';
   const what = job.kind === 'import' ? 'Importing' : job.kind === 'iphone' ? 'Decrypting and reading' : 'Reading';
-  return { status: `${what}…${since}`, detail: job.lastLine, stage: connector && job.connectors.length > 1 ? 'reading' : undefined };
+  // The iPhone's lines say how far the decrypting is; a connector's are its own bookkeeping, kept for the Progress log.
+  return { status: `${what}…${since}`, detail: job.kind === 'iphone' ? job.lastLine : undefined, stage: connector && job.connectors.length > 1 ? 'reading' : undefined };
 }
 
 const skip: Action = { id: 'skip', label: 'Skip', input: 'skip-reason' };
@@ -203,6 +237,20 @@ const NOT_FOR_ME: Record<string, { label: string; reason: string }> = {
   retention_iphone_messages: { label: 'I Don\'t Have an iPhone', reason: 'No iPhone' },
   iphone_notifications: { label: 'I Don\'t Have an iPhone', reason: 'No iPhone' },
 };
+
+// The iPhone backup skipped for good (not set aside for now): the checks about the iPhone don't apply either.
+const noIphone = (state: AppState) => { const s = state.sources.iphone_backup?.skipped; return !!s && s !== NOT_NOW; };
+
+// Full Disk Access was on and isn't now. macOS ties it to the app's signature, which changes each time the app is built
+// again (an update), and turns it off without a word: reads then quietly find nothing. Known from the app's memory of
+// seeing it on (state.fdaOnAt), or from sources on this Mac read before that it keeps closed now.
+export const FDA_LOST = 'macOS turned Full Disk Access off for Homecoming after the update: turn it off and on again in System Settings.';
+export function fdaLost(probe: Probe | null, stats: Stats | null, state: AppState): boolean {
+  if (probe?.fda !== false) return false;
+  if (state.fdaOnAt) return true;
+  return CATALOG.some((s) => s.group === 'mac' && !!s.connector && probe.sources[s.connector] === 'blocked'
+    && totals(s.produces ?? [], undefined, stats).records > 0);
+}
 
 // Setup checks that hold the rest up until they're done: nothing on this Mac is read without Full Disk Access or Python,
 // and a library in iCloud would upload everything it collects. The others (keeping history, free space, who you are)
@@ -252,6 +300,10 @@ function setupState(src: Source, inp: StatusInput): SourceView {
     case 'fda': {
       if (probe.fda === true) return { ...v, status: 'Granted' };
       if (probe.fda === null) return { ...v, section: 'unavailable', status: 'Nothing on this Mac needs it' };
+      if (fdaLost(probe, inp.stats, state)) {
+        return { ...v, section: 'todo', priority: 1, status: 'Turned off after the update', detail: FDA_LOST,
+          actions: [{ id: 'open-fda-settings', label: 'Open System Settings…', primary: true }, recheck] };
+      }
       // The Mac's sources it keeps closed, and the iPhone backup when there's one it can't see.
       const blocked = Object.values(probe.sources).filter((a) => a === 'blocked').length + (!probe.backups?.length && !state.sources.iphone_backup?.skipped ? 1 : 0);
       return { ...v, section: 'todo', priority: 1, status: `Needed for ${blocked} source${blocked === 1 ? '' : 's'} on this Mac`,
@@ -309,7 +361,7 @@ function setupState(src: Source, inp: StatusInput): SourceView {
     }
     case 'retention_iphone_messages': {
       const m = probe.retention.iphone_messages;
-      if (state.sources.iphone_backup?.skipped) return { ...v, section: 'unavailable', status: 'No iPhone backup' };
+      if (noIphone(state)) return { ...v, section: 'unavailable', status: 'No iPhone', actions: [unskip] };
       if (m?.readable && (m.value === null || m.value === 0)) return { ...v, status: 'Forever (from your iPhone backup)' };
       if (st?.doneAt) return { ...v, status: 'Checked by you', actions: [unmark] };
       const days = typeof m?.value === 'number' ? m.value : null;
@@ -329,7 +381,9 @@ function setupState(src: Source, inp: StatusInput): SourceView {
         actions: [{ id: 'open-external', label: 'Open Activity Controls', primary: true }, { id: 'mark-done', label: 'I\'ve Done It' }] };
     }
     case 'iphone_notifications': {
-      if (state.sources.iphone_backup?.skipped) return { ...v, section: 'unavailable', status: 'No iPhone' };
+      if (noIphone(state)) return { ...v, section: 'unavailable', status: 'No iPhone', actions: [unskip] };
+      // Notifications aren't looked in (off in General): forwarding the iPhone's wouldn't help.
+      if (state.settings?.notificationChecks === false) return { ...v, section: 'unavailable', status: 'Not looking in notifications (off in General)' };
       if (probe.notifications?.iphone) return { ...v, status: 'On: your iPhone\'s notifications reach this Mac' };
       if (st?.doneAt) return { ...v, status: 'Turned on by you', actions: [unmark] };
       return { ...v, section: 'todo', priority: 59, status: 'Your iPhone\'s notifications don\'t reach this Mac yet',
@@ -360,8 +414,12 @@ function setupState(src: Source, inp: StatusInput): SourceView {
 
 // ---------------------------------------------------------------- on this Mac
 
+// Mail on this Mac with no account holding mail (the probe looked): nothing to read, so it isn't read or counted.
+export const noMailAccounts = (src: { id: string }, probe: Probe | null) =>
+  src.id === 'apple_mail' && probe?.sources?.mail_app === 'ok' && probe.mail_accounts?.length === 0;
+
 // Mac sources whose iPhone half is its own phone source (not merged like Messages and calls).
-const ON_THE_PHONE: Record<string, string> = { voice_memos: 'phone_voicerecordings' };
+const ON_THE_PHONE: Record<string, string> = { voice_memos: 'phone_voicerecordings', whatsapp: 'phone_whatsapp', apple_maps: 'phone_mapssync' };
 
 function macView(src: Source, inp: StatusInput): SourceView {
   const { probe, stats, state, jobs, now } = inp;
@@ -378,10 +436,17 @@ function macView(src: Source, inp: StatusInput): SourceView {
   if (st?.lastError && later(st.lastErrorAt ?? '1970-01-01T00:00:00Z', t.ranAt)) {
     return { ...v, section: t.records > 0 ? 'done' : 'working', needsYou: true, priority: 12, status: 'Couldn\'t read it', detail: st.lastError, actions: [{ id: 'run', label: 'Try Again', primary: true }, skip] };
   }
+  if (!t.records && noMailAccounts(src, probe)) {
+    return { ...v, section: 'unavailable', status: 'No accounts in Mail', detail: 'Add one in System Settings → Internet Accounts to have it read, then choose Check Again.',
+      actions: [{ id: 'open-internet-accounts', label: 'Open Internet Accounts' }, { id: 'recheck', label: 'Check Again' }] };
+  }
   if (t.ranAt) {
     if (t.records === 0) {
       const phone = stats?.manifest?.[ON_THE_PHONE[src.id] ?? '']?.count ?? 0;  // kept on the iPhone page, not here
-      return { ...v, section: 'unavailable', status: phone ? `None on this Mac: ${count(phone)} came from the iPhone backup` : 'Nothing found on this Mac',
+      // The Mac had some, every one already in the iPhone backup's copy (connectors leave those to it).
+      const same = Number(stats?.manifest?.[src.produces?.[0] ?? '']?.notes?.in_the_iphone_backup) || 0;
+      return { ...v, section: 'unavailable', status: same ? `All ${count(same)} on this Mac are in the iPhone backup too, and counted there`
+          : phone ? `None on this Mac: ${count(phone)} came from the iPhone backup` : 'Nothing found on this Mac',
         actions: [{ id: 'run', label: 'Read Again' }] };
     }
     v.status = `${recs(t.records)}${range(t.first, t.last, now) ? `, ${range(t.first, t.last, now)}` : ''}`;
@@ -498,10 +563,16 @@ function iphoneView(src: Source, inp: StatusInput): SourceView {
   }
   const warnings = b.encrypted ? [] : ['This backup isn\'t encrypted, so it has no call history, Health or Safari. In Finder, turn on "Encrypt local backup" and back up again.'];
   if (inProgress) warnings.push('A newer backup is still in progress.');
+  // What was read from another device (not the one picked now) is still in the library: said here, with Take It Out,
+  // and reading this one asks first. Once it's read, the app can't tell which device the rest came from.
+  const other = t.records > 0 || merged.length ? otherPhoneRead(probe, state.settings?.iphoneDevice) : null; // its own, or its messages and calls
+  const forget: Action = { id: 'forget-phone', label: 'Take It Out', confirm: `Take out what was read from ${other?.device}? Its messages, calls, Health and apps come out of your library, and the decrypted copy of its backup is deleted. What this Mac has of its own stays. If it's an older phone of yours, keep it: its history is yours too.` };
+  const readOver: Action = { ...read, confirm: `What was read from ${other?.device} stays in your library, mixed in with ${b.device ?? 'this one'}'s: once it's read, it can't be taken out by itself. If it isn't yours, take it out first.` };
   return { ...v, section: t.records > 0 ? 'done' : 'todo', priority: 14, warnings,
     status: t.records > 0 ? `A newer backup is ready (${day(b.date)})` : `Backup from ${day(b.date)} is ready to read`,
     detail: `${desc}.${pw ? ' Enter the password you set when you turned on "Encrypt local backup".' : ''}`,
-    actions: [read, ...another, skip] };
+    ...(other ? { notes: [`What was read from ${other.device} is still in your library. If it isn't yours, take it out before reading this one.`] } : {}),
+    actions: other ? [{ ...forget, primary: false }, readOver, ...another, skip] : [read, ...another, skip] };
 }
 
 // ---------------------------------------------------------------- web exports and guided sources
@@ -511,6 +582,9 @@ export const CHROME_PERMISSION = /\b(permission|allow)\b.*\b(chrome|claude)\b|\b
 
 // Claude stopped for a sign-in (its needs_you note): once the session cookie turns up, it can carry on by itself.
 export const SIGN_IN_NOTE = /\b(sign|log)(ged)?[ -]?(in|into|on)\b/i;
+// A sign-in to an inbox ("Sign in to ada@work.example in Chrome"), not to the service as an account ("as ada@..."): the
+// app can't see that one, so it isn't carried on by itself.
+export const INBOX_SIGN_IN = /\b(?:sign|log)(?:ged)?[ -]?(?:in|into|on)\s+(?:to\s+)?[^\s@]+@\S+/i;
 
 // Whether the browser Do It for Me works in (Chrome, or the one picked in AI Settings) is signed in to a web export
 // (py/signins.py): in the profile Claude in Chrome works in (or in any, when none has it), and if not, where it is
@@ -545,13 +619,16 @@ function foundActions(inp: StatusInput, id: string): { files: string[]; actions:
   };
 }
 
-// A download in Downloads for a source you hadn't asked for (or skipped): it waits for a yes, and says why.
+// A download in Downloads for a source you hadn't asked for (or skipped): it waits for a yes, and says why. One that's
+// collected already stays collected: the new download adds what's new.
 function foundView(v: SourceView, src: Source, found: { files: string[]; actions: Action[] }, skipped?: string): SourceView {
   const one = found.files.length === 1;
+  const have = v.records > 0 && !skipped;
   const why = skipped
     ? `You skipped ${src.name}. Importing ${one ? 'it' : 'them'} includes ${src.name} again, and moves ${one ? 'the file' : 'the files'} out of Downloads into your library.`
-    : `You hadn't asked ${src.name} for your data in the app, so ${one ? 'it waits' : 'they wait'} for a yes. Importing moves ${one ? 'it' : 'them'} out of Downloads into your library.`;
-  return { ...v, section: 'working', needsYou: true, priority: 4.5, status: `Found ${one ? 'the export' : `${found.files.length} files`} in Downloads`,
+    : have ? `${src.name} is in your library already. Importing ${one ? 'it' : 'them'} adds what's new, and moves ${one ? 'it' : 'them'} out of Downloads into your library.`
+      : `You hadn't asked ${src.name} for your data in the app, so ${one ? 'it waits' : 'they wait'} for a yes. Importing moves ${one ? 'it' : 'them'} out of Downloads into your library.`;
+  return { ...v, section: have ? 'done' : 'working', needsYou: true, priority: 4.5, status: `Found ${one ? 'the export' : `${found.files.length} files`} in Downloads`,
     detail: `${found.files.join('\n')}\n${why}`, actions: found.actions };
 }
 
@@ -592,13 +669,18 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     return { ...v, section: 'unavailable', status: `Skipped: ${st.skipped}`, actions: [unskip], steps: undefined };
   }
 
+  // Importing (a part of it, or labels) while Claude is at it or waiting for you: Claude's comes first, with its Stop.
   const job = jobFor(src.id, jobs);
-  if (job) return { ...v, section: 'working', ...jobStatus(job, now), actions: [] };
+  const a0 = isWeb && set.aiOn !== false && set.agentExports !== false && inp.agentWhy?.fix !== 'provider' ? st?.agent : undefined;
+  const busy = !!a0 && (['running', 'queued'].includes(a0.status)
+    || (a0.status === 'needs_you' && now.getTime() - Date.parse(a0.at) < 2 * DAY && later(a0.at, st?.importedAt)));
+  if (job && !busy) return { ...v, section: 'working', ...jobStatus(job, now), actions: [] };
 
-  // Do It for Me: Claude Code in the browser, requesting or downloading it. With AI or Do It for Me off, what it was doing is set aside.
-  const ag = isWeb && set.aiOn !== false && set.agentExports !== false ? st?.agent : undefined;
+  // Do It for Me: Claude Code in the browser, requesting or downloading it. With AI or Do It for Me off, or an AI picked
+  // it can't use yet, what it was doing is set aside.
+  const ag = isWeb && set.aiOn !== false && set.agentExports !== false && inp.agentWhy?.fix !== 'provider' ? st?.agent : undefined;
   // Claude looks for it by itself every few hours while it's on its way (main.ts maybeCheckExports), unless turned off.
-  const checks = set.aiOn === true && !!set.agentExports && set.agentDownloads !== false && set.agentChecks !== false && inp.claudeCode !== false && !!src.waitHours;
+  const checks = claudeLooks(src, st, { state: inp.state, claudeCode: inp.claudeCode, demo: inp.demo, readOnly: inp.readOnly, emails: inp.mail?.emails });
   const noChecks: Action = { id: 'agent-no-checks', label: 'Stop Checking' };
   const doing = !ag ? '' : ag.mode === 'request' ? 'requesting your export' : ag.auto === 'check' ? 'looking for your export' : 'downloading your export';
   const myself: Action = { id: 'agent-dismiss', label: 'I\'ll Do It Myself' };
@@ -620,12 +702,16 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   }
   const fresh = (at: string) => now.getTime() - Date.parse(at) < 2 * DAY && later(at, st?.importedAt);
   // It needs Claude Code, and that isn't on this Mac (any more): setting it up is the next step, not trying again.
+  // It can't run: setting it up is the next step, not trying again. Not installed, it's getting Claude Code; installed,
+  // what's missing (a sign-in, a browser it works in, a plan) is fixed in AI Settings.
   if (ag && fresh(ag.at) && (ag.status === 'needs_you' || ag.status === 'failed') && inp.claudeCode === false) {
     const self: Action[] = ag.mode === 'request' ? opens(open) : [{ id: 'open-ready', label: 'Open the Download Page', primary: true }];
-    return { ...v, section: 'working', needsYou: true, priority: 12, status: 'Do It for Me needs Claude Code',
-      detail: `Claude Code isn't on this Mac. Install it, sign in, and add the Claude in Chrome extension to ${B}, then Claude can do this for you. Or do it yourself with the steps below.`,
-      actions: [...self, { id: 'get-claude-code', label: 'Get Claude Code…' }, ...(ag.mode === 'request' ? [{ id: 'mark-requested', label: 'I\'ve Requested It' }] : []), addFile,
-        { id: 'agent-dismiss', label: 'Dismiss' }] };
+    const missing = !inp.agentWhy?.fix || inp.agentWhy.fix === 'install';
+    return { ...v, section: 'working', needsYou: true, priority: 12, status: missing ? 'Do It for Me needs Claude Code' : 'Do It for Me can\'t run yet',
+      detail: missing ? `Claude Code isn't on this Mac. Install it, sign in, and add the Claude in Chrome extension to ${B}, then Claude can do this for you. Or do it yourself with the steps below.`
+        : `${inp.agentWhy!.why} Or do it yourself with the steps below.`,
+      actions: [...self, missing ? { id: 'get-claude-code', label: 'Get Claude Code…' } : { id: 'show-ai', label: 'Open AI Settings' },
+        ...(ag.mode === 'request' ? [{ id: 'mark-requested', label: 'I\'ve Requested It' }] : []), addFile, { id: 'agent-dismiss', label: 'Dismiss' }] };
   }
   // Claude waiting on you comes first of all: it's stopped in your browser until you answer.
   if (ag && fresh(ag.at) && ag.status === 'needs_you') {
@@ -644,7 +730,8 @@ function exportView(src: Source, inp: StatusInput): SourceView {
         actions: [{ id: 'open-chrome', label: `Open ${B}`, primary: true }, { id: retry, label: 'Try Again', ai: true }, myself] };
     }
     // A sign-in: your password manager or a passkey can fill it, and Claude notices when you're in.
-    const signIn = !!src.signIn && SIGN_IN_NOTE.test(ag.note ?? '');
+    // (Not one to an inbox, naming its address: the app can't see that one, so Continue it is.)
+    const signIn = !!src.signIn && SIGN_IN_NOTE.test(ag.note ?? '') && !INBOX_SIGN_IN.test(ag.note ?? '');
     // Claude in Chrome asks before it works on a site for the first time, and nobody was there to say yes.
     const allow = CHROME_PERMISSION.test(ag.note ?? '');
     return { ...v, section: 'working', needsYou: true, priority: 3, status: `Needs you: ${ag.note || `have a look in ${B}`}`,
@@ -663,7 +750,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const downloading = ag?.status === 'downloading' && !later(st?.lastFileAt, ag.at);
   if (downloading && now.getTime() - Date.parse(ag!.at) < 45 * 60_000) {
     return { ...v, section: 'working', priority: 30, steps: undefined, status: `Downloading in ${B}`, actions: [addFile],
-      detail: inp.demo ? 'In the demo, nothing really downloads: a stand-in plays Claude.' : 'The app reads it as soon as it lands in Downloads.' };
+      detail: inp.demo ? 'In the demo, nothing really downloads: a stand-in plays Claude.' : `The app reads it as soon as it lands in Downloads.${src.firstPartOnly ? ` Claude downloads the first part only: the rest can be very large, so download the ones you want from ${src.name}'s page, and add them here.` : ''}` };
   }
 
   const found = foundActions(inp, src.id);
@@ -714,12 +801,18 @@ function exportView(src: Source, inp: StatusInput): SourceView {
     if (mine?.status === 'not_ready') v.notes!.push(`Claude looked for it ${ago(mine.at, now)}: not ready yet.${mine.note ? ` ${mine.note}` : ''}${again}`);
     if (mine?.status === 'failed' && mine.auto === 'check') v.notes!.push(`Claude looked for it ${ago(mine.at, now)}, but couldn't finish: ${mine.note || 'something went wrong'}${again}`);
     if (checks && st!.noChecks) v.notes!.push(`Claude doesn't look for it by itself: you chose Stop Checking. Look for It turns that back on.`);
+    if (looksDone(st) >= MAX_LOOKS) v.notes!.push(`Claude looked for it ${MAX_LOOKS} times and didn't find it, so it stopped looking by itself. Look for It asks it again.`);
     if (src.expiresDays) v.notes!.push(`The download link stays valid for ${src.expiresDays} day${src.expiresDays === 1 ? '' : 's'}.`);
     // A notification that looked like the service saying it's ready: a guess, so it's "looks ready", with the words.
     const signal = st!.readySignal && later(st!.readySignal.at, st!.requestedAt) ? st!.readySignal : null;
+    // The link lasts so many days from when it was ready: the ready email or notification, else the longest usual wait.
+    const gone = !!src.expiresDays && now.getTime() > (signal ? Date.parse(signal.at) : Date.parse(st!.requestedAt!) + hi * HOUR) + src.expiresDays * DAY;
     // Once it's ready there's nothing more to watch for.
-    if (!signal) v.notes!.push(`While you wait, the app watches Apple Mail and this Mac's notifications for ${src.name} saying your data is ready. It can miss one, so keep an eye on your email and ${src.name} too.`);
-    if (signal && !(src.expiresDays && since > hi * HOUR + src.expiresDays * DAY)) {
+    // Only where it looks (General's switches).
+    const where = [set.mailChecks !== false ? 'Apple Mail' : '', set.notificationChecks !== false ? 'this Mac\'s notifications' : ''].filter(Boolean).join(' and ');
+    if (!signal) v.notes!.push(where ? `While you wait, the app watches ${where} for ${src.name} saying your data is ready. It can miss one, so keep an eye on your email and ${src.name} too.`
+      : `The app isn't looking in Mail or notifications (off in General), so keep an eye on your email and ${src.name} for word that it's ready.`);
+    if (signal && !gone) {
       const ready: Action[] = [{ id: 'agent-download', label: 'Download It for Me', primary: true, ai: true },
         { id: 'open-ready', label: signal.link ? 'Open the Download Link' : 'Open the Download Page' }, addFile, unrequest];
       if (signal.sender) { // an email from the service, in Mail's index: surer than a notification
@@ -735,8 +828,7 @@ function exportView(src: Source, inp: StatusInput): SourceView {
       const usual = src.custom ? 'Most services answer in a day or two; by law they have about 30 days.' : `Usually ready in ${waitRange([lo, hi])}.`;
       return { ...v, section: 'working', waiting: true, onTheWay: 'waiting', priority: 50, status: `${reqText}. ${usual}`, actions: getIt.map((a) => ({ ...a, primary: false })), steps: undefined };
     }
-    const expired = src.expiresDays && since > (hi * HOUR + src.expiresDays * DAY);
-    if (expired) {
+    if (gone) {
       return { ...v, section: 'working', needsYou: true, priority: 11, onTheWay: 'expired', status: `${reqText}. The link has probably expired.`,
         detail: 'If you never downloaded it, ask for a new export, then choose I\'ve Requested a New One.',
         actions: [...opens(open), { id: 'mark-requested', label: 'I\'ve Requested a New One' }, addFile], warnings: [] };
@@ -801,13 +893,17 @@ function exportView(src: Source, inp: StatusInput): SourceView {
       v.detail = v.detail ? `${hint}\n${v.detail}` : hint;
     }
     const requested: Action = { id: 'mark-requested', label: 'I\'ve Requested It' };
-    v.actions = [{ id: 'agent-request', label: 'Do It for Me', primary: true, ai: true }, ...opens(open, { primary: false }), requested, addFile, skip];
+    // Do It for Me said no to (Not Now, or off in AI Settings): still there, but opening the page yourself comes first.
+    // Said no to, or not there yet with the AI picked: opening the page yourself comes first.
+    const declined = set.agentExports === false || inp.agentWhy?.fix === 'provider';
+    const doIt: Action = { id: 'agent-request', label: 'Do It for Me', primary: !declined, ai: true };
+    v.actions = declined ? [...opens(open), requested, doIt, addFile, skip] : [doIt, ...opens(open, { primary: false }), requested, addFile, skip];
     if (src.custom) {
       v.detail = 'Most services answer in a day or two; by law they have about 30 days.';
       const draft: Action = { id: 'draft-request', label: 'Draft a Request' };
       // Its export page is known: Claude can request it there, as it does the built-in ones.
       v.actions = src.exportPage && !src.agentBlocked
-        ? [{ id: 'agent-request', label: 'Do It for Me', primary: true, ai: true }, ...opens(open, { primary: false }), requested, addFile, draft, skip, removeIt]
+        ? declined ? [...opens(open), requested, doIt, addFile, draft, skip, removeIt] : [doIt, ...opens(open, { primary: false }), requested, addFile, draft, skip, removeIt]
         : open ? [open, requested, addFile, draft, skip, removeIt] : [{ ...draft, primary: true }, requested, addFile, skip, removeIt];
     }
     if (src.cantExport) v.actions.push({ id: 'cant-export', label: 'My Account Can\'t Export', input: 'skip-reason' });
@@ -836,7 +932,9 @@ export function computeSources(inp: StatusInput): SourceView[] {
   setServices(inp.state.services ?? []);  // services you added are sources too
   // AI turned off on the AI page: no AI actions anywhere. Without Claude Code, nothing that would start Claude in Chrome.
   const noAi = inp.state.settings?.aiOn === false;
-  const noAgent = inp.claudeCode === false;
+  // Can't run: no Do It for Me buttons, unless it's only the AI picked (it isn't there yet with it): then the button
+  // stays, and says so when pressed (renderer agent_gate.tsx).
+  const noAgent = inp.claudeCode === false && inp.agentWhy?.fix !== 'provider';
   const views = CATALOG.map((src) => {
     const v: SourceView = src.group === 'setup' ? setupView(src, inp)
       : src.group === 'mac' ? withContents(macView(src, inp), src, inp.stats)
@@ -856,6 +954,10 @@ export function computeSources(inp: StatusInput): SourceView[] {
       if (v.actions.length && !v.actions.some((a) => a.primary)) v.actions[0] = { ...v.actions[0], primary: true };
       if (!v.notes?.includes(src.agentBlocked)) v.notes = [src.agentBlocked, ...(v.notes ?? [])];
     }
+    // macOS won't let it look in Downloads (no Full Disk Access, and "Don't Allow" when it asked): exports there wait.
+    if (inp.probe?.downloads === 'blocked' && (src.group === 'web' || src.group === 'guided') && v.section !== 'done' && v.section !== 'unavailable') {
+      v.warnings = [...(v.warnings ?? []), DOWNLOADS_BLOCKED];
+    }
     return v;
   });
   // A source that waits on a setup item that's already resolved isn't blocked.
@@ -874,6 +976,8 @@ export function summarize(views: SourceView[], stats: Stats | null): Summary {
     working: views.filter((v) => v.section === 'working').length,
   };
 }
+
+export const DOWNLOADS_BLOCKED = 'Homecoming can\'t look in your Downloads folder, so it can\'t pick up this export when it lands there. Turn on Full Disk Access in Setup Checks (or allow Downloads in System Settings → Privacy & Security → Files and Folders → Homecoming), or drop the file on this window.';
 
 // What to do next: of what needs you and what's still to do, the most pressing (priority says), the optional ones last.
 export function nextUp(views: SourceView[]): string | null {

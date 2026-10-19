@@ -5,6 +5,7 @@ Keeps the user's prompts, the assistant's visible replies, and tool calls the us
 I/O are dropped."""
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -21,9 +22,29 @@ AVENUE = ("Local JSONL. Claude Code: ~/.claude/projects/<cwd-slug>/<session>.jso
           "documented by cursor-history and cursor-chat-bulk-export; neither had a conversation on this Mac to verify.")
 
 REJECTED = "The user doesn't want to proceed with this tool use"
+AGENT_FOLDER = "homecoming-agent-"  # export_agent.ts's working folders; Claude Code names a project after its folder
 NOISE_PREFIXES = ("<command-", "<local-command", "<task-notification", "<system-reminder", "Caveat: The messages",
                   "[Request interrupted", "<environment_context", "<user_instructions", "# AGENTS.md",
                   "<permissions instructions", "<turn_aborted")
+
+
+def _lines(f):
+    """The records of a JSONL transcript: a line not (yet) whole, as the last one of a session being written, or one that
+    isn't a record, is passed over."""
+    try:
+        text = f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        if line.strip():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict):
+                out.append(r)
+    return out
 
 
 def _text(content):
@@ -34,13 +55,17 @@ def _text(content):
 
 def claude_code(w):
     for f in sorted((HOME / ".claude/projects").glob("*/*.jsonl")):
-        lines = [json.loads(l) for l in f.open() if l.strip().startswith("{")]
+        # Do It for Me's own sessions (Homecoming's agent, run in a homecoming-agent-* folder): the app's prompts, not yours.
+        if AGENT_FOLDER in f.parent.name:
+            w.notes["homecoming_agent_sessions"] = w.notes.get("homecoming_agent_sessions", 0) + 1
+            continue
+        lines = _lines(f)
         title = next((r.get("customTitle") or r.get("title") for r in reversed(lines) if r.get("type") == "custom-title"), None)
         tool_names = {}
         for r in lines:
             if r.get("type") not in ("user", "assistant") or r.get("isMeta") or r.get("isSidechain"):
                 continue
-            if w.has(r.get("uuid")):
+            if not r.get("uuid") or w.has(r.get("uuid")):
                 continue  # resumed sessions repeat earlier messages
             msg = r.get("message") or {}
             content = msg.get("content")
@@ -77,9 +102,8 @@ def _codex_file(f):
     was forked from, when it started, where it ran, and its messages in order, as (role, text, timestamp)."""
     sid = cwd = forked = start = None
     msgs = []
-    for l in f.open():
-        r = json.loads(l)
-        p = r.get("payload") or {}
+    for r in _lines(f):
+        p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
         if r.get("type") == "session_meta":
             if sid is None:
                 sid, cwd, forked, start = p.get("id"), p.get("cwd"), p.get("forked_from_id"), r.get("timestamp")
@@ -108,12 +132,14 @@ def _copied(msgs, earlier, until=None):
 
 def codex(w):
     names = {}
-    idx = HOME / ".codex/session_index.jsonl"
-    if idx.exists():
-        for l in idx.open():
-            d = json.loads(l)
+    root = Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else HOME / ".codex"
+    idx = root / "session_index.jsonl"
+    for d in _lines(idx):
+        if d.get("id"):
             names[d["id"]] = d.get("thread_name")
-    files = [(f, *_codex_file(f)) for f in sorted((HOME / ".codex/sessions").rglob("rollout-*.jsonl"))]
+    # Archived threads move to archived_sessions (flat, same files): read with the rest. CODEX_HOME moves it all.
+    found = [*(root / "sessions").rglob("rollout-*.jsonl"), *(root / "archived_sessions").glob("rollout-*.jsonl")]
+    files = [(f, *_codex_file(f)) for f in sorted(found, key=lambda f: f.name)]
     # A forked session's file starts with a copy of its parent's conversation, read already from the parent's own
     # file: those are skipped, and its own messages are numbered from 1. Parents are read first. A session in more
     # than one file (resumed) goes on from what's been read. The n-th message of a session is codex:<session>:<n>.
@@ -245,8 +271,14 @@ def vscode_chat(w):
                           meta={"tool": tool, "responder": s.get("responderUsername")})
 
 
+def agent_session(rec):
+    """A record from one of Do It for Me's own sessions (an earlier run kept it before they were left out)."""
+    meta = rec.get("meta") or {}
+    return meta.get("tool") == "claude-code" and AGENT_FOLDER in str(meta.get("cwd") or "")
+
+
 def main():
-    with Writer("ai_coding", AVENUE) as w:
+    with Writer("ai_coding", AVENUE, forget=agent_session) as w:
         claude_code(w)
         codex(w)
         cursor(w)

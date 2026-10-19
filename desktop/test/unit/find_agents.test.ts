@@ -32,6 +32,27 @@ test('nvm (its newest Node first) and npm\'s global folder, with nothing on the 
   }
 });
 
+test('the Claude app\'s own copy, newest version first, with the files the app keeps beside them', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ump-agents-'));
+  const saved = { PATH: process.env.PATH, UMP_CLAUDE_CMD: process.env.UMP_CLAUDE_CMD };
+  try {
+    process.env.PATH = '/usr/bin:/bin';
+    delete process.env.UMP_CLAUDE_CMD;
+    const root = path.join(home, 'Library/Application Support/Claude/claude-code');
+    exe(path.join(root, '2.1.293/0a1b2c/claude.app/Contents/MacOS/claude'));
+    exe(path.join(root, '2.1.295/9d6405/claude.app/Contents/MacOS/claude'));
+    fs.writeFileSync(path.join(root, 'auto-update-candidate.json'), '{"version":"2.1.296"}');
+    fs.writeFileSync(path.join(root, '2.1.295/.DS_Store'), '');
+    if (!['/opt/homebrew/bin/claude', '/usr/local/bin/claude'].some((p) => fs.existsSync(p))) {
+      assert.equal(findClaude(home), path.join(root, '2.1.295/9d6405/claude.app/Contents/MacOS/claude'));
+    }
+  } finally {
+    Object.assign(process.env, saved);
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k];
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('the login shell\'s PATH is added after the system\'s, once; a shell that fails changes nothing', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ump-shell-'));
   try {

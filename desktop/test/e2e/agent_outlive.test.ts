@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { act, DESKTOP, launch, type Running, type Sandbox, sandbox, sandboxEnv, until } from './harness.ts';
+import { act, claudeChecked, DESKTOP, launch, type Running, type Sandbox, sandbox, sandboxEnv, until } from './harness.ts';
 
 let sb: Sandbox;
 let run: Running | null = null;
@@ -30,7 +30,7 @@ test('the app killed while Claude is at an export: Claude stops too', async () =
   fs.writeFileSync(file('plan.json'), JSON.stringify({ request: [{ steps: ['Opening Spotify\'s privacy page', 'Requesting the export'], result: 'requested', sleep: 30 }] }));
   const sources = Object.fromEntries(Object.values(BY_ID).filter((s) => s.group === 'web' && s.id !== 'spotify').map((s) => [s.id, { skipped: 'I don\'t use it' }]));
   fs.mkdirSync(sb.userData, { recursive: true });
-  fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({ version: 1, onboarding: { done: true }, sources,
+  fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({ version: 1, ask: claudeChecked(), onboarding: { done: true }, sources,
     settings: { autoRefresh: false, aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true } }));
   run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_AGENT_CMD: path.join(DESKTOP, 'test/fakes/fake_claude_browser.py'), FAKE_BROWSER_PLAN: file('plan.json') }));
   await until(run.page, 'probe', (x) => !!x.probeTime);

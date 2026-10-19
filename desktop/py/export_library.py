@@ -66,7 +66,9 @@ def files_of(corpus: Path, parts: list[str]):
                 continue
             for root, dirs, names in os.walk(p):
                 r = Path(root)
-                dirs[:] = sorted(d for d in dirs if not (r / d).is_symlink())
+                # Not links out of the library, nor raw/unpacked/: the tar exports unpacked once to be read, already in
+                # imports/ as they came (imports.py unpacked_dir).
+                dirs[:] = sorted(d for d in dirs if not (r / d).is_symlink() and (r / d) != corpus / 'raw' / 'unpacked')
                 for n in sorted(names):
                     f = r / n
                     if n in SKIP or f.is_symlink() or not f.is_file():

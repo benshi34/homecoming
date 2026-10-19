@@ -17,3 +17,13 @@ export function trayNeeds(views: SourceView[]): { id: string; label: string }[] 
 export function loginItemWanted(s: Settings, packaged: boolean): boolean {
   return s.openAtLogin ?? s.background ?? packaged;
 }
+
+// The daily read of this Mac, from when each due source was last read (null: never). A first read is wanted now, as
+// it's watched. Otherwise it runs at background priority, and on battery it waits for the charger, though no more
+// than three days (Screen Time and the call log forget what's older than a few weeks).
+export const BATTERY_WAIT_MS = 3 * 24 * 3600_000;
+export function dailyRead(lastRead: (number | null)[], now: number, onBattery: boolean): 'now' | 'background' | 'later' {
+  if (lastRead.some((t) => t === null)) return 'now';
+  if (onBattery && lastRead.every((t) => now - t! < BATTERY_WAIT_MS)) return 'later';
+  return 'background';
+}

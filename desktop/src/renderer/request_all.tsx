@@ -9,6 +9,7 @@ import { requestPlan } from '../shared/request_all.ts';
 import type { Snapshot, SourceView } from '../shared/types.ts';
 import { api } from './api.ts';
 import { SourceIcon } from './icons.tsx';
+import { agentGate, AgentGateSheet, type Gate } from './agent_gate.tsx';
 import { AgentOptIn } from './parts.tsx';
 import { AiMark, Banner, Button, GroupRow, Sheet, Spinner } from './ui.tsx';
 
@@ -19,6 +20,7 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
   const plan = requestPlan(snap.sources);
   const [checking, setChecking] = useState(true);
   const [optIn, setOptIn] = useState(false);
+  const [gate, setGate] = useState<Gate>(() => (agentGate(snap) === 'not-yet' ? 'not-yet' : null));
   const [mail, setMail] = useState<'list' | 'confirm' | 'sending' | 'drafted'>('list');
   const check = () => {
     setChecking(true);
@@ -27,17 +29,27 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
   useEffect(check, []);
   const ask = () => void api.action('*', 'request-all', { ids: plan.claude.map((v) => v.id) }).then((r) => r.ok && (onAsked ? onAsked() : onClose()));
   const agentOn = snap.settings.aiOn === true && !!snap.settings.agentExports;
+  // Why one is yours to do, though Claude could ask for it: in the words AI Settings uses.
+  const ag = snap.setup?.agent;
+  const why = snap.settings.aiOn !== true ? 'AI is off' : snap.settings.agentExports === false ? 'Do It for Me is off'
+    : ag?.fix === 'provider' ? (ag.soon ? 'Do It for Me is coming soon with the AI you picked' : 'Do It for Me needs your claude.ai account')
+      : ag && !ag.ok ? 'Do It for Me can\'t run yet: AI Settings says why' : 'Do It for Me is off';
+  // What it does (the first time, which asks Anthropic's data settings itself), or the data settings when they're due;
+  // "not yet" was said as the sheet opened.
+  const checked = () => (agentGate(snap) === 'retention' ? setGate('retention') : ask());
   const B = snap.setup?.agentBrowser?.name ?? 'Chrome'; // where Claude works (AI Settings)
   const icon = (v: SourceView) => <SourceIcon id={v.id} group={v.group} size={24} />;
   const total = plan.claude.length + plan.signIn.length + plan.yourself.length + plan.email.length;
   // Sites Claude hasn't worked on yet: it opens them first, while you're there to allow each (main.ts visitSites).
   const fresh = [...plan.claude, ...plan.signIn].filter((v) => !v.siteOk).length;
   if (optIn) return <AgentOptIn snap={snap} onClose={() => setOptIn(false)} onOn={() => { setOptIn(false); ask(); }} />;
+  // Not yet with the AI picked, or Anthropic's data settings to check first (agent_gate.tsx).
+  if (gate) return <AgentGateSheet snap={snap} gate={gate} onClose={() => (gate === 'not-yet' ? onClose() : setGate(null))} onOk={() => { setGate(null); ask(); }} />;
   return (
     <Sheet onClose={onClose} testId="request-all" width={540}>
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 7 }}><AiMark size={16} />Ask for everything at once</h2>
       {!total ? <p>Every export is asked for already.</p> : (
-        <p>Claude asks for each one in your {B}, one after another, while you do something else. Anything that needs you comes in one notification at the end.</p>
+        <p>Claude asks for each one in your {B}, one after another, while you do something else. If it needs you to sign in or allow it on a site, it tells you right away; the rest comes in one notification at the end.</p>
       )}
       {fresh > 0 && (
         <p data-testid="ra-fresh">First, Claude opens the {fresh === 1 ? 'site' : `${fresh} sites`} it hasn't worked on before, so {B} can ask you to allow Claude on {fresh === 1 ? 'it' : 'each'}: stay near it for a minute or two and choose Allow, then it goes on by itself.</p>
@@ -80,7 +92,7 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
           {plan.yourself.map((v) => (
             <GroupRow key={v.id} icon={icon(v)} title={v.name} testId={`ra-row-${v.id}`}
               subtitle={BY_ID[v.id]?.agentBlocked ? 'Claude in Chrome isn\'t allowed there. Its steps take a couple of minutes.'
-                : BY_ID[v.id]?.custom ? 'Its own page, with steps' : 'Do It for Me is off'}
+                : BY_ID[v.id]?.custom ? 'Its own page, with steps' : why}
               onClick={() => { onClose(); onJump(v.id); }} />
           ))}
         </Section>
@@ -112,7 +124,7 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
       <div className="sheet-actions">
         <Button onClick={onClose}>{plan.claude.length ? 'Not Now' : 'Done'}</Button>
         {plan.claude.length > 0 && (
-          <Button kind="primary" ai onClick={() => (agentOn ? ask() : setOptIn(true))} testAction="ra-ask">
+          <Button kind="primary" ai onClick={() => (agentOn ? checked() : setOptIn(true))} testAction="ra-ask">
             Ask Claude for {plan.claude.length === 1 ? plan.claude[0].name : `${plan.claude.length}`}
           </Button>
         )}

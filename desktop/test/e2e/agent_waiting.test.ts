@@ -8,7 +8,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { act, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, snap, until } from './harness.ts';
+import { act, claudeChecked, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, snap, until } from './harness.ts';
 
 const MAC_EPOCH = Date.UTC(2001, 0, 1) / 1000;
 
@@ -31,7 +31,7 @@ before(async () => {
   const sources = Object.fromEntries(Object.values(BY_ID).filter((s) => s.group === 'web' && !keep.includes(s.id)).map((s) => [s.id, { skipped: 'I don\'t use it' }]));
   fs.mkdirSync(sb.userData, { recursive: true });
   fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({
-    version: 1, onboarding: { done: true }, sources,
+    version: 1, ask: claudeChecked(), onboarding: { done: true }, sources,
     settings: { autoRefresh: false, watchDownloads: true, aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true, agentDownloads: true, agentChecks: false },
   }));
   // Notification Center's record, as macOS keeps it (empty to start).
@@ -106,9 +106,13 @@ test('notifications: Notification settings say they\'re on, though the test one 
   await row.locator('button[data-action=check-notifications]').click();
   await until(p, 'on', (x) => x.notifyCheck?.state === 'shown', 10_000);
   await row.locator('[data-testid=notifications-tag]', { hasText: /^On$/ }).waitFor({ timeout: 5_000 });
-  // Turned off in Notification settings, then back to the window: it says so, with no test needed.
+  // Turned off in Notification settings, then back to the window: it says so, with no test needed. Even back within
+  // moments of the window's last look (it looks at most every 3 seconds, and looks again once they're up).
+  const focus = () => run.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('focus'));
+  await focus();
+  await p.waitForTimeout(1000); // that look done, with them still on
   notificationSettings((1 << 3) | 0b110);
-  await run.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('focus'));
+  await focus();
   await until(p, 'off', (x) => x.notifyCheck?.state === 'off', 10_000);
   await row.locator('.warn-text', { hasText: 'turned off for Homecoming' }).waitFor({ timeout: 5_000 });
   fs.rmSync(file('usernoted.plist'));

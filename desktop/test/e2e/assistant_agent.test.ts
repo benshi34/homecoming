@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
-import { DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, shot, snap, until } from './harness.ts';
+import { confirmClaudeSheet, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, shot, snap, until } from './harness.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -46,6 +46,8 @@ test('a page\'s main button is Do It for Me: asked once, Claude starts, and on t
   assert.equal(await go.innerText(), 'Do It for Me');
   await go.click();
   await p.locator('[data-testid=agent-opt-in] button[data-action=agent-on]').click();
+  // Then Anthropic's data settings, as Ask has them, before Claude first works in the browser.
+  await confirmClaudeSheet(p);
   await p.waitForFunction(() => document.querySelector('[data-testid=assistant]')?.getAttribute('data-step') === 'export:instagram');
   await until(p, 'Spotify asked for', (x) => !!find(x, 'spotify').requestedAt, 20_000);
 });

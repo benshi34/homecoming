@@ -3,12 +3,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { count, list } from '../shared/format.ts';
-import { CATEGORIES, type HubRow, hubRows, searchRows, sortRows } from '../shared/hub.ts';
+import { BY_ID, isAccount } from '../shared/catalog.ts';
+import { CATEGORIES, type HubRow, hubRows, namedExactly, searchRows, sortRows } from '../shared/hub.ts';
 import type { DirectoryEntry, Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { Glyph, SourceIcon } from './icons.tsx';
 import { evidenceLine, strongFind } from './parts.tsx';
-import { Button, Group, GroupRow, Spinner, StatusGlyph } from './ui.tsx';
+import { Button, Group, GroupRow, Spinner, StatusGlyph, useReadOnly } from './ui.tsx';
 
 export type HubFilter = 'all' | 'found' | 'here' | 'export';
 
@@ -24,7 +25,8 @@ function useDirectory(): DirectoryEntry[] | null {
 const SHOWN = 6;
 
 // onAddOther gets what was searched for, to start the name with. In the Setup Assistant, `chosen` and onChoose make
-// the accounts already in the app pickable too (Add puts them on your list).
+// the accounts already in the app pickable too (Add puts them on your list): only accounts, since that list is the
+// accounts to ask for (this Mac's and the iPhone's are read anyway).
 export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther, onFilter, chosen, onChoose }: {
   snap: Snapshot; filter?: HubFilter; onOpen?: (sourceId: string) => void; onAdded?: (ids: string[]) => void; onAddOther: (query?: string) => void;
   onFilter?: (f: HubFilter) => void; chosen?: Set<string>; onChoose?: (sourceId: string) => void;
@@ -34,6 +36,7 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
   const [filter, setFilter] = useState<HubFilter>(initial);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [adding, setAdding] = useState<Set<string>>(new Set());
+  const locked = useReadOnly(); // read-only mode: nothing is added
   useEffect(() => setFilter(initial), [initial]);
   const rows = useMemo(() => (dir ? hubRows(dir, snap.sources, snap.services, snap.discovery) : []), [dir, snap.sources, snap.services, snap.discovery]);
   const pass = (r: HubRow) => filter === 'all' || (filter === 'found' && !!r.found) || (filter === 'here' && r.state !== 'available')
@@ -65,9 +68,9 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
         subtitle={sub || undefined}
         onClick={r.sourceId && onOpen ? () => onOpen(r.sourceId!) : undefined}
         trailing={r.state === 'available'
-          ? (adding.has(r.slug!) ? <Spinner size={14} /> : <Button size="small" onClick={() => add([r.slug!])} testAction="hub-add">Add</Button>)
-          : r.sourceId && chosen && onChoose ? (chosen.has(r.sourceId) ? <span className="where">On your list</span>
-            : <Button size="small" onClick={() => onChoose(r.sourceId!)} testAction="hub-choose">Add</Button>)
+          ? (adding.has(r.slug!) ? <Spinner size={14} /> : <Button size="small" onClick={() => add([r.slug!])} testAction="hub-add" disabled={!!locked} title={locked ?? undefined}>Add</Button>)
+          : r.sourceId && chosen && onChoose && BY_ID[r.sourceId] && isAccount(BY_ID[r.sourceId]) ? (chosen.has(r.sourceId) ? <span className="where">On your list</span>
+            : <Button size="small" onClick={() => onChoose(r.sourceId!)} testAction="hub-choose" disabled={!!locked} title={locked ?? undefined}>Add</Button>)
           : r.section ? <StatusGlyph section={r.section} needsYou={r.needsYou} /> : undefined} />
     );
   };
@@ -98,7 +101,7 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
       </div>
       {filter === 'found' && suggested.length > 0 && !q && (
         <div className="actions" style={{ padding: '0 0 6px' }}>
-          <Button kind="primary" onClick={() => add(suggested.map((r) => r.slug!))} testAction="hub-add-suggested">
+          <Button kind="primary" onClick={() => add(suggested.map((r) => r.slug!))} testAction="hub-add-suggested" disabled={!!locked} title={locked ?? undefined}>
             {suggested.length <= 3 ? `Add ${list(suggested.map((r) => r.name))}` : `Add the ${suggested.length} You Clearly Use`}</Button>
           <span className="where">{suggested.length > 3 ? `${list(suggested.map((r) => r.name))}: you` : 'You'} have the app or visit often, and the steps to get your data are known.</span>
         </div>
@@ -111,7 +114,8 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
       {results ? (
         <Group title={results.length ? `${results.length === 120 ? 'First 120' : count(results.length)} matching “${q.trim()}”` : `Nothing matches “${q.trim()}”`} testId="hub-results">
           {results.map((r) => row(r, true))}
-          <div className="kv"><Button kind="plain" onClick={() => onAddOther(q.trim())} testAction="hub-add-named">Not listed? Add “{q.trim()}” by Name…</Button><span /></div>
+          {/* Not when it's listed under that very name. */}
+          {!namedExactly(results, q) && <div className="kv"><Button kind="plain" onClick={() => onAddOther(q.trim())} testAction="hub-add-named">Not listed? Add “{q.trim()}” by Name…</Button><span /></div>}
         </Group>
       ) : (
         CATEGORIES.map((c) => {
@@ -133,7 +137,7 @@ export function Hub({ snap, filter: initial = 'all', onOpen, onAdded, onAddOther
           {snap.discovery!.unmatched.map((u) => (
             <GroupRow key={u.domain} icon={<SourceIcon id={u.domain} group="web" size={24} />} title={u.name && u.name !== u.domain ? u.name : u.domain}
               subtitle={[u.name && u.name !== u.domain ? u.domain : '', evidenceLine(u)].filter(Boolean).join(' · ')}
-              trailing={<Button size="small" onClick={() => void api.action('*', 'choose-services', { domains: [u.domain] }).then((r) => {
+              trailing={<Button size="small" disabled={!!locked} title={locked ?? undefined} onClick={() => void api.action('*', 'choose-services', { domains: [u.domain] }).then((r) => {
                 onAdded?.(r.ids ?? []);
                 if (r.ids?.[0]) onOpen?.(r.ids[0]);
               })}>Add</Button>} />

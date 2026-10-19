@@ -50,6 +50,7 @@ test('AI Settings says Claude Code is signed in, and as whom', async () => {
 test('Codex with your ChatGPT account: its model can be picked, its own default first', async () => {
   const p = run!.page;
   await p.locator('[data-testid=ai-provider-codex]').click();
+  await p.locator('[data-testid=agent-not-yet] button[data-action=agent-not-yet-ok]').click(); // Do It for Me isn't here yet with Codex
   const model = p.locator('[data-testid=provider-detail] [data-testid=ask-model]');
   await model.waitFor();
   await p.waitForFunction(() => (document.querySelector('[data-testid=ask-model]') as HTMLInputElement | null)?.placeholder.includes('gpt-test-small'));

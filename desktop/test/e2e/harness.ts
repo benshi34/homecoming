@@ -42,7 +42,8 @@ export function sandbox(opts: { identity?: boolean } = {}): Sandbox {
     root, home, corpus, userData, downloads: path.join(home, 'Downloads'), exports,
     cleanup() {
       execFileSync('chmod', ['-R', 'u+rwx', root]);
-      fs.rmSync(root, { recursive: true, force: true });
+      // Retried: a stand-in the app just stopped can still be writing its last line here.
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     },
   };
 }
@@ -111,6 +112,17 @@ export async function until(page: Page, what: string, pred: (s: Snapshot) => boo
 export function act(page: Page, sourceId: string, action: string, payload?: unknown) {
   return page.evaluate(([s, a, p]) => (window as unknown as { api: { action(...x: unknown[]): Promise<{ ok: boolean; error?: string; id?: string; ids?: string[] }> } }).api.action(s, a, p),
     [sourceId, action, payload] as const);
+}
+
+// Anthropic's data settings checked, as the sheet before Claude first works in your browser has them (or Ask's): in a
+// test's saved state (ask), from the page, or in that sheet, ticked and confirmed.
+export const claudeChecked = () => ({ retention: { 'claude-code': new Date().toISOString() } });
+export const confirmClaude = (page: Page) =>
+  page.evaluate(() => (window as unknown as { api: { ask(x: object): Promise<unknown> } }).api.ask({ op: 'confirm-retention', provider: 'claude-code' }));
+export async function confirmClaudeSheet(page: Page) {
+  const sheet = page.locator('[data-testid=ask-retention]');
+  await sheet.locator('input[type=checkbox]').check();
+  await sheet.locator('button[data-action=confirm-retention]').click();
 }
 
 export async function shot(page: Page, name: string) {

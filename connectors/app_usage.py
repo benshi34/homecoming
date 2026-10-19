@@ -83,10 +83,13 @@ def main():
                     events[dev].append((t, r.get(3) == 1, bid))
         sessions = {}  # id -> (device, day, app, seconds); seeded with earlier runs so day totals survive retention
         if w.path.exists():
-            for line in w.path.open():
-                r = json.loads(line)
-                if r.get("kind") == "app_usage":
-                    sessions[r["id"]] = (r["thread"], r["ts"][:10], r["title"], r["meta"]["seconds"])
+            for line in w.path.open(encoding="utf-8", errors="replace"):
+                try:
+                    r = json.loads(line)
+                    if r.get("kind") == "app_usage":
+                        sessions[r["id"]] = (r["thread"], r["ts"][:10], r["title"], r["meta"]["seconds"])
+                except (ValueError, KeyError, TypeError, AttributeError):  # a line cut short, or one without its time
+                    continue
         for dev, evs in events.items():
             evs = sorted(set(evs))
             device = devs.get(dev, dev)

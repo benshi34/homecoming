@@ -37,3 +37,15 @@ test('a Mac source that is empty here points at its iPhone copy', () => {
   assert.equal(view('voice_memos', { stats: s }).status, 'None on this Mac: 2,284 came from the iPhone backup');
   assert.equal(view('voice_memos', { stats: stats({ voice_memos: { count: 0 } }) }).status, 'Nothing found on this Mac');
 });
+
+test('WhatsApp and Maps on this Mac say what the iPhone backup already had (it counts those)', () => {
+  const some = stats({ whatsapp: { count: 40, kinds: { message: 38, event: 2 }, notes: { in_the_iphone_backup: 1200 } }, phone_whatsapp: { count: 1300 } });
+  assert.deepEqual(contents('whatsapp', ['whatsapp'], some), [
+    { title: 'What it holds', rows: [{ label: 'Messages', count: 38 }, { label: 'Group chat changes', count: 2 }] },
+    { title: 'Where it came from', rows: [{ label: 'Only in this Mac\'s copy', count: 40 }, { label: 'Also in the iPhone backup, counted there', count: 1200 }] },
+  ]);
+  const all = stats({ apple_maps: { count: 0, notes: { in_the_iphone_backup: 25 } }, phone_mapssync: { count: 25 } });
+  assert.equal(view('apple_maps', { stats: all }).status, 'All 25 on this Mac are in the iPhone backup too, and counted there');
+  assert.deepEqual(view('books', { stats: stats({ books: { count: 3, kinds: { book: 2, highlight: 1 } } }) }).contents?.[0].rows.map((r) => r.label),
+    ['Books in your library', 'Highlights and notes']);
+});

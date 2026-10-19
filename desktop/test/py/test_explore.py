@@ -2,6 +2,7 @@
 CORPUS_DIR pointed at a made-up corpus, make_fixtures.explore_corpus) in UTC."""
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -418,3 +419,91 @@ class TheyKnow(unittest.TestCase):
         self.assertEqual(self.out["ads_count"], 4)
         svc = {s["service"]: s for s in self.out["services"]}
         self.assertEqual((svc["Facebook"]["advertisers"], svc["Facebook"]["told"], svc["X"]["advertisers"]), (2, 2, 1))
+
+
+class ExploreEdges(unittest.TestCase):
+    """Explore on make_fixtures.edge_corpus("messy"), in Los Angeles time: 37 years with records whose times are
+    missing or can't be right, offsets and clock changes, odd text and names. Nothing crashes, and no time that can't
+    be right is a day, a year, a first or a trip."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name).resolve()
+        cls.corpus = Path(make_fixtures.edge_corpus(root / "corpus", "messy"))
+        cls.env = {k: v for k, v in os.environ.items() if k != "CORPUS_DIR"}
+        cls.env.update(CORPUS_DIR=str(cls.corpus), UMP_REPO=str(REPO), UMP_TZ="America/Los_Angeles", UMP_EXPLORE_CACHE=str(root / "cache"),
+                       PYTHONDONTWRITEBYTECODE="1")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    run_explore = Explore.run_explore
+    WRONG = ("1970", "1985", "2099", "9999", "never")  # the bad times' years, and the project only they are in
+
+    def test_no_time_that_cant_be_right_shows(self):
+        for op in ("people", "places", "rhythms", "firsts", "made", "groups", "journeys", "listening", "movement", "curiosity", "watching", "year", "summary"):
+            out = json.dumps(self.run_explore(op))
+            for w in self.WRONG:
+                self.assertNotIn(f'"{w}', out, f"{op} has nothing from {w}")
+        self.assertEqual(self.run_explore("year")["years"], [str(y) for y in range(2026, 1989, -1)], "every year from 1990, no other")
+        firsts = self.run_explore("firsts")["items"]
+        self.assertEqual(firsts[0]["ts"][:4], "1990")
+        self.assertNotIn("never", [i["what"] for i in firsts], "a project whose every commit has a bad time has no first")
+        months = [m["month"] for m in self.run_explore("stream")["months"]]
+        self.assertTrue(all(re.fullmatch(r"(199\d|20[0-2]\d)-(0[1-9]|1[0-2])", m) for m in months), "only months that exist")
+        self.assertEqual(self.run_explore("movement")["first"], "1990-01-15")
+
+    def test_people_and_you(self):
+        names = [p["name"] for p in self.run_explore("people")["people"]]
+        self.assertEqual(names[0], "Grace Hopper", "one name in two apps is one person")
+        self.assertNotIn("me", names, '"me" is how some exports write you')
+        self.assertNotIn("Ada Lovelace", names, "you aren't one of your people")
+        grace = self.run_explore("people")["people"][0]
+        self.assertEqual(set(grace["apps"]), {"imessage", "instagram"})
+
+    def test_a_local_day_with_offsets_and_clock_changes(self):
+        """On This Day is the day here: times written with an offset land on their own day, and a day the clocks
+        change on is 23 or 25 hours long."""
+        day = lambda md: next((y for y in self.run_explore("on-this-day", md)["years"] if y["year"] == 2025), None)  # noqa: E731
+        self.assertEqual(day("06-01")["messages"]["count"], 2, "23:30 at -07:00 and 00:30 the next day at +09:00, both 1 June here")
+        self.assertEqual(day("03-09")["messages"]["count"], 2, "1:59 am before the clocks went forward, 3:30 am after")
+        self.assertEqual(day("11-02")["messages"]["count"], 2, "1:30 am, and 11:30 pm: the 25th hour of the day")
+        self.assertIsNone(day("11-03"))
+
+    def test_odd_arguments_say_so(self):
+        for args in (("on-this-day", "13-40"), ("on-this-day", "xx"), ("year", "1970"), ("year", "9999"), ("thread", "abc"), ("person",)):
+            self.assertIn("error", self.run_explore(*args), args)
+        self.assertEqual(self.run_explore("stream", "2025-13")["month"], self.run_explore("stream")["month"], "a month that doesn't exist: the latest")
+        self.assertEqual(sorted(r["rowid"] for r in self.run_explore("records", "1,2,abc,999999999")), [1, 2], "the ones there are")
+
+    def test_a_conversation_with_messages_at_bad_times(self):
+        grace = self.run_explore("people")["people"][0]
+        t = self.run_explore("thread", str(grace["first"]["rowid"]))
+        self.assertTrue(t["messages"])
+        rowid = int(subprocess.run([sys.executable, "-c", "import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute(\"select rowid from records "
+                                    "where ts is null and kind = 'message' limit 1\").fetchone()[0])", str(self.corpus / "corpus.db")],
+                                   capture_output=True, text=True).stdout)
+        t = self.run_explore("thread", str(rowid))
+        self.assertIn(rowid, [m["rowid"] for m in t["messages"]], "one with no time opens too")
+        self.assertIsNone(next(m for m in t["messages"] if m["rowid"] == rowid)["ts"], "with no time, not a made-up one")
+
+
+class ExploreBigAndBlank(unittest.TestCase):
+    """An index with nothing in it, and one with everything on one day: every artifact answers."""
+
+    def test_every_artifact_answers(self):
+        for case in ("empty", "one-day"):
+            with tempfile.TemporaryDirectory() as t:
+                root = Path(t).resolve()
+                corpus = Path(make_fixtures.edge_corpus(root / "corpus", case))
+                env = {k: v for k, v in os.environ.items() if k != "CORPUS_DIR"}
+                env.update(CORPUS_DIR=str(corpus), UMP_REPO=str(REPO), UMP_TZ="UTC", UMP_EXPLORE_CACHE=str(root / "cache"), PYTHONDONTWRITEBYTECODE="1")
+                for op in ("summary", "on-this-day", "people", "places", "rhythms", "firsts", "made", "groups", "journeys", "year", "stream",
+                           "listening", "movement", "curiosity", "watching", "they-know"):
+                    p = subprocess.run([sys.executable, str(EXPLORE), op], capture_output=True, text=True, env=env, timeout=120)
+                    self.assertEqual(p.returncode, 0, p.stderr[-2000:])
+                    self.assertNotIn("error", json.loads(p.stdout), (case, op))
+                if case == "one-day":
+                    self.assertEqual(json.loads(subprocess.run([sys.executable, str(EXPLORE), "year"], capture_output=True, text=True, env=env).stdout)["years"], ["2025"])

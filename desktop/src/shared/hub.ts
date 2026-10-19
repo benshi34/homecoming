@@ -107,6 +107,9 @@ export function sortRows(rows: HubRow[]): HubRow[] {
   return [...rows].sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
 }
 
+// One of these is called exactly what was searched for (any case): it's listed, so there's nothing to add by name.
+export const namedExactly = (rows: HubRow[], q: string) => rows.some((r) => r.name.trim().toLowerCase() === q.trim().toLowerCase());
+
 export function searchRows(rows: HubRow[], q: string): HubRow[] {
   const n = q.trim().toLowerCase();
   if (!n) return rows;

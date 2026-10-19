@@ -12,6 +12,7 @@ free text it didn't write.
     bridge.py write-identity            JSON on stdin -> corpus/identity.json
     bridge.py exclude-icloud            move the corpus to <name>.nosync and leave a symlink, so iCloud stops syncing it
     bridge.py forget-phone              take what was read from the iPhone backup out of the library (not your phone)
+    bridge.py index --forget-phone      the same, then rebuild the index; one JSON event per line (the app's queue runs it)
 
 Paths: UMP_REPO (default: two levels up) holds connectors/; CORPUS_DIR overrides the corpus folder, as it
 does for the connectors themselves; HOME decides whose Library is read. Tests add fake connector modules
@@ -19,9 +20,13 @@ with UMP_EXTRA_PYPATH and swap the iPhone pipeline with UMP_IPHONE_MODULE.
 """
 
 import collections
+import contextlib
+import ctypes
 import datetime as dt
+import fcntl
 import hashlib
 import io
+import itertools
 import json
 import os
 import plistlib
@@ -31,18 +36,20 @@ import sqlite3
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
+import tarfile
 import zipfile
+import zlib
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 REPO = Path(os.environ.get("UMP_REPO") or Path(__file__).resolve().parents[2])
 CONNECTORS = REPO / "connectors"
 sys.path.insert(0, str(CONNECTORS))
 for extra in filter(None, os.environ.get("UMP_EXTRA_PYPATH", "").split(os.pathsep)):
     sys.path.insert(0, extra)
+import common  # noqa: E402 - connectors/common.py: how zips are read, as imports.py reads them
 
 HOME = Path.home()
 LIB = HOME / "Library"
@@ -55,6 +62,7 @@ SF_DATALESS = 0x40000000  # st_flags bit for iCloud files that are only in the c
 MAC_PATHS = {
     "contacts": [LIB / "Application Support/AddressBook"],
     "imessage": [LIB / "Messages/chat.db"],
+    "whatsapp": [LIB / "Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite"],
     "mail_app": [LIB / "Mail"],
     "apple_notes": [LIB / "Group Containers/group.com.apple.notes/NoteStore.sqlite"],
     "calendar_events": [LIB / "Group Containers/group.com.apple.calendar/Calendar.sqlitedb"],
@@ -67,10 +75,13 @@ MAC_PATHS = {
     "editor_history": [LIB / f"Application Support/{e}/User/History" for e in ("Code", "Cursor", "VSCodium", "Windsurf")],
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
+    "books": [LIB / "Containers/com.apple.iBooksX/Data/Documents/BKLibrary", LIB / "Containers/com.apple.iBooksX/Data/Documents/AEAnnotation"],
     "photos": [HOME / "Pictures/Photos Library.photoslibrary/database/Photos.sqlite"],
+    "apple_maps": [LIB / "Containers/com.apple.Maps/Data/Maps/MapsSync_0.0.1"],
     "voice_memos": [LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"],
     "notion_local": [LIB / "Application Support/Notion/notion.db"],
-    "documents": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents"],
+    # and Obsidian vaults wherever they are, read with these (not looked for alone: see PROTECTED)
+    "documents": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents", LIB / "CloudStorage", HOME / "Dropbox"],
     "git_commits": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents/com~apple~CloudDocs",
                     *(HOME / d for d in ("Developer", "Code", "code", "Projects", "projects", "src", "dev", "git", "repos", "workspace"))],
 }
@@ -195,6 +206,18 @@ def has_module(name):
     return r.returncode == 0
 
 
+def python_modules():
+    """Whether this Python has cryptography and pypdf. The app looks once per launch (and on Check Again) and says
+    what it found in UMP_PYTHON_MODULES, so a probe a minute doesn't start two Pythons to ask again."""
+    try:
+        known = json.loads(os.environ.get("UMP_PYTHON_MODULES") or "{}")
+    except ValueError:
+        known = {}
+    if known.get("path") == sys.executable and all(isinstance(known.get(m), bool) for m in ("cryptography", "pypdf")):
+        return {m: known[m] for m in ("cryptography", "pypdf")}
+    return {m: has_module(m) for m in ("cryptography", "pypdf")}
+
+
 def identity():
     p = CORPUS / "identity.json"
     try:
@@ -217,14 +240,18 @@ def suggest_identity():
 
 
 def mailbox_sources():
-    """Folders under corpus/imports/ holding mailbox exports: each becomes its own source (e.g. hotmail)."""
+    """Folders under corpus/imports/ holding mailbox exports (.mbox, Outlook's .olm, at the top or a folder down): each is its
+    own source, named as imports.py names it (hotmail; mail_mail for one in imports/mail/, which isn't Mail's)."""
     root = CORPUS / "imports"
-    names = []
+    found, marks = [], ("*.mbox", "*/*.mbox", "*.olm", "*/*.olm")
     if root.exists():
         for d in sorted(root.iterdir()):
-            if d.is_dir() and not d.name.startswith((".", "takeout")) and any(d.glob("*.mbox")):
-                names.append(re.sub(r"\W+", "_", d.name.lower()))
-    return names
+            if d.is_dir() and not d.name.startswith((".", "takeout")) and any(x for m in marks for x in d.glob(m)):
+                found.append(d.name)
+    if not found:
+        return []
+    import imports
+    return [imports.mail_source(n) for n in found]
 
 
 def mail_accounts():
@@ -302,15 +329,31 @@ def fix_shell_retention():
     return shell_retention()
 
 
+# Folders macOS asks about one by one without Full Disk Access. Before the Setup Assistant is past that step
+# (UMP_DEFER_FOLDERS=1, from the app), they're left for later, so no question comes before anything says why. Cloud
+# drives' folders and other apps' own data can be asked about too (macOS 14 and later), so they wait the same way.
+PROTECTED = [HOME / "Documents", HOME / "Desktop", HOME / "Downloads", LIB / "Mobile Documents", LIB / "CloudStorage",
+             HOME / "Dropbox", LIB / "Group Containers/group.net.whatsapp.WhatsApp.shared",
+             LIB / "Containers/com.apple.Maps", LIB / "Containers/com.apple.iBooksX"]
+DOWNLOADS = Path(os.environ.get("UMP_DOWNLOADS") or HOME / "Downloads")
+
+
+def _protected(p):
+    p = Path(p)
+    return any(p == q or q in p.parents for q in PROTECTED)
+
+
 def probe():
     fda, fda_path = full_disk_access()
+    defer = os.environ.get("UMP_DEFER_FOLDERS") == "1" and fda is not True
+    look = lambda p: "later" if defer and _protected(p) else access(p)
     sources = {}
     import browsers
     import phones
     found_browsers = browsers.found()
     histories = [p for b in found_browsers if b["id"] != "safari" for _, p in browsers.history_files(b["id"])]
     for name, paths in MAC_PATHS.items():
-        states = [access(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
+        states = [look(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
         sources[name] = "ok" if "ok" in states else "blocked" if "blocked" in states else "absent"
     from common import git_bin
     if not git_bin():  # commits can't be read without git
@@ -318,12 +361,17 @@ def probe():
     corpus_parent = CORPUS if CORPUS.exists() else CORPUS.parent
     usage = shutil.disk_usage(corpus_parent if corpus_parent.exists() else HOME)
     ident = identity()
+    # Looking in Mail or notifications turned off in General: the copy kept for it goes too.
+    for name, off in (("notifications", "UMP_READY_NOTIFICATIONS"), ("mail", "UMP_READY_MAIL")):
+        if os.environ.get(off) == "0":
+            drop_copy(name)
     return {
         "time": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "home": str(HOME), "repo": str(REPO),
-        "python": {"path": sys.executable, "version": sys.version.split()[0],
-                   "cryptography": has_module("cryptography"), "pypdf": has_module("pypdf")},
+        "python": {"path": sys.executable, "version": sys.version.split()[0], **python_modules()},
         "fda": fda, "fda_path": fda_path,
+        # Whether the Downloads folder can be looked in (exports land there): "later" until it's asked.
+        "downloads": look(DOWNLOADS),
         "sources": sources,
         "corpus": {"path": str(CORPUS), "exists": CORPUS.exists(), "real_path": str(CORPUS.resolve()),
                    "in_icloud": in_icloud(CORPUS) if CORPUS.exists() else in_icloud(CORPUS.parent),
@@ -618,10 +666,16 @@ def try_mapping(folder, mapping):
     m = mx.validate(mapping)
     es = _export_entries(folder)
     stats = [{"describe": r["describe"], "kind": r["kind"], "file": r["file"], "files": set(), "items": 0, "timed": 0,
-              "first": None, "last": None, "sample": []} for r in m["items"]]
+              "first": None, "last": None, "sample": [], "repeats": 0} for r in m["items"]]
+    ids = set()
     for i, e, rec in mx.records(m, es, when=leftover_time):
         s = stats[i]
         s["files"].add(e.path)
+        # An id another item has too (the mapping's id field isn't unique): kept once when it's used, so said here.
+        if rec["id"] in ids:
+            s["repeats"] += 1
+            continue
+        ids.add(rec["id"])
         s["items"] += 1
         if rec.get("ts"):
             s["timed"] += 1
@@ -708,6 +762,93 @@ APP_NAMES = {"com.apple.mail": "Mail", "com.apple.mobilesms": "Messages", "com.a
              "com.google.chrome": "Chrome", "com.microsoft.outlook": "Outlook", "com.readdle.smartemail-mac": "Spark"}
 
 
+# Notification Center's database and Mail's index are read from a copy: their apps keep writing to them. The copy is
+# kept (in ~/Library/Caches, which Time Machine leaves out) and made again only once the files have changed; on APFS
+# it's a clone, which shares the original's blocks instead of copying a gigabyte of mail index every few minutes.
+COPIES = Path(os.environ.get("UMP_CACHE_DIR") or LIB / "Caches/Homecoming") / "copies"
+
+
+def _clone(src, dst):
+    """dst as an APFS clone of src (instant, and no space until one of them changes), else a plain copy."""
+    try:
+        if ctypes.CDLL(None).clonefile(os.fsencode(src), os.fsencode(dst), 0) == 0:
+            return
+    except (OSError, AttributeError):
+        pass
+    shutil.copy2(src, dst)
+
+
+@contextlib.contextmanager
+def db_copy(db, name):
+    """The path of a copy of SQLite database `db` (with its -wal and -shm) to read while in the block. Made again
+    when any of them changed (size or time) since; one bridge at a time. Raises OSError if `db` can't be read (no
+    Full Disk Access), and then the copy goes too: what can't be read there isn't kept here."""
+    d = COPIES / name
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(COPIES, 0o700)
+    with open(d / "lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(db, "rb") as f:  # as macOS sees it now, not as a copy remembers it
+                f.read(1)
+        except OSError:
+            for s in ("", "-wal", "-shm", ".json"):
+                (d / f"db{s}").unlink(missing_ok=True)
+            raise
+        stamp = {"db": str(db), "files": [[s, st.st_size, st.st_mtime_ns] for s in ("", "-wal", "-shm")
+                                          for st in [_stat(f"{db}{s}")] if st]}
+        try:
+            same = json.loads((d / "db.json").read_text()) == stamp and (d / "db").exists()
+        except (OSError, ValueError):
+            same = False
+        if not same:
+            for s in (".json", "", "-wal", "-shm"):  # one the database no longer has mustn't be read with the new copy
+                (d / f"db{s}").unlink(missing_ok=True)
+            for s, *_ in stamp["files"]:
+                _clone(f"{db}{s}", d / f"db{s}")
+            (d / "db.json").write_text(json.dumps(stamp))  # as it was before the copy: changed during it, copied again
+        yield d / "db"
+
+
+def _stat(p):
+    try:
+        return os.stat(p)
+    except FileNotFoundError:
+        return None
+
+
+def _readable(p):
+    """Whether this app may read the file (Full Disk Access), asked of the file itself: nothing is copied for it."""
+    try:
+        with open(p, "rb") as f:
+            f.read(1)
+        return True
+    except OSError:
+        return False
+
+
+def drop_copy(name):
+    """The copy kept for a place that's no longer looked in (turned off in General): gone, once no bridge is reading
+    it (db_copy's lock)."""
+    d = COPIES / name
+    if not d.exists():
+        return
+    with open(d / "lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for p in d.iterdir():
+            if p.name != "lock":
+                p.unlink(missing_ok=True)
+        (d / "lock").unlink(missing_ok=True)
+    try:
+        d.rmdir()
+    except OSError:
+        pass
+
+
+def _read_only(p):
+    return f"file:{quote(str(p))}?mode=ro"
+
+
 def notification_db():
     if os.environ.get("UMP_NOTIFICATIONS_DB"):
         return Path(os.environ["UMP_NOTIFICATIONS_DB"])
@@ -726,11 +867,8 @@ def notifications(since):
     database can't be read (no Full Disk Access). Read from a copy: Notification Center keeps writing to it."""
     db = notification_db()
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            for suffix in ("", "-wal", "-shm"):
-                if Path(f"{db}{suffix}").exists():
-                    shutil.copy2(f"{db}{suffix}", Path(tmp) / f"db{suffix}")
-            con = sqlite3.connect(f"file:{tmp}/db?mode=ro", uri=True)
+        with db_copy(db, "notifications") as copy:
+            con = sqlite3.connect(_read_only(copy), uri=True)
             try:
                 rows = con.execute("select a.identifier, r.delivered_date, r.data from record r join app a on a.app_id = r.app_id "
                                    "where r.delivered_date >= ?", ((since - MAC_EPOCH).total_seconds(),)).fetchall()
@@ -755,19 +893,18 @@ def notification_shown(title, since):
     or set to None). {"readable": False} without Full Disk Access."""
     db = notification_db()
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            for suffix in ("", "-wal", "-shm"):
-                if Path(f"{db}{suffix}").exists():
-                    shutil.copy2(f"{db}{suffix}", Path(tmp) / f"db{suffix}")
-            con = sqlite3.connect(f"file:{tmp}/db?mode=ro", uri=True)
+        with db_copy(db, "notifications") as copy:
+            con = sqlite3.connect(_read_only(copy), uri=True)
             try:
-                when = (dt.datetime.fromisoformat(since.replace("Z", "+00:00")) - MAC_EPOCH).total_seconds()
+                when =(dt.datetime.fromisoformat(since.replace("Z", "+00:00")) - MAC_EPOCH).total_seconds()
                 rows = con.execute("select a.identifier, r.data, r.presented from record r join app a on a.app_id = r.app_id "
                                    "where r.delivered_date >= ? order by r.delivered_date desc", (when,)).fetchall()
             finally:
                 con.close()
     except (OSError, sqlite3.Error, ValueError):
         return {"readable": False}
+    if os.environ.get("UMP_READY_NOTIFICATIONS") == "0":  # not looked in for exports (General): no copy kept for this one
+        drop_copy("notifications")
     for ident, data, presented in rows:
         try:
             req = plistlib.loads(data).get("req") or {}
@@ -826,11 +963,8 @@ def mail_messages(since):
     if not db or not db.exists():
         return None
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            for suffix in ("", "-wal", "-shm"):
-                if Path(f"{db}{suffix}").exists():
-                    shutil.copy2(f"{db}{suffix}", Path(tmp) / f"db{suffix}")
-            con = sqlite3.connect(f"file:{tmp}/db?mode=ro", uri=True)
+        with db_copy(db, "mail") as copy:
+            con = sqlite3.connect(_read_only(copy), uri=True)
             try:
                 rows = con.execute(
                     "select m.date_received, m.ROWID, a.address, a.comment, s.subject, su.summary, mb.url from messages m "
@@ -934,13 +1068,15 @@ def export_signals(asked):
                 keep(a, when, via, text)
     for when, rowid, addr, name, subject, summary, mailbox in mails or []:
         text = f"{subject} {summary}"
-        if not ready_text(text):
-            continue
+        if not ready_text(text) or re.search(r"(^|/)(junk|spam|bulk)", unquote(mailbox or "").lower()):
+            continue  # Junk isn't the service writing to you
         sender_domain = registrable(addr.rsplit("@", 1)[-1]) if "@" in addr else ""
         for a in asked:
             ours = sender_domain and sender_domain in {registrable(d) for d in a.get("domains") or [] if d}
-            if ours or named(a, f"{subject} {name}", name):
+            if ours:  # from the service's own domain: sure, with its link
                 keep(a, when, "Mail", subject or summary, subject=subject, sender=name or addr, mail=rowid, mailbox=mailbox)
+            elif named(a, f"{subject} {name}", name):  # only naming it (anyone can): a guess, like a notification, and no link
+                keep(a, when, "Mail", subject or summary)
     out = []
     for k, v in best.items():
         a = next(x for x in asked if x["id"] == k)
@@ -953,7 +1089,7 @@ def export_signals(asked):
 def notification_access():
     """Whether the app can read notifications, and whether this Mac gets the iPhone's ("Allow notifications from
     iPhone"): those apps are listed in Notification Center's settings with no app on this Mac."""
-    readable = notifications(dt.datetime.now(dt.timezone.utc)) is not None
+    readable = _readable(notification_db())
     prefs = LIB / "Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist"
     iphone = False
     try:
@@ -1225,92 +1361,94 @@ def export_candidates(c):
     zips = [p for p in root.rglob("*.zip") if not any(part.startswith(".") for part in p.relative_to(root).parts)]
 
     def read(z, suffix):
-        n = next((x for x in z.namelist() if x.endswith(suffix)), None)
-        return z.read(n) if n else None
+        # (a profile's file is small: one that isn't, or is locked, isn't read)
+        i = next((x for x in z.infolist() if x.filename.endswith(suffix)), None)
+        return z.read(i) if i and i.file_size < 50 << 20 and not common.zip_problem(i) else None
 
     def opened(zp):
-        # LinkedIn delivers a zip inside a zip; look inside small inner zips too.
+        # LinkedIn delivers a zip inside a zip; look inside small inner zips too, one at a time.
         try:
             z = zipfile.ZipFile(zp)
         except (zipfile.BadZipFile, OSError):
-            return []
-        out = [z]
-        for info in z.infolist():
-            if info.filename.lower().endswith(".zip") and info.file_size < 200 << 20:
-                try:
-                    out.append(zipfile.ZipFile(io.BytesIO(z.read(info))))
-                except zipfile.BadZipFile:
-                    pass
-        return out
+            return
+        with z:
+            yield z
+            for info in z.infolist():
+                if info.filename.lower().endswith(".zip") and info.file_size < 200 << 20 and not common.zip_problem(info) \
+                        and not common.looks_like_bomb(info, floor=1 << 20):
+                    try:
+                        with common.open_nested(z, info) as inner:
+                            yield inner
+                    except (zipfile.BadZipFile, OSError, EOFError, zlib.error):
+                        pass
 
     for z in (z for zp in zips for z in opened(zp)):
-        with z:
-            def linkedin():
-                import csv
-                for suffix, kind, col in (("Email Addresses.csv", "email", "Email Address"), ("PhoneNumbers.csv", "phone", "Number")):
-                    raw = read(z, suffix)
-                    for row in csv.DictReader(io.StringIO(raw.decode("utf-8-sig", "replace"))) if raw else []:
-                        c.add(kind, row.get(col), "LinkedIn export")
-                raw = read(z, "Profile.csv")
+        def linkedin():
+            import csv
+            for suffix, kind, col in (("Email Addresses.csv", "email", "Email Address"), ("PhoneNumbers.csv", "phone", "Number")):
+                raw = read(z, suffix)
                 for row in csv.DictReader(io.StringIO(raw.decode("utf-8-sig", "replace"))) if raw else []:
-                    c.add("name", f"{row.get('First Name', '')} {row.get('Last Name', '')}", "LinkedIn export")
+                    c.add(kind, row.get(col), "LinkedIn export")
+            raw = read(z, "Profile.csv")
+            for row in csv.DictReader(io.StringIO(raw.decode("utf-8-sig", "replace"))) if raw else []:
+                c.add("name", f"{row.get('First Name', '')} {row.get('Last Name', '')}", "LinkedIn export")
 
-            def instagram():
-                raw = read(z, "personal_information/personal_information/personal_information.json")
-                if not raw:
-                    return
-                for prof in json.loads(raw).get("profile_user") or []:
-                    m = prof.get("string_map_data") or {}
-                    val = lambda k: _meta_text((m.get(k) or {}).get("value"))
-                    c.add("email", val("Email"), "Instagram export")
-                    c.add("username", val("Username"), "Instagram export")
-                    c.add("name", val("Name"), "Instagram export")
-                    c.add("phone", val("Phone Number"), "Instagram export")
+        def instagram():
+            raw = read(z, "personal_information/personal_information/personal_information.json")
+            if not raw:
+                return
+            for prof in json.loads(raw).get("profile_user") or []:
+                m = prof.get("string_map_data") or {}
+                val = lambda k: _meta_text((m.get(k) or {}).get("value"))
+                c.add("email", val("Email"), "Instagram export")
+                c.add("username", val("Username"), "Instagram export")
+                c.add("name", val("Name"), "Instagram export")
+                c.add("phone", val("Phone Number"), "Instagram export")
 
-            def facebook():
-                raw = read(z, "profile_information/profile_information.json")
-                if not raw:
-                    return
-                p = json.loads(raw).get("profile_v2") or {}
-                c.add("name", _meta_text((p.get("name") or {}).get("full_name")), "Facebook export")
-                for e in (p.get("emails") or {}).get("emails") or []:
-                    c.add("email", e, "Facebook export")
-                for ph in p.get("phone_numbers") or []:
-                    c.add("phone", ph.get("phone_number"), "Facebook export")
-                for prev in p.get("previous_names") or []:
-                    c.add("name", _meta_text(prev.get("name")), "Facebook export (previous name)", strong=False)
+        def facebook():
+            raw = read(z, "profile_information/profile_information.json")
+            if not raw:
+                return
+            p = json.loads(raw).get("profile_v2") or {}
+            c.add("name", _meta_text((p.get("name") or {}).get("full_name")), "Facebook export")
+            for e in (p.get("emails") or {}).get("emails") or []:
+                c.add("email", e, "Facebook export")
+            for ph in p.get("phone_numbers") or []:
+                c.add("phone", ph.get("phone_number"), "Facebook export")
+            for prev in p.get("previous_names") or []:
+                c.add("name", _meta_text(prev.get("name")), "Facebook export (previous name)", strong=False)
 
-            def discord():
-                raw = read(z, "Account/user.json")
-                if raw:
-                    u = json.loads(raw)
-                    c.add("username", u.get("username"), "Discord export")
-                    c.add("name", u.get("global_name"), "Discord export", strong=False)
-                    c.add("email", u.get("email"), "Discord export")
-                    c.add("phone", u.get("phone"), "Discord export")
+        def discord():
+            raw = read(z, "Account/user.json")
+            if raw:
+                u = json.loads(raw)
+                c.add("username", u.get("username"), "Discord export")
+                c.add("name", u.get("global_name"), "Discord export", strong=False)
+                c.add("email", u.get("email"), "Discord export")
+                c.add("phone", u.get("phone"), "Discord export")
 
-            def x():
-                raw = read(z, "data/account.js")
-                if raw:
-                    t = raw.decode("utf-8", "replace")
-                    for a in json.loads(t[t.index("=") + 1:]):
-                        a = a.get("account") or {}
-                        c.add("email", a.get("email"), "X export")
-                        c.add("username", a.get("username"), "X export")
-                        c.add("name", a.get("accountDisplayName"), "X export", strong=False)
+        def x():
+            raw = read(z, "data/account.js")
+            if raw:
+                t = raw.decode("utf-8", "replace")
+                for a in json.loads(t[t.index("=") + 1:]):
+                    a = a.get("account") or {}
+                    c.add("email", a.get("email"), "X export")
+                    c.add("username", a.get("username"), "X export")
+                    c.add("name", a.get("accountDisplayName"), "X export", strong=False)
 
-            def ai_accounts():
-                raw = read(z, "user.json")
-                if raw and b'"email"' in raw:
-                    c.add("email", json.loads(raw).get("email"), "ChatGPT export")
-                raw = read(z, "users.json")
-                if raw:
-                    for u in json.loads(raw):
-                        c.add("email", u.get("email_address"), "Claude.ai export")
-                        c.add("name", u.get("full_name"), "Claude.ai export")
+        def ai_accounts():
+            raw = read(z, "user.json")
+            if raw and b'"email"' in raw:
+                c.add("email", json.loads(raw).get("email"), "ChatGPT export")
+            raw = read(z, "users.json")
+            if raw:
+                for u in json.loads(raw):
+                    c.add("email", u.get("email_address"), "Claude.ai export")
+                    c.add("name", u.get("full_name"), "Claude.ai export")
 
-            for fn in (linkedin, instagram, facebook, discord, x, ai_accounts):
-                _try(fn)
+        for fn in (linkedin, instagram, facebook, discord, x, ai_accounts):
+            _try(fn)
 
 
 def mailbox_candidates(c):
@@ -1390,17 +1528,62 @@ def identity_candidates():
 UUIDISH = re.compile(r"^Export-[0-9a-f-]{20,}")
 NOTION_PAGE = re.compile(r" [0-9a-f]{32}(_all)?\.(md|csv)$")
 TAKEOUT_NAME = re.compile(r"takeout-(\d{8})T?\d*Z?-?(\d+)?-?(\d+)?", re.I)
-GOOGLE_CORE_DIRS = ("Mail/", "My Activity/", "Chrome/", "Calendar/", "Contacts/", "Keep/", "Google Chat/", "Maps",
-                    "YouTube", "Tasks/", "Gemini")
+# Photos and Drive, as Takeout names them in English, German, Spanish, French, Italian, Portuguese, Dutch...
+TAKEOUT_MEDIA = re.compile(r"^(Google (Photos|Fotos|Foto|Zdjęcia)|Drive|Google Drive)$", re.I)
+
+
+# A download a browser is still writing: Chrome's .crdownload ("Unconfirmed 1234.crdownload" at first), Safari's .download (a
+# folder), Firefox's .part (beside an empty file under the final name), Opera's .opdownload; Mail's .partial.mbox. As downloads.ts's.
+PARTIAL = re.compile(r"\.(crdownload|download|part|partial|tmp|opdownload)$|\.partial\.mbox$|^Unconfirmed \d+", re.I)
+# Meta names its downloads instagram-<username>-<date>-<id>.zip and facebook-…: a part of one holding only photos and videos
+# (media/, messages/<chat>/photos/) is told by its name, with these at its top.
+META_NAME = re.compile(r"^(instagram|facebook)-.+-\d", re.I)
+META_ROOTS = {"media", "messages", "photos_and_videos", "posts", "personal_information", "connections", "your_instagram_activity",
+              "your_facebook_activity", "your_activity_across_facebook", "logged_information", "preferences", "ads_information"}
 
 
 def _zip_names(z, limit=200_000):
-    return [i.filename for i in z.infolist()[:limit] if "__MACOSX/" not in i.filename]
+    """A zip's members, named as its zip meant (common.member_name), without what a Mac adds: {name: its ZipInfo}."""
+    out = {}
+    for i in z.infolist()[:limit]:
+        n = common.member_name(i)
+        if not common.junk_member(n):
+            out[n] = i
+    return out
 
 
-def _peek(z, name, n=200_000):
-    with z.open(name) as f:
+def _peek(z, info, n=200_000):
+    with z.open(info) as f:
         return f.read(n).decode("utf-8", "replace")
+
+
+def _zip_kind(z, filename="", depth=0):
+    """What a zip is: {kind, entries}, or why it can't be used (locked, packed in a way that can't be read here, empty, a
+    zip bomb). A zip with only a zip in it is looked into, two deep (LinkedIn's .zip.zip, WhatsApp's zip in a zip), in
+    place: never all of it in memory."""
+    infos = _zip_names(z)
+    if any(i.flag_bits & 0x1 for i in infos.values()):  # WeChat's, for one: unzipped with the password it shows
+        return {"valid": False, "encrypted": True, "reason": "locked with a password"}
+    if any(common.zip_problem(i) for i in infos.values()):  # Windows packs big files with Deflate64, which Finder unpacks
+        return {"valid": False, "needs_unzip": True, "reason": "packed in a way that can't be read here"}
+    names = list(infos)
+    if not any(not n.endswith("/") for n in names):
+        return {"kind": None, "entries": len(names), "empty": True, "reason": "empty"}
+    kind = classify_names(names, peek=lambda n: _peek(z, infos[n]), filename=filename)
+    inner = [i for n, i in infos.items() if n.lower().endswith(".zip")]
+    if not kind and len(inner) == 1 and len(names) <= 3 and depth < 2:
+        if common.looks_like_bomb(inner[0], floor=1 << 20):
+            return {"valid": False, "reason": "unpacks to far more than its size, which only a zip bomb does"}
+        with common.open_nested(z, inner[0]) as zz:
+            found = _zip_kind(zz, depth=depth + 1)
+        if found.get("kind") or found.get("valid") is False:
+            return {**found, "entries": len(names)}
+    return {"kind": kind, "entries": len(names)}
+
+
+def _partial(p):
+    """Whether a browser is still writing p: by its name, or (Firefox) the .part beside it."""
+    return bool(PARTIAL.search(p.name)) or any(p.with_name(p.name + x).exists() for x in (".part", ".crdownload", ".download"))
 
 
 def classify_names(names, peek=None, filename=""):
@@ -1408,12 +1591,15 @@ def classify_names(names, peek=None, filename=""):
     roots = {n.split("/")[0] for n in names}
     base = {n.rsplit("/", 1)[-1] for n in names}
     if any(n.startswith("Takeout/") for n in names):
-        core = any(n.startswith("Takeout/" + d) for n in names for d in GOOGLE_CORE_DIRS)
-        media = any(n.startswith(("Takeout/Google Photos/", "Takeout/Drive/")) for n in names)
-        return "google_photos_drive" if media and not core else "google_takeout"
+        # By its folders, in whatever language the account uses: only Photos and Drive is that export, anything
+        # else (Mail, Meine Aktivitäten, Correo...) is the main one.
+        dirs = {n.split("/")[1] for n in names if n.startswith("Takeout/") and n.count("/") >= 2}
+        media = {d for d in dirs if TAKEOUT_MEDIA.match(d)}
+        return "google_photos_drive" if media and not (dirs - media) else "google_takeout"
     if "your_instagram_activity" in roots or any("/your_instagram_activity/" in n for n in names[:2000]):
         return "instagram"
-    if "your_facebook_activity" in roots or any("/your_facebook_activity/" in n for n in names[:2000]):
+    if roots & {"your_facebook_activity", "your_activity_across_facebook"} or \
+            any("/your_facebook_activity/" in n or "/your_activity_across_facebook/" in n for n in names[:2000]):
         return "facebook"
     if any(re.match(r"(.*/)?Messages/(index\.json|c\d+/)", n) for n in names) and ("Account" in roots or "Servers" in roots or any("/Account/" in n for n in names[:50])):
         return "discord"
@@ -1438,12 +1624,19 @@ def classify_names(names, peek=None, filename=""):
         return "whatsapp_chats"
     if {"users.json", "channels.json"} <= base:
         return "slack"
-    if any(n.lower().endswith(".mbox") or n.endswith(".mbox/mbox") for n in names):
+    files = [n for n in names if not n.endswith("/")]
+    # Mail: mailboxes, an Outlook for Mac archive (.olm, a zip), or a folder of messages dragged out of a mail app
+    mail = sum(n.lower().endswith((".eml", ".emlx")) for n in files)
+    if any(n.lower().endswith(".mbox") or n.endswith(".mbox/mbox") for n in names) or \
+            any("com.microsoft.__Messages/" in n for n in names) or mail and mail * 2 >= len(files):
         return "mailbox"
-    if names and all(n.lower().endswith(".vtt") for n in names if not n.endswith("/")):
+    if files and all(n.lower().endswith(".vtt") for n in files):
         return "zoom"
     if any(n.rsplit("/", 1)[-1] in ("Timeline.json", "location-history.json") for n in names):
         return "maps_timeline"
+    m = META_NAME.match(filename)  # a part of a Meta download with only its photos and videos
+    if m and roots & META_ROOTS:
+        return "instagram" if m.group(1).lower() == "instagram" else "facebook"
     return None
 
 
@@ -1455,13 +1648,24 @@ def identify(path):
     except OSError as e:
         return {**res, "valid": False, "reason": f"can't read: {e.strerror}"}
     lower = p.name.lower()
+    if _partial(p):
+        return {**res, "valid": False, "partial": True, "size": st.st_size, "reason": "still downloading"}
     if p.is_dir():
         if lower.endswith(".mbox"):
             res.update(kind="mailbox", size=sum(f.stat().st_size for f in p.rglob("*") if f.is_file()))
             return res
-        names = [str(f.relative_to(p)) + ("/" if f.is_dir() else "") for f in list(p.rglob("*"))[:200_000]]
+        names = [str(f.relative_to(p)) + ("/" if f.is_dir() else "") for f in itertools.islice(p.rglob("*"), 200_000)]
+        names = [n for n in names if not common.junk_member(n.rstrip("/"))]
+        if re.fullmatch(r"Takeout( \d+)?", p.name):  # a Takeout zip unzipped by Safari: the folder is its top
+            names = ["Takeout/" + n for n in names]
+
+        def peek(n):
+            with open(p / n, "rb") as f:
+                return f.read(200_000).decode("utf-8", "replace")
         res["size"] = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-        res["kind"] = classify_names(names, peek=lambda n: (p / n).read_text(errors="replace")[:200_000], filename=p.name)
+        res["kind"] = classify_names(names, peek=peek, filename=p.name)
+        if res["kind"] is None and not any(not n.endswith("/") for n in names):
+            res.update(empty=True, reason="empty")
         return res
     res["size"] = st.st_size
     if lower.endswith(".vcf"):
@@ -1472,26 +1676,33 @@ def identify(path):
         res["kind"] = "zoom"
     elif lower in ("timeline.json", "location-history.json"):
         res["kind"] = "maps_timeline"
-    elif lower.endswith(".zip") or zipfile.is_zipfile(p):
+    elif lower.endswith((".tgz", ".tar.gz", ".tar")):
+        # Takeout can come as .tgz: its first entries say what it is (read as a stream, so a 50 GB part isn't unpacked).
+        # Each header says how far in its file ends: one far past what the archive could hold is a tar bomb's.
+        try:
+            names = []
+            with tarfile.open(p, mode="r|*") as t:
+                for m in t:
+                    if m.offset_data + m.size > max(common.BOMB_RATIO * st.st_size, 1 << 30):
+                        return {**res, "valid": False, "reason": "unpacks to far more than its size, which only a tar bomb does"}
+                    if not common.junk_member(m.name):
+                        names.append(m.name + ("/" if m.isdir() else ""))
+                    if len(names) >= 5000:
+                        break
+            res["kind"] = classify_names(names, filename=p.name)
+            res["entries"] = len(names)
+        except (tarfile.TarError, OSError, EOFError, zlib.error) as e:
+            res.update(valid=False, reason=f"not a complete archive ({e})")
+    elif lower.endswith((".zip", ".olm")) or zipfile.is_zipfile(p):
         try:
             with zipfile.ZipFile(p) as z:
-                if any(i.flag_bits & 0x1 for i in z.infolist()):  # WeChat's, for one: unzipped with the password it shows
-                    return {**res, "valid": False, "encrypted": True, "reason": "locked with a password"}
-                names = _zip_names(z)
-                kind = classify_names(names, peek=lambda n: _peek(z, n), filename=p.name)
-                inner = [n for n in names if n.lower().endswith(".zip")]
-                if not kind and len(inner) == 1 and len(names) <= 3:  # LinkedIn's .zip.zip, WhatsApp's zip-in-zip
-                    with z.open(inner[0]) as f:
-                        zz = zipfile.ZipFile(io.BytesIO(f.read()))
-                        kind = classify_names(_zip_names(zz), peek=lambda n: _peek(zz, n))
-                res["kind"] = kind
-                res["entries"] = len(names)
-        except (zipfile.BadZipFile, OSError) as e:
+                res.update(_zip_kind(z, filename=p.name))
+        except (zipfile.BadZipFile, OSError, EOFError, zlib.error) as e:
             res.update(valid=False, reason=f"not a complete zip ({e})")
     if res["kind"] in ("google_takeout", "google_photos_drive"):
         m = TAKEOUT_NAME.search(p.name)
         res["export_id"] = m.group(1) if m else None
-    if res["kind"] is None and res["valid"]:
+    if res["kind"] is None and res["valid"] and not res.get("empty"):
         res["reason"] = "not a recognized export"
     if res["kind"] and res["valid"]:
         res["already_imported"] = already_imported(p, st.st_size)
@@ -1698,15 +1909,15 @@ def forget_phone():
     """What was read from an iPhone backup, taken out of the library, for one that turned out not to be yours (Your
     Setup picked another): the phone's own sources, the phone's copies in Messages and calls (what this Mac had stays),
     and the decrypted copy of the backup. The search index is rebuilt by the app afterwards."""
+    from common import read_manifest, write_atomic, write_manifest
     norm = CORPUS / "normalized"
-    try:
-        manifest = json.loads((CORPUS / "manifest.json").read_text())
-    except (OSError, ValueError):
-        manifest = {}
+    manifest = read_manifest()
     removed = {}
-    for src in [k for k in manifest if k.startswith("phone_") or k in PHONE_ONLY]:
+    # By the manifest and by the files there (a manifest a crash cut short names none of them).
+    here = {p.stem for p in norm.glob("*.jsonl")} if norm.is_dir() else set()
+    for src in sorted(k for k in set(manifest) | here if k.startswith("phone_") or k in PHONE_ONLY):
         (norm / f"{src}.jsonl").unlink(missing_ok=True)
-        removed[src] = (manifest.pop(src) or {}).get("count", 0)
+        removed[src] = (manifest.pop(src, None) or {}).get("count", 0)
     for src in ("imessage", "calls"):
         f = norm / f"{src}.jsonl"
         if not f.exists():
@@ -1725,13 +1936,11 @@ def forget_phone():
             ts = r.get("ts")
             if ts:
                 first, last = min(first or ts, ts), max(last or ts, ts)
-        tmp = f.with_suffix(".jsonl.tmp")
-        tmp.write_text("".join(kept))
-        tmp.replace(f)
+        write_atomic(f, "".join(kept))  # a temp name of its own: never a connector's <source>.jsonl.tmp
         if src in manifest:
             manifest[src].update(count=len(kept), kinds=dict(kinds), first=first, last=last)
         removed[src] = dropped
-    (CORPUS / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+    write_manifest(manifest)
     raw = CORPUS / "raw/iphone"
     shutil.rmtree(raw / "files", ignore_errors=True)
     for name in ("backup.json", "mirror_state.json", "Info.plist", "inventory.json", "extract_failures.json"):
@@ -1795,16 +2004,20 @@ def main(argv):
     elif cmd == "notification-prefs":
         out(notification_prefs(rest[0] if rest else ""))
     elif cmd == "export-signals":
+        if "--no-mail" in rest:  # the app's quick look between its looks in Mail: notifications only
+            os.environ["UMP_READY_MAIL"] = "0"
         out(export_signals(json.loads(sys.stdin.read() or "[]")))
     elif cmd == "fix-shell-retention":
         out(fix_shell_retention())
     elif cmd == "identify":
         out([identify(p) for p in rest])
     elif cmd == "run":
+        if "--reread" in rest:  # every export read again, none carried over (the readers changed)
+            os.environ["UMP_REREAD_ALL"] = "1"
         index = "--no-index" not in rest
         return run_connectors([r for r in rest if not r.startswith("--")], index=index)
     elif cmd == "index":
-        return _index_only()
+        return _index_only(forget="--forget-phone" in rest)
     elif cmd == "iphone":
         module = os.environ.get("UMP_IPHONE_MODULE", "iphone")
         # iphone.py rebuilds the index itself
@@ -1842,17 +2055,23 @@ def main(argv):
     return 0
 
 
-def _index_only():
+def _index_only(forget=False):
+    """The search index rebuilt; with forget, after what was read from the iPhone backup is taken out (forget_phone),
+    as a job of the app's queue, so no read of the phone runs meanwhile."""
     real = sys.__stdout__
-    sys.stdout = sys.stderr = LineEvents(real, ["build_index"])
+    step = ["forget-phone" if forget else "build_index"]
+    sys.stdout = sys.stderr = LineEvents(real, step)
     try:
+        if forget:
+            print(f"Taken out: {json.dumps(forget_phone()['removed'])}")
+            step[0] = "build_index"
         import build_index
         build_index.main()
         real.write(json.dumps({"type": "finished", "failed": []}) + "\n")
         return 0
     except Exception as e:
-        real.write(json.dumps({"type": "error", "connector": "build_index", "error": str(e)}) + "\n")
-        real.write(json.dumps({"type": "finished", "failed": ["build_index"]}) + "\n")
+        real.write(json.dumps({"type": "error", "connector": step[0], "error": str(e)}) + "\n")
+        real.write(json.dumps({"type": "finished", "failed": [step[0]]}) + "\n")
         return 1
     finally:
         sys.stdout, sys.stderr = real, sys.__stderr__

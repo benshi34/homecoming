@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, test } from 'node:test';
-import { act, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, snap, until } from './harness.ts';
+import { act, confirmClaude, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, snap, until } from './harness.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -16,8 +16,9 @@ const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 const file = (n: string) => path.join(sb.home, n);
 const opened = () => (fs.existsSync(path.join(sb.userData, 'opened.txt')) ? fs.readFileSync(path.join(sb.userData, 'opened.txt'), 'utf8') : '');
 const runs = () => (fs.existsSync(file('agent.log')) ? fs.readFileSync(file('agent.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+const askApi = (x: object) => run.page.evaluate((v) => (window as unknown as { api: { ask(x: object): Promise<unknown> } }).api.ask(v), x);
 const settings = (x: object) => run.page.evaluate((v) => (window as unknown as { api: { settings(x: object): Promise<unknown> } }).api.settings(v), x);
-const on = () => settings({ aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true, agentDownloads: true });
+const on = () => confirmClaude(run.page).then(() => settings({ aiOn: true, aiAgreedAt: new Date().toISOString(), agentExports: true, agentDownloads: true }));
 const working = (x: Parameters<typeof find>[0]) => find(x, 'instagram').status === 'Opening Instagram\'s export page'; // its first step, under way
 const saved = () => JSON.parse(fs.readFileSync(path.join(sb.userData, 'state.json'), 'utf8'));
 
@@ -26,7 +27,9 @@ before(async () => {
   execFileSync(PY, [path.join(DESKTOP, 'test/fixtures/make_fixtures.py'), 'ask-corpus', sb.corpus]);
   // Slow on purpose, so there's time to turn AI off while it works.
   fs.writeFileSync(file('plan.json'), JSON.stringify({ request: [{ steps: ['Opening Instagram\'s export page', 'Choosing everything', 'Choosing JSON', 'Choosing all time', 'Starting the export'], result: 'requested', sleep: 3 }],
-    download: [{ steps: ['Opening the download link'], result: 'downloading', sleep: 0.2 }] }));
+    download: [{ steps: ['Opening the download link'], result: 'downloading', sleep: 0.2 }],
+    // Ask for Everything's first look at each site, waiting in Chrome long enough to turn AI off.
+    visit: [{ steps: ['Opening Instagram', 'WAITING: Allow Claude on instagram.com in Chrome.', 'Still waiting'], result: 'requested', sleep: 3 }] }));
   fs.writeFileSync(file('claude-plan.json'), JSON.stringify({ answer: 'Never.', steps: [{ tool: 'sql', input: { query: 'select 1' } }, { sleep: 30 }] }));
   run = await launch(sandboxEnv(sb, {
     UMP_NO_AUTORUN: '1', UMP_AGENT_CMD: path.join(DESKTOP, 'test/fakes/fake_claude_browser.py'), FAKE_BROWSER_PLAN: file('plan.json'), FAKE_BROWSER_LOG: file('agent.log'),
@@ -82,6 +85,37 @@ test('turning Do It for Me off (AI staying on) stops it quietly too', async () =
   await on();
 });
 
+test('picking an AI Do It for Me can\'t use yet (Codex) stops it quietly too: everything AI does uses the one picked', async () => {
+  const p = run.page;
+  await on();
+  await act(p, 'instagram', 'agent-request');
+  await until(p, 'working', working, 15_000);
+  await askApi({ op: 'settings', patch: { provider: 'codex' } });
+  await until(p, 'set aside', (x) => find(x, 'instagram').status === 'Not requested yet' && !x.jobs.length, 10_000);
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.equal(saved().sources.instagram?.agent, undefined, 'stopped, and nothing left of it');
+  assert.doesNotMatch(opened(), /Couldn't finish/);
+  const r = await act(p, 'instagram', 'agent-request');
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? '', /doesn't work with Codex \(your ChatGPT account\) yet: it's coming soon/);
+  await askApi({ op: 'settings', patch: { provider: 'claude-code' } });
+});
+
+test('AI turned off while Claude first opens each site for Ask for Everything: what waited for it doesn\'t start after', async () => {
+  const p = run.page;
+  await on();
+  const requests = () => runs().filter((r) => r.mode === 'request').length;
+  const before = requests();
+  const r = await act(p, '*', 'request-all', { ids: ['instagram'] });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  await until(p, 'first look', (x) => !!x.claudeWork?.visit, 10_000);
+  await settings({ aiOn: false });
+  await until(p, 'look stopped', (x) => !x.claudeWork?.visit && find(x, 'instagram').status === 'Not requested yet', 15_000);
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(requests(), before, 'Claude didn\'t go on to ask for it');
+  assert.equal(saved().sources.instagram?.agent, undefined);
+});
+
 test('a run cut short by quitting is set aside while AI is off, and back when it is on', async () => {
   const p = run.page;
   await settings({ aiOn: true });
@@ -105,6 +139,9 @@ test('a run cut short by quitting is set aside while AI is off, and back when it
   assert.equal(await run.page.locator('[data-testid=agent-reply]').count(), 0, 'nothing to answer');
   await settings({ aiOn: false });
   s = await until(run.page, 'set aside', (x) => find(x, 'instagram').status === 'Not requested yet', 10_000);
+  // Nor can it be carried on from outside the page, with AI off.
+  const carry = await act(run.page, 'instagram', 'agent-continue');
+  assert.deepEqual([carry.ok, carry.error], [false, 'AI is off. Turn it on in AI Settings.']);
   await settings({ aiOn: true });
   s = await until(run.page, 'back', (x) => find(x, 'instagram').status === 'Interrupted when Homecoming quit', 10_000);
   await act(run.page, 'instagram', 'agent-dismiss');

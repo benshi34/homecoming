@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setServices } from '../../src/shared/catalog.ts';
-import { CATEGORIES, hubRows, searchRows, sortRows } from '../../src/shared/hub.ts';
+import { CATEGORIES, hubRows, namedExactly, searchRows, sortRows } from '../../src/shared/hub.ts';
 import type { DirectoryEntry, FoundService, ServiceEntry } from '../../src/shared/types.ts';
 import { hoursAgo, state, views } from './helpers.ts';
 
@@ -45,4 +45,12 @@ test('search: whole names first, then words, then anywhere in the name or domain
   assert.deepEqual(searchRows(rows, 'read').map((r) => r.name), ['Goodreads', 'Kindle Notes'], 'goodreads.com, read.amazon.com');
   assert.deepEqual(searchRows(rows, 'wattpad').map((r) => r.name), ['Wattpad']);
   assert.deepEqual(searchRows(rows, 'zzz'), []);
+});
+
+test('a search that names one exactly has nothing to add by name; a part of a name does', () => {
+  const rows = hubRows(dir, views(), [], null);
+  assert.ok(namedExactly(searchRows(rows, 'apple maps'), ' Apple Maps '), 'Apple Maps, this Mac\'s, matched in any case');
+  assert.ok(namedExactly(searchRows(rows, 'wattpad'), 'wattpad'));
+  assert.ok(!namedExactly(searchRows(rows, 'watt'), 'watt'));
+  assert.ok(!namedExactly(searchRows(rows, 'Zorblet Stories'), 'Zorblet Stories'));
 });

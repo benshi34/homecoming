@@ -78,6 +78,11 @@ def exports(out):
     made["google_takeout"] = _zip(out / "takeout-20250301T120000Z-1-001.zip", {
         "Takeout/Mail/All mail Including Spam and Trash.mbox": MBOX,
         "Takeout/Chrome/History.json": {"Browser History": [{"title": "Fixture", "url": "https://example.com/", "time_usec": 1704067200000000}]},
+        "Takeout/YouTube and YouTube Music/comments/comments.csv":
+            "Comment ID,Channel ID,Comment Create Timestamp,Price,Parent Comment ID,Post ID,Video ID,Comment Text,Top-Level Comment ID\n"
+            'c1,UCada,2024-01-02T10:00:00.123+00:00,0,,,vid00000001,"{""text"":""What a machine""}",\n',
+        "Takeout/Tasks/Tasks.json": {"kind": "tasks#taskLists", "items": [{"kind": "tasks#tasks", "id": "L1", "title": "My Tasks", "items": [
+            {"kind": "tasks#task", "id": "t1", "title": "Write the notes", "status": "needsAction", "created": "2024-01-03T09:00:00.000Z"}]}]},
     })
     made["google_photos_drive"] = _zip(out / "takeout-20250302T000000Z-1-001.zip", {
         "Takeout/Google Photos/Trip/IMG_0001.jpg.json": {"title": "IMG_0001.jpg", "photoTakenTime": {"timestamp": "1704067200"}},
@@ -500,6 +505,116 @@ def ads_corpus(corpus):
     return str(corpus)
 
 
+def edge_corpus(corpus, case):
+    """Libraries at the edges, for Explore and Ask. "empty": an index with nothing in it. "one-day": everything on
+    one day. "messy": 1990 to 2026, with what goes wrong in real libraries: records with no time, times a clock or a
+    conversion got wrong (1970, Apple's first second, 1985, 2099, 9999, not a date), times with offsets instead of Z
+    and across a clock change; text that's empty, a megabyte long, right to left, emoji, NUL, HTML and SQL; two
+    people with one name, one of them "me", and you in your own chats; meta that isn't an object; numbers that
+    aren't. Times are UTC; tests run with UMP_TZ set. Everyone is made up."""
+    corpus = Path(corpus)
+    norm = corpus / "normalized"
+    norm.mkdir(parents=True, exist_ok=True)
+    (corpus / "identity.json").write_text(json.dumps(ME))
+    n = iter(range(1, 10 ** 7))
+    sets = collections.defaultdict(list)
+
+    def add(source, **f):
+        sets[source].append({"id": f"{source}-{next(n)}", "source": source, "kind": f.pop("kind", "record"), **f})
+
+    def msg(ts, who, me, thread, name=None, text="hi", source="imessage", group=False, **f):
+        add(source, kind="message", ts=ts, author="me" if me else who, is_me=me, thread=thread, thread_name=name if name is not None else who,
+            text=text, meta={"group": group}, **f)
+
+    def photo(ts, lat, lon, place, **meta):
+        add("photos", kind="photo", ts=ts, title="IMG.HEIC", is_me=True, text=f"Photo\nPlace: {place}", meta={"lat": lat, "lon": lon, **meta})
+
+    home, tokyo = (40.35, -74.66, "Princeton, New Jersey, United States"), (35.69, 139.70, "Shinjuku, Tokyo, Japan")
+    if case not in ("empty", "one-day", "messy"):
+        raise SystemExit(f"no edge library {case!r}")
+    if case == "empty":
+        (norm / "imessage.jsonl").write_text("")
+    elif case == "one-day":
+        for h in range(24):
+            for m in range(0, 60, 10):
+                ts = f"2025-06-01T{h:02d}:{m:02d}:00Z"
+                msg(ts, "Grace Hopper", m % 20 == 0, "g1")
+                msg(ts, ("Alan Turing", "Katherine Johnson")[m % 20 == 0], False, "club", name="Club", group=True, text="see you there 🥐")
+                add("google_activity", kind="search", ts=ts, title=f"Searched for how to fold {m} paper cranes", is_me=True)
+                add("spotify", kind="media", ts=ts, title=f"Song {m}", meta={"artist": "The Looms", "seconds": 200})
+                add("google_activity", kind="media", ts=ts, title=f"Video {m}", text=f"Video {m}\nEngine Lab", url="https://www.youtube.com/watch?v=x",
+                    meta={"product": "YouTube"})
+                add("git_commits", kind="commit", ts=ts, author="Ada", is_me=True, thread="/code/engine", thread_name="engine", title=f"Commit {m}")
+                photo(ts, *home)
+        add("health", kind="health_day", ts="2025-06-01T00:00:00", meta={"steps": 12000})
+    elif case == "messy":
+        big = ("lorem ipsum dolor " * 60000)[:1_000_000]
+        odd = ["", big, "مرحبا كيف حالك؟", "שלום מה שלומך", "🥐🥐 👩‍👩‍👧‍👦 🏳️‍🌈", "nul\x00byte", "<script>alert(1)</script><b>bold</b>",
+               "' or 1=1; drop table records; --", "\"quoted\" NEAR(a b) title:x *", "tab\there\nnew line"]
+        names = ["مريم", "😀 Smiley", "<b>Bob</b>", "a" * 200, "'; drop table records; --"]
+        for y in range(1990, 2027):
+            for mo in range(1, 13, 2):
+                day = f"{y}-{mo:02d}-15"
+                msg(f"{day}T17:00:00Z", "Grace Hopper", False, "g1", text=f"hey {y}")
+                msg(f"{day}T17:05:00Z", "Grace Hopper", True, "g1", text="hi Grace")
+                # Another Grace Hopper, in another app: one name, one person.
+                msg(f"{day}T18:00:00Z", "Grace Hopper", mo % 4 == 1, "ig1", source="instagram", participants=["Ada Lovelace", "Grace Hopper"])
+                # A conversation with yourself, and with someone called "me".
+                msg(f"{day}T19:00:00Z", "Ada Lovelace", True, "self", name="Ada Lovelace")
+                msg(f"{day}T19:30:00Z", "me", False, "m1", name="me")
+                for i, who in enumerate(("Alan Turing", "Katherine Johnson", "Ada Lovelace")):
+                    msg(f"{day}T2{i}:00:00Z", who, False, "club", name="Dinner club", group=True, text=f"croissant time {y} 🥐")
+                photo(f"{day}T15:00:00Z", *home)
+                add("google_activity", kind="search", ts=f"{day}T09:00:00Z", title=f"Searched for sourdough starter {y}", is_me=True)
+                add("spotify", kind="media", ts=f"{day}T08:00:00Z", title=f"Song {y % 5}", meta={"artist": f"Artist {y % 3}", "seconds": 200})
+                add("google_activity", kind="media", ts=f"{day}T22:00:00Z", title=f"How engines work {y}", text=f"How engines work {y}\nEngine Lab",
+                    url="https://www.youtube.com/watch?v=x", meta={"product": "YouTube"})
+                add("git_commits", kind="commit", ts=f"{day}T20:00:00Z", author="Ada", is_me=True, thread=f"/code/p{y}", thread_name=f"project {y}", title="Commit")
+                add("health", kind="health_day", ts=f"{day}T00:00:00", meta={"steps": 9000 + mo * 100, "distance_km": 6})
+                add("health", kind="sleep", ts=f"{day}T06:00:00Z", ts_end=f"{day}T13:30:00Z", meta={"asleep_min": 450, "tz": "UTC"})
+            for d in ("06-20", "06-21", "06-22"):
+                photo(f"{y}-{d}T03:00:00Z", *tokyo, timezone="Asia/Tokyo")
+        # Times that can't be right, and none at all: none of them a day, a year, a first or a trip.
+        for ts in (None, "1970-01-01T00:00:00Z", "2001-01-01T00:00:00Z", "1985-05-05T10:00:00Z", "2099-12-31T23:59:59Z", "9999-12-31T23:59:59Z",
+                   "not a time", "2024-13-45T99:99:99Z"):
+            for i in range(25):
+                msg(ts, "Grace Hopper", i % 2 == 0, "g1", text="sent at a bad time")
+                msg(ts, "Alan Turing", False, "club", name="Dinner club", group=True, text="at a bad time")
+                photo(ts, 51.5, -0.12, "London, England, United Kingdom")
+                add("google_activity", kind="search", ts=ts, title="Searched for a bad time", is_me=True)
+                add("spotify", kind="media", ts=ts, title="Bad Time", meta={"artist": "Nobody", "seconds": 200})
+                add("health", kind="health_day", ts=ts, meta={"steps": 99999})
+                add("git_commits", kind="commit", ts=ts, author="Ada", is_me=True, thread="/code/never", thread_name="never", title="Commit")
+        # Offsets instead of Z, and a clock change (America/Los_Angeles: 9 March and 2 November 2025).
+        for ts in ("2025-03-09T09:59:00Z", "2025-03-09T10:30:00Z", "2025-11-02T08:30:00Z", "2025-11-03T07:30:00Z",
+                   "2025-06-01T23:30:00-07:00", "2025-06-02T00:30:00+09:00"):
+            msg(ts, "Grace Hopper", False, "g1", text=f"at {ts}")
+        # Odd text and names, everywhere text shows.
+        for i, t in enumerate(odd * 3):
+            ts = f"2024-0{i % 9 + 1}-1{i % 9}T1{i % 10}:00:00Z"
+            who = names[i % len(names)]
+            msg(ts, who, i % 2 == 0, f"odd{i % len(names)}", text=t)
+            msg(ts, who, False, "oddgrp", name=t[:100], group=True, text=t)
+            msg(ts, names[(i + 1) % len(names)], False, "oddgrp", name=t[:100], group=True, text=t)
+            add("google_activity", kind="search", ts=ts, title=t[:150] or None, text=t, is_me=True)
+            add("spotify", kind="media", ts=ts, title=t[:150] or "Untitled", meta={"artist": who, "seconds": 200})
+            add("apple_notes", kind="note", ts=ts, is_me=True, title=t[:100] or None, text=t)
+            add("calls", kind="call", ts=ts, thread_name=who, meta={"seconds": "not a number" if i % 3 == 0 else 60})
+            add("facebook_activity", kind="advertiser", title=t[:100] or None, meta={"how": "list", "service": "Facebook"})
+            add("x", kind="inference", title=t[:100] or None, meta={"what": "interest", "service": "X"})
+            photo(ts, 35.0 + i * 0.001, 139.0, f"{t[:60]}, {who}, Japan")
+        add("photos", kind="photo", ts="2025-03-03T03:00:00Z", text="Photo", meta=[1, 2, 3])
+        add("photos", kind="photo", ts="2025-03-03T04:00:00Z", text="Photo", meta={"lat": 95, "lon": 400})
+        add("health", kind="health_day", ts="2025-03-04T00:00:00", meta={"steps": "lots"})
+        add("health", kind="sleep", ts="2025-03-04T23:00:00Z", ts_end="not a time", meta={"asleep_min": "x"})
+    for source, rows in sets.items():
+        with (norm / f"{source}.jsonl").open("w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    subprocess.run([sys.executable, str(REPO / "connectors" / "build_index.py")], check=True, env={**os.environ, "CORPUS_DIR": str(corpus)}, capture_output=True)
+    return str(corpus)
+
+
 if __name__ == "__main__":
     cmd, target = sys.argv[1], sys.argv[2]
     if cmd == "exports":
@@ -514,3 +629,5 @@ if __name__ == "__main__":
         print(media_corpus(target))
     elif cmd == "explore-corpus":
         print(json.dumps({"corpus": explore_corpus(target)}))
+    elif cmd == "edge-corpus":  # edge-corpus DIR CASE
+        print(json.dumps({"corpus": edge_corpus(target, sys.argv[3])}))

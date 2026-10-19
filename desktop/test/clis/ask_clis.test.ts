@@ -106,7 +106,9 @@ test('Codex with an API key: the key goes to the server, and a rejected key ends
     const a = await answer('Hello');
     assert.ok(seen.length > 0, 'Codex called the server it was pointed at');
     assert.ok(seen.every((h) => h === 'Bearer sk-test-codex'), 'with the key');
-    assert.match(a.turn.error ?? a.turn.events.filter((e) => e.t === 'error').map((e) => (e as { text: string }).text).join(' '), /401|Incorrect API key/);
+    // In plain words, with Codex's own under Details.
+    assert.equal(a.turn.error, 'OpenAI didn\'t accept the key. Check it under AI Settings.');
+    assert.match(a.turn.errorDetail ?? '', /401|Incorrect API key/);
   } finally {
     delete process.env.UMP_ASK_OPENAI_KEY;
     delete process.env.UMP_OPENAI_URL;

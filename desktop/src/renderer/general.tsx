@@ -15,9 +15,8 @@ const set = (patch: Partial<Settings>) => void api.settings(patch);
 export function GeneralPage({ snap, toolbar, onAssistant, onExport }: { snap: Snapshot; toolbar?: ReactNode; onAssistant: () => void; onExport: () => void }) {
   const s = snap.settings;
   const su = snap.setup;
-  // Read-only mode: settings that would change what's kept are shown, not changed.
+  // Read-only mode: its switches are shown, not changed (ui.tsx ReadOnly).
   const locked = snap.readOnly && !snap.demo;
-  const lock = (t: ReactNode) => (locked ? <span title={READ_ONLY_NOTE} style={{ opacity: 0.45, pointerEvents: 'none' }}>{t}</span> : t);
   return (
     <div className="column grouped" data-testid="general">
       <div className="toolbar drag"><h1>General</h1><div className="spacer" />{toolbar}</div>
@@ -28,16 +27,16 @@ export function GeneralPage({ snap, toolbar, onAssistant, onExport }: { snap: Sn
 
           <Group title="This Mac" footer="Screen Time, Chrome and the call log forget history, so Homecoming reads them every day. Each run keeps what it saw.">
             <GroupRow icon={<GlyphTile glyph="laptop" color="blue" />} title="Read this Mac every day" chevron={false} testId="general-daily"
-              trailing={lock(<Toggle checked={s.autoRefresh} onChange={(v) => set({ autoRefresh: v })} label="Read this Mac every day" testId="toggle-daily" />)} />
+              trailing={<Toggle checked={s.autoRefresh} onChange={(v) => set({ autoRefresh: v })} label="Read this Mac every day" testId="toggle-daily" />} />
             <GroupRow icon={<GlyphTile glyph="reload" color="blue" />} title="Read this Mac now" chevron={false} subtitle="Every source on this Mac, read again now."
-              trailing={<Button size="small" onClick={() => void api.action('*', 'run-all-mac')} disabled={snap.readOnly} title={locked ? READ_ONLY_NOTE : undefined} testAction="run-all-mac">Read Now</Button>} />
+              trailing={<Button size="small" onClick={() => void api.action('*', 'run-all-mac')} disabled={locked} title={locked ? READ_ONLY_NOTE : undefined} testAction="run-all-mac">Read Now</Button>} />
           </Group>
 
-          <Group title="Exports coming home" footer="While an export is on its way, Homecoming looks for the file, and for the service's &quot;your data is ready&quot; email and notification. It keeps nothing else from them.">
+          <Group title="Exports coming home" footer="While an export is on its way, Homecoming looks for the file, and for the service's &quot;your data is ready&quot; email and notification. It reads a private copy of each, kept on this Mac; nothing else from them goes into your library. Turning one off removes its copy.">
             <GroupRow icon={<GlyphTile glyph="tray" color="indigo" />} title="Watch Downloads for exports" chevron={false} testId="general-watch"
               subtitle={s.watchDownloads ? 'An export you asked for is imported as it lands in Downloads. Any other waits on its page for you to say yes.'
                 : 'Off: add each download on its page. What Claude downloads for you is still read.'}
-              trailing={lock(<Toggle checked={s.watchDownloads} onChange={(v) => set({ watchDownloads: v })} label="Watch Downloads" testId="toggle-watch" />)} />
+              trailing={<Toggle checked={s.watchDownloads} onChange={(v) => set({ watchDownloads: v })} label="Watch Downloads" testId="toggle-watch" />} />
             <GroupRow icon={<GlyphTile glyph="envelope" color="blue" />} title="Look in Mail for &quot;your data is ready&quot;" chevron={false} testId="general-mail"
               subtitle={su.mail.accounts.length ? `In ${su.mail.accounts.join(', ')}, in Mail on this Mac.` : 'Mail on this Mac has no accounts yet.'}
               trailing={<Toggle checked={su.mail.checks} onChange={(v) => set({ mailChecks: v })} label="Look in Mail" testId="toggle-mail-checks" />} />
@@ -54,9 +53,12 @@ export function GeneralPage({ snap, toolbar, onAssistant, onExport }: { snap: Sn
             <GroupRow icon={<GlyphTile glyph="layers" color="gray" />} title="Keep working when the window is closed" chevron={false}
               subtitle="Homecoming stays in the menu bar, reading this Mac and watching for your exports."
               trailing={<Toggle checked={!!s.background} onChange={(v) => set({ background: v })} label="Keep working when closed" testId="toggle-background" />} />
+            {/* Only the installed app can: one run from Terminal would add Electron itself, so it says so instead. */}
             <GroupRow icon={<GlyphTile glyph="play" color="gray" />} title="Open at login" chevron={false}
-              subtitle={s.background ? 'Starts in the menu bar when you log in.' : 'Opens Homecoming when you log in.'}
-              trailing={<Toggle checked={!!s.openAtLogin} onChange={(v) => set({ openAtLogin: v })} label="Open at login" testId="toggle-login" />} />
+              subtitle={snap.packaged === false ? 'Only the installed app opens at login (npm run install-app). Run from Terminal, open it yourself.'
+                : s.background ? 'Starts in the menu bar when you log in.' : 'Opens Homecoming when you log in.'}
+              trailing={snap.packaged === false ? <span className="tag">Installed app only</span>
+                : <Toggle checked={!!s.openAtLogin} onChange={(v) => set({ openAtLogin: v })} label="Open at login" testId="toggle-login" />} />
           </Group>
 
           <Group title="Your library">

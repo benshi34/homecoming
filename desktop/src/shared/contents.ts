@@ -12,8 +12,15 @@ const KINDS: Record<string, Record<string, string>> = {
   ai_coding: { ai_turn: 'Your prompts and the replies' },
   editor_history: { file_edit: 'Saved versions of files' },
   podcasts: { listen: 'Episodes played', subscription: 'Shows you follow' },
+  whatsapp: { message: 'Messages', event: 'Group chat changes', post: 'Your status updates' },
+  books: { book: 'Books in your library', read: 'Books you finished', highlight: 'Highlights and notes' },
+  apple_maps: { search: 'Searches in Maps', directions: 'Directions you got', place_lookup: 'Places you looked at',
+    place: 'Favorites and places saved in your guides', guide: 'Your guides', place_visit: 'Places you visited, as Maps kept them',
+    review: 'Places you rated', rating_asked: 'Places Maps asked you to rate' },
   photos: { photo: 'Photos and videos' },
   shared_photos: { photo: 'Photos and videos others shared with you, and copies of yours in shared albums' },
+  photos_memories: { memory: 'Memories Photos made', highlight: 'Days and trips Photos named' },
+  browser_saved: { bookmark: 'Bookmarks', reading_list: 'Reading List', download: 'Downloads', open_tab: 'Tabs open on your other devices' },
   calendar: { event: 'Events' },
   notion: { note: 'Pages' },
 };
@@ -22,6 +29,9 @@ const KIND_WORDS: Record<string, string> = {
   commit: 'Commits', voice_memo: 'Recordings', command: 'Commands', post: 'Posts', comment: 'Comments', purchase: 'Purchases',
   transaction: 'Transactions', trip: 'Trips', media: 'Media', listen: 'Listens', watch: 'Things watched', read: 'Things read',
   review: 'Reviews', follow: 'Follows', like: 'Likes', activity: 'Activity', record: 'Other records', file: 'Files', message: 'Messages', photo: 'Photos', visit: 'Pages visited', search: 'Searches',
+  saved: 'Saved items', bookmark: 'Bookmarks', playlist: 'Playlists', subscription: 'Subscriptions', vote: 'Votes', reaction: 'Reactions',
+  ai_turn: 'AI prompts and replies', inference: 'What it decided about you', advertiser: 'Advertisers that have you',
+  ad: 'Ads you were shown', off_platform: 'What other companies told it you did',
 };
 
 const FACETS: Record<string, { title: string; label: (v: string) => string }> = {
@@ -37,7 +47,7 @@ const FACETS: Record<string, { title: string; label: (v: string) => string }> = 
   photos: { title: 'Kind', label: (v) => ({ photo: 'Photos', video: 'Videos' }[v] ?? cap(v)) },
   shared_photos: { title: 'Shared through', label: (v) => ({ shared_album: 'Shared albums', shared_with_you: 'Shared with You in Messages', icloud_link: 'iCloud links',
     shared_library: 'Your Shared Library, added by others' }[v] ?? cap(v)) },
-  documents: { title: 'Folder', label: (v) => ({ iCloud: 'iCloud Drive' }[v] ?? v) },
+  documents: { title: 'Folder', label: (v) => ({ iCloud: 'iCloud Drive', Obsidian: 'Obsidian vaults' }[v] ?? v) },
 };
 
 // The ids browsers.py gives them.
@@ -71,6 +81,12 @@ export function contents(sourceId: string, produces: string[], stats: Stats | nu
   const copies = stats?.copies?.[sourceId];
   if (copies && Object.keys(copies).length) {
     out.push({ title: 'Where it came from', rows: rows(copies, (c) => ({ iphone: 'The iPhone backup', mac: 'Only in this Mac\'s copy' }[c] ?? cap(c))) });
+  }
+  // WhatsApp and Maps leave what the iPhone backup also has to its own source (in_the_iphone_backup).
+  const same = Number(m[produces[0]]?.notes?.in_the_iphone_backup) || 0;
+  const here = produces.reduce((n, k) => n + (m[k]?.count ?? 0), 0);
+  if (same && here) {
+    out.push({ title: 'Where it came from', rows: [{ label: 'Only in this Mac\'s copy', count: here }, { label: 'Also in the iPhone backup, counted there', count: same }] });
   }
   return out;
 }

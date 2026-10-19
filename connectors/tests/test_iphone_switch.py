@@ -22,7 +22,7 @@ import iphone_backup
 spec = json.loads(sys.argv[1])
 class Fake:
     def __init__(self, path=None):
-        self.dir = Path(spec["dir"]); self.info = spec["info"]; self.encrypted = False
+        self.dir = Path(spec["dir"]); self.info = spec["info"]; self.encrypted = False; self.unreadable = []
     def describe(self): return self.info["Device Name"]
     def open(self, password): pass
     def files(self):

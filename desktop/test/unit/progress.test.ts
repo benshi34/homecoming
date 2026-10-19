@@ -69,6 +69,20 @@ describe('progress', () => {
     assert.ok(!base.phases.find((x) => x.id === 'request')!.sourceIds.includes('google_photos_drive'));
   });
 
+  test('one set aside for now still counts, as not collected yet; an optional one set aside doesn\'t start to', () => {
+    const base = progress(views(), NOW);
+    const aside = progress(views({ state: state((s) => {
+      for (const id of ['discord', 'reddit', 'spotify']) s.sources[id] = { skipped: 'Not now' };
+      s.sources.slack = { skipped: 'Not now' }; // optional: not counted before, nor after
+    }) }), NOW);
+    assert.equal(aside.applicable, base.applicable, 'still out of the same number');
+    assert.equal(aside.collected, base.collected);
+    const req = aside.phases.find((x) => x.id === 'request')!;
+    assert.equal(req.total, base.phases.find((x) => x.id === 'request')!.total);
+    assert.ok(req.sourceIds.includes('discord') && !req.sourceIds.includes('slack'));
+    assert.notEqual(req.detail, 'Nothing to do here');
+  });
+
   test('readyIn wording', () => {
     const w = (from: number, by: number, state: Waiting['state'] = from <= 0 ? 'due' : 'waiting') => ({ id: 'x', name: 'X', readyFrom: NOW.getTime() + from * H, readyBy: NOW.getTime() + by * H, ready: from <= 0, state });
     assert.equal(readyIn(w(0.5, 5), NOW), 'could be ready within the hour');

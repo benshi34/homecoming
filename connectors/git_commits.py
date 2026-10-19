@@ -55,13 +55,15 @@ def main():
                 w.notes["in_icloud_only"] = w.notes.get("in_icloud_only", 0) + 1
                 continue
             fmt = SEP.join(["%H", "%aI", "%an", "%ae", "%s", "%b"]) + "\x1e"
+            # In UTF-8 whatever the person's git config asks for (i18n.logOutputEncoding), and a byte that isn't
+            # replaced rather than stopping every repository's read.
             try:
-                out = subprocess.run([git, "-C", str(repo), "log", "--all", f"--format={fmt}"],
-                                     capture_output=True, text=True, timeout=120).stdout
+                out = subprocess.run([git, "-C", str(repo), "-c", "i18n.logOutputEncoding=UTF-8", "log", "--all", f"--format={fmt}"],
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120).stdout
             except subprocess.TimeoutExpired:
                 continue
             remote = subprocess.run([git, "-C", str(repo), "config", "--get", "remote.origin.url"],
-                                    capture_output=True, text=True).stdout.strip() or None
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip() or None
             for chunk in out.split("\x1e"):
                 chunk = chunk.strip("\n")
                 if SEP not in chunk:

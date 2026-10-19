@@ -1,7 +1,7 @@
 // Homecoming with its window closed (main/background.ts): what the menu bar lists as needing you, and opening at login.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { loginItemWanted, trayNeeds } from '../../src/main/background.ts';
+import { dailyRead, loginItemWanted, trayNeeds } from '../../src/main/background.ts';
 import { hoursAgo, state, views } from './helpers.ts';
 
 test('the menu bar lists what needs you, most pressing first, Claude\'s questions as such', () => {
@@ -23,4 +23,13 @@ test('opening at login is its own choice, and follows keeping working in the bac
   assert.equal(loginItemWanted({ ...base, background: false }, true), false, 'background off, login not set: off');
   assert.equal(loginItemWanted({ ...base, background: false, openAtLogin: true }, true), true, 'set on its own');
   assert.equal(loginItemWanted({ ...base, background: true, openAtLogin: false }, true), false, 'off while the background stays on');
+});
+
+test('the daily read waits for the charger and runs in the background; a first read does neither', () => {
+  const now = Date.parse('2026-10-18T12:00:00Z');
+  const day = 24 * 3600_000;
+  assert.equal(dailyRead([now - day, null], now, true), 'now', 'never read: now, on battery too');
+  assert.equal(dailyRead([now - day, now - 2 * day], now, true), 'later', 'on battery: once it is plugged in');
+  assert.equal(dailyRead([now - day], now, false), 'background', 'plugged in: at background priority');
+  assert.equal(dailyRead([now - day, now - 4 * day], now, true), 'background', 'but not more than three days later');
 });

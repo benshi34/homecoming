@@ -60,6 +60,27 @@ RECORDS = [
     rec("health_samples", 1, "2026-09-10T12:00:00Z", "health_sample", meta={"steps": 10}),
     rec("phone_filesapp", 1, "2026-09-10T12:00:00Z", text="a file", meta={"tier": "device"}),
     rec("instagram_activity", 1, "2026-09-10T12:00:00Z", title="ad", meta={"file": "ads_viewed"}),
+    # What a service showed or decided, from any export: not events either.
+    rec("x", 1, "2026-09-10T12:30:00Z", "ad", author="Shop", title="Shop", meta={"file": "ad-impressions", "service": "X"}),
+    rec("spotify", 1, "2026-09-10T12:40:00Z", "inference", author="Spotify", title="Night Owls", meta={"what": "segment", "service": "Spotify"}),
+    rec("facebook_activity", 1, "2026-09-10T12:50:00Z", "off_platform", author="A shop", title="A shop", meta={"file": "your_activity_off_meta_technologies"}),
+    # From the exports' newer readers: YouTube comments and Watch later, a bookmark, songs added to a playlist, Grok.
+    rec("youtube", 1, "2026-09-12T17:00:00Z", "comment", author="me", is_me=True, thread="v1", thread_name="How tides work", text="Great video",
+        meta={"file": "comments.csv"}),
+    rec("youtube", 2, "2026-09-12T17:05:00Z", "comment", author="me", is_me=True, thread="v2", thread_name="Neap tides", text="Thanks!",
+        meta={"file": "comments.csv"}),
+    rec("youtube", 3, "2026-09-12T18:00:00Z", "saved", author="me", is_me=True, thread="WL", thread_name="Watch later", title="How tides work",
+        meta={"file": "Watch later-videos.csv", "list": "Watch later", "what": "video"}),
+    rec("chrome_synced", 2, "2026-09-12T19:00:00Z", "bookmark", author="me", is_me=True, title="Tide tables", url="https://example.com/tides",
+        meta={"folder": "Bookmarks bar"}),
+    # The same bookmark in Chrome on this Mac (browser_saved): one, shown from the Mac's copy.
+    rec("browser_saved", 1, "2026-09-12T19:00:00Z", "bookmark", author="me", is_me=True, title="Tide tables", url="https://example.com/tides"),
+    rec("spotify", 2, "2026-09-12T20:00:00Z", "saved", author="me", is_me=True, thread="p1", thread_name="Road trip", title="Song A",
+        meta={"list": "Road trip", "what": "song"}),
+    rec("spotify", 3, "2026-09-12T20:01:00Z", "saved", author="me", is_me=True, thread="p1", thread_name="Road trip", title="Song B",
+        meta={"list": "Road trip", "what": "song"}),
+    rec("x", 2, "2026-09-12T21:00:00Z", "ai_turn", author="me", is_me=True, thread="grok:g1", thread_name="What causes tides?",
+        text="What causes tides?", meta={"tool": "grok", "product": "Grok"}),
     # A day's totals, at local midnight.
     rec("health", 1, "2026-09-10T07:00:00Z", "health_day", is_me=True, meta={"steps": 1234, "distance_km": 1.5, "tz": "America/Los_Angeles"}),
     # Whole days are dates: one written as Health writes them (midnight, no zone, in Chicago), and an all-day event
@@ -179,6 +200,20 @@ class Stream(unittest.TestCase):
         self.assertEqual(h[0]["title"], "You walked 1,234 steps, 1.5 km")
         self.assertTrue(h[0]["all_day"])
         self.assertTrue(h[0]["start"].startswith("2026-09-10T00:00:00-07:00"))
+
+    def test_what_services_decided_is_left_out_and_new_kinds_read_well(self):
+        refs = {r for e in self.events for r in e["refs"]}
+        for gone in ("x:x-1", "spotify:spotify-1", "facebook_activity:facebook_activity-1"):
+            self.assertNotIn(gone, refs, "an ad, a guess, what a company told: not something you did")
+        titles = {e["title"] for e in self.events}
+        for t in ("Commented on 2 videos on YouTube", "Added How tides work to “Watch later” on YouTube", "Bookmarked Tide tables",
+                  "Added 2 songs to “Road trip” in Spotify", "Chatted with Grok on What causes tides? (1 prompt)"):
+            self.assertIn(t, titles)
+        bm = [e for e in self.events if e["title"] == "Bookmarked Tide tables"]
+        self.assertEqual(len(bm), 1, "Chrome's bookmark on this Mac and in Takeout: one")
+        self.assertEqual(sorted(r.split(":")[0] for r in bm[0]["refs"]), ["browser_saved", "chrome_synced"])
+        yt = next(e for e in self.events if e["title"].startswith("Commented on"))
+        self.assertEqual((yt["kind"], yt["lines"]), ("social", ["Great video", "Thanks!"]))
 
     def test_whole_days_land_on_their_own_date(self):
         h = {e["title"]: e for e in self.of("health")}

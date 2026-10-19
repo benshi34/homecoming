@@ -244,6 +244,7 @@ test('several iPhones backed up: the one read is picked, and what came from one 
   const texts = () => fs.readFileSync(path.join(sb.corpus, 'normalized/imessage.jsonl'), 'utf8');
   assert.doesNotMatch(texts(), /sam's text/);
   await read('ada');
+  await until(p, 'ada read', (x) => !x.jobs.length); // the backup is picked first, then read: wait for the read
   assert.match(texts(), /ada's text/);
   assert.deepEqual(run.errors, []);
 });

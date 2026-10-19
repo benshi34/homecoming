@@ -2,6 +2,7 @@
 
 Run: python3 -m unittest discover -s connectors/tests -p 'test_*.py'
 """
+import datetime as dt
 import json
 import os
 import sqlite3
@@ -245,6 +246,49 @@ class BrowserTests(Base):
         self.assertEqual(fox[0]["thread_name"], "Firefox (default-release)")
         self.assertEqual(fox[0]["ts"][:10], "2023-11-14")
         self.assertEqual((fox[0]["kind"], fox[0]["title"]), ("search", "kettle descaling"), "Google in the UK is a search too")
+
+    def test_bookmarks_reading_list_downloads_and_other_devices_tabs(self):
+        import plistlib
+        self.chromium("Google/Chrome", "https://example.com/page")
+        prof = self.home / "Library/Application Support/Google/Chrome/Default"
+        (prof / "Bookmarks").write_text(json.dumps({"roots": {"bookmark_bar": {"type": "folder", "name": "Bookmarks bar", "children": [
+            {"type": "folder", "name": "Recipes", "children": [{"type": "url", "guid": "g1", "name": "Bread", "url": "https://bread.example",
+                                                               "date_added": "13370000000000000"}]}]}, "other": {"type": "folder", "children": []}}}))
+        con = sqlite3.connect(prof / "History")
+        con.executescript("""create table downloads (id integer primary key, target_path text, start_time int, total_bytes int, state int,
+              mime_type text, referrer text, tab_url text);
+            create table downloads_url_chains (id int, chain_index int, url text);
+            insert into downloads values (1, '/Users/ada/Downloads/lease.pdf', 13370000000000000, 2048, 1, 'application/pdf', null, 'https://landlord.example');
+            insert into downloads_url_chains values (1, 0, 'https://landlord.example/go'), (1, 1, 'https://files.example/lease.pdf');""")
+        con.commit()
+        con.close()
+        safari = self.home / "Library/Safari"
+        safari.mkdir(parents=True, exist_ok=True)
+        (safari / "Bookmarks.plist").write_bytes(plistlib.dumps({"WebBookmarkType": "WebBookmarkTypeList", "Children": [
+            {"WebBookmarkType": "WebBookmarkTypeList", "Title": "com.apple.ReadingList", "Children": [
+                {"WebBookmarkType": "WebBookmarkTypeLeaf", "WebBookmarkUUID": "R1", "URLString": "https://essay.example",
+                 "URIDictionary": {"title": "A long essay"}, "ReadingList": {"DateAdded": dt.datetime(2026, 10, 1, 9, 0)}}]},
+            {"WebBookmarkType": "WebBookmarkTypeList", "Title": "Favorites", "Children": [
+                {"WebBookmarkType": "WebBookmarkTypeLeaf", "WebBookmarkUUID": "B1", "URLString": "https://news.example", "URIDictionary": {"title": "News"}}]}]}))
+        tabs = self.home / "Library/Containers/com.apple.Safari/Data/Library/Safari/CloudTabs.db"
+        tabs.parent.mkdir(parents=True)
+        con = sqlite3.connect(tabs)
+        con.executescript("""create table cloud_tab_devices (device_uuid text, device_name text);
+            create table cloud_tabs (tab_uuid text, device_uuid text, title text, url text, is_pinned int, last_viewed_time real);
+            insert into cloud_tab_devices values ('D1', 'Ada''s iPhone');
+            insert into cloud_tabs values ('T1', 'D1', 'Train times', 'https://trains.example', 0, 780000000);""")
+        con.commit()
+        con.close()
+        self.run_with()
+        saved = {r["id"]: r for r in records(self.corpus, "browser_saved")}
+        bread = saved["chrome:Default:bookmark:g1"]
+        self.assertEqual((bread["kind"], bread["url"], bread["meta"]["folder"]), ("bookmark", "https://bread.example", "Bookmarks bar/Recipes"))
+        dl = saved["chrome:Default:download:1"]
+        self.assertEqual((dl["kind"], dl["title"], dl["url"], dl["meta"]["from_page"]), ("download", "lease.pdf", "https://files.example/lease.pdf", "https://landlord.example"))
+        self.assertEqual((saved["safari:reading:R1"]["kind"], saved["safari:reading:R1"]["ts"]), ("reading_list", "2026-10-01T09:00:00Z"))
+        self.assertEqual(saved["safari:bookmark:B1"]["meta"]["folder"], "Favorites")
+        tab = saved["safari:tab:T1"]
+        self.assertEqual((tab["kind"], tab["thread_name"], tab["url"]), ("open_tab", "Safari on Ada's iPhone", "https://trains.example"))
 
     def test_a_browser_turned_off_isnt_read(self):
         self.chromium("Arc/User Data", "https://example.com/arc")

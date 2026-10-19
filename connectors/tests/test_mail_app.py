@@ -67,6 +67,24 @@ class MailAppTests(unittest.TestCase):
         self.assertEqual(recs["<hello@example.test>"]["meta"]["account"], "ada@outlook.test")
         self.assertFalse(recs["<hello@example.test>"]["is_me"])
 
+    def test_read_flagged_and_mails_own_category(self):
+        self.put("Inbox.mbox", 5, message("deal", frm="Shop <deals@shop.test>"))
+        self.put("Inbox.mbox", 6, message("note", frm="Grace <grace@example.test>"))
+        env = self.home / "Library/Mail/V10/MailData/Envelope Index"
+        env.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(env)
+        con.executescript("""create table messages (ROWID integer primary key, global_message_id int, read int, flagged int, date_last_viewed int);
+            create table message_global_data (ROWID integer primary key, model_category int);
+            insert into message_global_data values (1, 3), (2, 0);
+            insert into messages values (5, 1, 0, 0, null), (6, 2, 1, 1, 1704067200);""")
+        con.commit()
+        con.close()
+        self.run_py("import mail_app; mail_app.main()")
+        recs = self.records()
+        deal, note = recs["<deal@example.test>"]["meta"], recs["<note@example.test>"]["meta"]
+        self.assertEqual((deal["read"], deal["category"], deal.get("flagged")), (False, "promotions", None))
+        self.assertEqual((note["read"], note["flagged"], note["category"], note["viewed"]), (True, True, "primary", "2024-01-01T00:00:00Z"))
+
     def test_unchanged_messages_arent_read_again(self):
         self.put("Inbox.mbox", 1, message("one"))
         self.run_py("import mail_app; mail_app.main()")

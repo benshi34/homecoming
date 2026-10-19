@@ -12,7 +12,8 @@ import { api } from './api.ts';
 import { AgentNeedNote, RetentionSheet } from './ask.tsx';
 import { Glyph, SourceIcon } from './icons.tsx';
 import { PHONE_SOURCES, phoneGroups } from '../shared/phone.ts';
-import { AiMark, Banner, Button, Group, GroupRow, ProgressBar, Sheet, Spinner, StatusGlyph, Toggle } from './ui.tsx';
+import { agentGate, AgentGateSheet, type Gate } from './agent_gate.tsx';
+import { AiMark, Banner, Button, Group, GroupRow, ProgressBar, Sheet, Spinner, StatusGlyph, Toggle, useReadOnly } from './ui.tsx';
 import { WaitClock } from './moments.tsx';
 import { SourceGlance } from './glance.tsx';
 import type { ExplorePage } from './explore.tsx';
@@ -23,6 +24,7 @@ export const vt = (name: string): CSSProperties => ({ viewTransitionName: name }
 const SOURCE_NAMES: Record<string, string> = {
   google_activity: 'Search, YouTube and Maps activity', chrome_synced: 'Chrome (synced)', google_chat: 'Google Chat and Hangouts', gmail: 'Gmail',
   google_maps_places: 'Maps places', instagram_activity: 'Instagram activity', facebook_activity: 'Facebook activity', notion_export: 'Notion pages',
+  youtube: 'YouTube comments, uploads and playlists', google_tasks: 'Tasks', google_saved: 'Saved lists',
 };
 
 export function prettySource(name: string): string {
@@ -47,10 +49,12 @@ export function AddServiceSheet({ onClose, onAdded, initialName = '' }: { onClos
   const [name, setName] = useState(initialName);
   const [url, setUrl] = useState('');
   const [err, setErr] = useState('');
+  const locked = useReadOnly(); // read-only mode: nothing is added
   return (
     <Sheet onClose={onClose} testId="add-service" width={440}>
       <form onSubmit={(e) => {
         e.preventDefault();
+        if (locked) return;
         if (!name.trim()) return setErr('Enter the service\'s name.');
         void api.action('*', 'add-service', { name, url }).then((r) => (r.ok && r.id ? (onAdded(r.id), onClose()) : setErr(r.error ?? 'Couldn\'t add it.')));
       }}>
@@ -63,9 +67,10 @@ export function AddServiceSheet({ onClose, onAdded, initialName = '' }: { onClos
           <input id="svc-url" value={url} placeholder="wattpad.com (optional)" onChange={(e) => { setUrl(e.target.value); setErr(''); }} />
         </div>
         {err && <div className="form-error error">{err}</div>}
+        {locked && <p>{locked}</p>}
         <div className="sheet-actions">
           <Button onClick={onClose}>Cancel</Button>
-          <Button kind="primary" type="submit" testAction="add-service">Add</Button>
+          <Button kind="primary" type="submit" testAction="add-service" disabled={!!locked} title={locked ?? undefined}>Add</Button>
         </div>
       </form>
     </Sheet>
@@ -161,7 +166,7 @@ function MappingSheet({ snap, view, onClose }: { snap: Snapshot; view: SourceVie
           <>
             <h2>Turn on AI to ask {who}?</h2>
             {snap.settings.aiAgreedAt
-              ? <p>This turns AI back on in Homecoming, for Ask and Do It for Me too. You can turn it off again in AI Settings.</p>
+              ? <p>This turns AI back on in Homecoming, for Ask{snap.settings.agentExports ? ' and Do It for Me' : ''} too. You can turn it off again in AI Settings.</p>
               : <div style={{ marginTop: 8 }}><AiAgreement snap={snap} actions={false} /></div>}
             {need && <div style={{ marginTop: 10 }}><AgentNeedNote snap={snap} need={need} /></div>}
             <div className="sheet-actions">
@@ -207,7 +212,7 @@ function MappingSheet({ snap, view, onClose }: { snap: Snapshot; view: SourceVie
             <div className="group-box" style={{ marginTop: 12 }} data-testid="mapping-preview">
               {preview.rules.map((r, i) => (
                 <GroupRow key={i} title={<>{r.describe}<span className="tag">{r.kind}</span></>}
-                  subtitle={r.items ? `${count(r.items)} found${r.items ? `, ${Math.round((r.timed / r.items) * 100)}% with a time` : ''}${r.sample[0] ? ` · “${(r.sample[0].title ?? r.sample[0].text ?? '').slice(0, 80)}”` : ''}` : 'Nothing found: the mapping may name the wrong file or field'}
+                  subtitle={r.items ? `${count(r.items)} found${r.items ? `, ${Math.round((r.timed / r.items) * 100)}% with a time` : ''}${r.repeats ? `, but ${count(r.repeats)} more share an id with one of them and would be left out` : ''}${r.sample[0] ? ` · “${(r.sample[0].title ?? r.sample[0].text ?? '').slice(0, 80)}”` : ''}` : 'Nothing found: the mapping may name the wrong file or field'}
                   trailing={count(r.items)} />
               ))}
             </div>
@@ -341,14 +346,23 @@ export function PasswordForm({ onSubmit, busy, label = 'Read Backup' }: { onSubm
 
 // Who you are, from evidence: every name, address, username and number found on this Mac and in your exports,
 // ticked when the evidence is strong. Untick what isn't you; add what's missing.
-export function IdentityPicker({ snap, onSubmit, busy, submitLabel = 'Save', hideSubmit, formId }: {
-  snap: Snapshot; onSubmit: (id: Identity, dismissed: string[]) => void; busy: boolean; submitLabel?: string; hideSubmit?: boolean; formId?: string;
+// What's ticked and typed in a picker that's kept (keep): Your Setup's, while you look at another page and come back.
+interface PickerDraft { extra: PickRow[]; checked: Set<string>; drafts: Record<Kind, string>; touched: Set<string> }
+const keptPickers = new Map<string, PickerDraft>();
+export const forgetPicker = (keep: string) => keptPickers.delete(keep);
+
+// keep: a name to keep what's ticked and typed under until forgetPicker (saved, or closed with Done). Read-only mode:
+// shown as it is, every box and field disabled, with the note.
+export function IdentityPicker({ snap, onSubmit, busy, submitLabel = 'Save', hideSubmit, formId, keep }: {
+  snap: Snapshot; onSubmit: (id: Identity, dismissed: string[]) => void; busy: boolean; submitLabel?: string; hideSubmit?: boolean; formId?: string; keep?: string;
 }) {
+  const locked = useReadOnly();
+  const was = keep ? keptPickers.get(keep) : undefined;
   const found = pickerRows(snap.identityCandidates ?? [], snap.identity, snap.identityDismissed ?? []);
-  const [extra, setExtra] = useState<PickRow[]>([]);
+  const [extra, setExtra] = useState<PickRow[]>(was?.extra ?? []);
   const rows = [...found, ...extra.filter((e) => !found.some((r) => r.key === e.key))];
-  const touched = useRef(new Set<string>());
-  const [checked, setChecked] = useState<Set<string>>(() => new Set(found.filter((r) => r.checked).map((r) => r.key)));
+  const touched = useRef(was?.touched ?? new Set<string>());
+  const [checked, setChecked] = useState<Set<string>>(() => was?.checked ?? new Set(found.filter((r) => r.checked).map((r) => r.key)));
   // Candidates arrive a moment after the page opens: tick the strong ones unless the person already chose.
   const sig = found.map((r) => `${r.key}${r.checked}`).join();
   useEffect(() => {
@@ -358,8 +372,11 @@ export function IdentityPicker({ snap, onSubmit, busy, submitLabel = 'Save', hid
       return n;
     });
   }, [sig]);
-  const [drafts, setDrafts] = useState<Record<Kind, string>>({ name: '', email: '', username: '', phone: '' });
+  const [drafts, setDrafts] = useState<Record<Kind, string>>(was?.drafts ?? { name: '', email: '', username: '', phone: '' });
   const [err, setErr] = useState('');
+  useEffect(() => {
+    if (keep) keptPickers.set(keep, { extra, checked, drafts, touched: touched.current });
+  }, [keep, extra, checked, drafts]);
   const flip = (key: string) => {
     touched.current.add(key);
     setChecked((c) => {
@@ -384,6 +401,7 @@ export function IdentityPicker({ snap, onSubmit, busy, submitLabel = 'Save', hid
   return (
     <form id={formId} data-testid="identity-form" onSubmit={(e) => {
       e.preventDefault();
+      if (locked) return;
       // What's typed in an Add field and not added yet counts too: nobody should have to press Add before Save.
       const typed: PickRow[] = [];
       for (const k of KINDS) {
@@ -411,7 +429,7 @@ export function IdentityPicker({ snap, onSubmit, busy, submitLabel = 'Save', hid
             <div className="group-box">
               {mine.map((r) => (
                 <label key={r.key} className="cand-row" data-testid={`cand-${r.key}`}>
-                  <input type="checkbox" checked={checked.has(r.key)} onChange={() => flip(r.key)} aria-label={r.value} />
+                  <input type="checkbox" checked={checked.has(r.key)} onChange={() => flip(r.key)} aria-label={r.value} disabled={!!locked} title={locked ?? undefined} />
                   <div className="main">
                     <div className="v">{r.value}{r.isNew && <span className="tag new">New</span>}{!r.strong && <span className="tag">Maybe</span>}</div>
                     <div className="src">{r.sources.slice(0, 3).map((x) => (x.count ? `${x.label} · ${count(x.count)}` : x.label)).join('  ·  ')}{r.sources.length > 3 ? `  +${r.sources.length - 3} more` : ''}</div>
@@ -419,17 +437,18 @@ export function IdentityPicker({ snap, onSubmit, busy, submitLabel = 'Save', hid
                 </label>
               ))}
               <div className="cand-add">
-                <input id={`add-${k.kind}`} type="text" placeholder={`${k.add}…`} value={drafts[k.kind]}
+                <input id={`add-${k.kind}`} type="text" placeholder={`${k.add}…`} value={drafts[k.kind]} disabled={!!locked} title={locked ?? undefined}
                   onChange={(e) => setDrafts({ ...drafts, [k.kind]: e.target.value })}
                   onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(k.kind); } }} />
-                <Button onClick={() => add(k.kind)} testAction={`add-${k.kind}`}>Add</Button>
+                <Button onClick={() => add(k.kind)} testAction={`add-${k.kind}`} disabled={!!locked} title={locked ?? undefined}>Add</Button>
               </div>
             </div>
           </Group>
         );
       })}
       {err && <div className="form-error error" style={{ padding: '8px 2px 0' }}>{err}</div>}
-      {!hideSubmit && <div style={{ marginTop: 14 }}><Button kind="primary" type="submit" disabled={busy}>{submitLabel}</Button></div>}
+      {locked && <div className="note" data-testid="identity-locked"><Glyph name="info" size={13} /><span>{locked}</span></div>}
+      {!hideSubmit && <div style={{ marginTop: 14 }}><Button kind="primary" type="submit" disabled={busy || !!locked} title={locked ?? undefined}>{submitLabel}</Button></div>}
     </form>
   );
 }
@@ -437,13 +456,15 @@ export function IdentityPicker({ snap, onSubmit, busy, submitLabel = 'Save', hid
 export function SkipForm({ view, action, onSubmit, onCancel }: { view: SourceView; action: Action; onSubmit: (r: string) => void; onCancel: () => void }) {
   const reasons = action.id === 'cant-export'
     ? ['My account is on a school or work workspace (only admins can export)', 'The site has no export for my account']
-    : [`I don't use ${view.name}`, 'Not now', 'I\'ll do it another way'];
+    : view.id === 'iphone_backup' ? ['I don\'t have an iPhone', 'Not now', 'I\'ll do it another way'] : [`I don't use ${view.name}`, 'Not now', 'I\'ll do it another way'];
+  // "I don't have an iPhone" is the one answer for the backup and the checks about the iPhone (main.ts).
+  const reasonOf = (r: string) => (r === 'I don\'t have an iPhone' ? 'No iPhone' : r);
   return (
     <Sheet onClose={onCancel} testId="skip-form">
       <h2>{action.id === 'cant-export' ? `Why can't ${view.name} export?` : `Skip ${view.name}?`}</h2>
       <p>Not now keeps it in To Do, under Optional. Any other reason puts it away: it stays in All Sources, where you can include it again any time.</p>
       <div className="sheet-actions" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-        {reasons.map((r) => <Button key={r} onClick={() => onSubmit(r)}>{r}</Button>)}
+        {reasons.map((r) => <Button key={r} onClick={() => onSubmit(reasonOf(r))}>{r}</Button>)}
         <Button kind="plain" onClick={onCancel}>Cancel</Button>
       </div>
     </Sheet>
@@ -471,11 +492,16 @@ export function AccountForm({ view }: { view: SourceView }) {
 // Do It for Me, the first time: Claude Code works in the person's Chrome, where they're signed in, and stops only for
 // what's theirs to do. It can't be turned on without Claude Code, and the Claude in Chrome extension is checked as the
 // sheet opens, so a missing one is said up front rather than when a run fails.
+// onOn: it's on, and Anthropic's data settings are checked (asked here first, before anything is saved, as AI Settings'
+// switch asks: Cancel there leaves it off).
 export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: () => void; onOn: () => void }) {
   const [downloads, setDownloads] = useState(snap.settings.agentDownloads !== false);
+  const [check, setCheck] = useState(false);
   const [checks, setChecks] = useState(snap.settings.agentChecks !== false);
   const [chrome, setChrome] = useState<string | null>(null);
   const installed = snap.agentInstalled ?? snap.ask.installed['claude-code'];
+  // Installed, but it can't run yet: signed out, no browser it works in, or a plan it doesn't work on (AI Settings fixes it).
+  const cant = installed && !snap.demo && snap.setup?.agent && !snap.setup.agent.ok ? snap.setup.agent : null;
   const B = snap.setup?.agentBrowser?.name ?? 'Chrome';
   const locked = snap.readOnly && !snap.demo;
   useEffect(() => {
@@ -486,8 +512,13 @@ export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: (
       live = false;
     };
   }, [installed]);
-  const turnOn = () => void api.settings({ aiOn: true, aiAgreedAt: snap.settings.aiAgreedAt ?? new Date().toISOString(), agentExports: true, agentDownloads: downloads, agentChecks: checks })
+  const save = () => void api.settings({ aiOn: true, aiAgreedAt: snap.settings.aiAgreedAt ?? new Date().toISOString(), agentExports: true, agentDownloads: downloads, agentChecks: checks })
     .then(onOn);
+  const turnOn = () => (snap.demo || retentionOk(snap.ask.settings, 'claude-code') ? save() : setCheck(true));
+  if (check) {
+    return <RetentionSheet provider="claude-code" confirmed={false} onClose={() => setCheck(false)}
+      onConfirm={() => void api.ask({ op: 'confirm-retention', provider: 'claude-code' }).then(save)} />;
+  }
   return (
     <Sheet onClose={onClose} testId="agent-opt-in" width={480}>
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 7 }}><AiMark size={16} />Let Claude request and download your exports?</h2>
@@ -497,12 +528,17 @@ export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: (
       {snap.demo && <div style={{ marginTop: 10 }} data-testid="agent-demo-note"><Banner kind="info">In the demo, a stand-in plays Claude: nothing opens.</Banner></div>}
       {!installed ? (
         <div style={{ marginTop: 10 }} data-testid="agent-no-claude"><Banner kind="warning">
-          Do It for Me needs Claude Code, which isn't on this Mac. Install it from claude.com/claude-code and sign in, then add the Claude in Chrome extension to Chrome.
+          Do It for Me needs Claude Code, which isn't on this Mac. Install it from claude.com/claude-code and sign in, then add the Claude in Chrome extension to {B}.
           <div style={{ marginTop: 6 }}><Button size="small" onClick={() => void api.action('*', 'get-claude-code')} testAction="get-claude-code">Get Claude Code…</Button></div>
+        </Banner></div>
+      ) : cant ? (
+        <div style={{ marginTop: 10 }} data-testid="agent-cant"><Banner kind="warning">
+          {cant.why}
+          <div style={{ marginTop: 6 }}><Button size="small" onClick={() => { onClose(); void api.action('*', 'show-ai'); }} testAction="show-ai">Open AI Settings</Button></div>
         </Banner></div>
       ) : chrome === 'not connected' ? (
         <div style={{ marginTop: 10 }} data-testid="agent-chrome"><Banner kind="warning">
-          The Claude in Chrome extension isn't connected. Open Chrome, turn the extension on and sign in to it with your Claude account, then Turn On.
+          The Claude in Chrome extension isn't connected. Open {B}, turn the extension on and sign in to it with your Claude account, then Turn On.
           <div style={{ marginTop: 6 }}><Button size="small" onClick={() => void api.action('*', 'open-chrome')} testAction="open-chrome">Open {B}</Button></div>
         </Banner></div>
       ) : !snap.demo && (
@@ -520,8 +556,9 @@ export function AgentOptIn({ snap, onClose, onOn }: { snap: Snapshot; onClose: (
       </label>
       {locked && <p style={{ marginTop: 10 }}>{READ_ONLY_NOTE}</p>}
       <div className="sheet-actions">
-        <Button onClick={onClose}>Not Now</Button>
-        <Button kind="primary" ai testAction="agent-on" disabled={!installed || locked} title={locked ? READ_ONLY_NOTE : !installed ? 'Needs Claude Code' : undefined} onClick={turnOn}>Turn On</Button>
+        {/* Not now is remembered: export pages lead with doing it yourself, until it's turned on (here, or in AI Settings). */}
+        <Button onClick={() => { if (!locked) void api.settings({ agentExports: false }); onClose(); }} testAction="agent-not-now">Not Now</Button>
+        <Button kind="primary" ai testAction="agent-on" disabled={!installed || !!cant || locked} title={locked ? READ_ONLY_NOTE : !installed ? 'Needs Claude Code' : cant ? cant.why : undefined} onClick={turnOn}>Turn On</Button>
       </div>
     </Sheet>
   );
@@ -553,16 +590,24 @@ export function InboxButton({ view, action }: { view: SourceView; action: Action
   );
 }
 
+// What starts Claude in your browser.
+const AGENT_ACTIONS = new Set(['agent-request', 'agent-download', 'agent-continue']);
+
 // A Do It for Me button anywhere (the Setup Assistant's export pages): asks the first time, like the detail page does.
 export function AgentButton({ snap, id, action }: { snap: Snapshot; id: string; action: Action }) {
   const [optIn, setOptIn] = useState(false);
+  const [gate, setGate] = useState<Gate>(null);
   const go = () => void api.action(id, action.id);
   const needsOptIn = (action.id === 'agent-request' || action.id === 'agent-download') && !snap.settings.agentExports;
   const locked = snap.readOnly && !snap.demo && !READ_ONLY_OK.has(action.id);
+  // Not yet with the AI picked: said at once. Otherwise what it does (the first time), then the data settings.
+  const proceed = () => (agentGate(snap) === 'retention' ? setGate('retention') : go());
+  const press = () => (agentGate(snap) === 'not-yet' ? setGate('not-yet') : needsOptIn ? setOptIn(true) : proceed());
   return (
     <>
-      <Button kind={action.primary ? 'primary' : 'default'} ai={action.ai} onClick={() => (needsOptIn ? setOptIn(true) : go())} testAction={action.id}
+      <Button kind={action.primary ? 'primary' : 'default'} ai={action.ai} onClick={press} testAction={action.id}
         disabled={locked} title={locked ? READ_ONLY_NOTE : undefined}>{action.label}</Button>
+      {gate && <AgentGateSheet snap={snap} gate={gate} onClose={() => setGate(null)} onOk={() => { setGate(null); go(); }} />}
       {optIn && <AgentOptIn snap={snap} onClose={() => setOptIn(false)} onOn={() => { setOptIn(false); go(); }} />}
     </>
   );
@@ -571,7 +616,9 @@ export function AgentButton({ snap, id, action }: { snap: Snapshot; id: string; 
 export function Detail({ snap, view, onActed, onExplore }: { snap: Snapshot; view: SourceView; onActed?: (id: string) => void; onExplore?: (page: ExplorePage) => void }) {
   const [form, setForm] = useState<Action | null>(null);
   const [confirm, setConfirm] = useState<Action | null>(null);
+  const asked = useRef<unknown>(undefined); // what came with it (a backup's password): sent on, once confirmed
   const [optIn, setOptIn] = useState<Action | null>(null);
+  const [gate, setGate] = useState<{ g: Exclude<Gate, null>; a: Action; payload?: unknown } | null>(null);
   const [reply, setReply] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -598,10 +645,18 @@ export function Detail({ snap, view, onActed, onExplore }: { snap: Snapshot; vie
     else setForm(null);
   }, [view.id, view.section, view.status, view.needsYou]);
 
-  const run = async (a: Action, payload?: unknown, optedIn = false) => {
-    if (a.confirm && !(payload as { confirmed?: boolean })?.confirmed) return setConfirm(a);
+  const run = async (a: Action, payload?: unknown, optedIn = false, gated = false) => {
+    if (a.confirm && !(payload as { confirmed?: boolean })?.confirmed) {
+      asked.current = payload;
+      return setConfirm(a);
+    }
+    // Do It for Me with the AI picked (not yet with every one): said at once.
+    const g = AGENT_ACTIONS.has(a.id) && !gated ? agentGate(snap) : null;
+    if (g === 'not-yet') return setGate({ g, a, payload });
     // Do It for Me asks once: what it does, and whether downloads should start by themselves.
     if ((a.id === 'agent-request' || a.id === 'agent-download') && !snap.settings.agentExports && !optedIn) return setOptIn(a);
+    // Then Anthropic's data settings, checked as Ask checks them (the first-time sheet asks them itself).
+    if (g === 'retention' && !optedIn) return setGate({ g, a, payload });
     if ((a.input === 'password' || a.input === 'identity' || a.input === 'skip-reason') && payload === undefined) return setForm(a);
     setBusy(true);
     setError(null);
@@ -709,6 +764,7 @@ export function Detail({ snap, view, onActed, onExplore }: { snap: Snapshot; vie
       )}
 
       {optIn && <AgentOptIn snap={snap} onClose={() => setOptIn(null)} onOn={() => { const a = optIn; setOptIn(null); void run(a, undefined, true); }} />}
+      {gate && <AgentGateSheet snap={snap} gate={gate.g} onClose={() => setGate(null)} onOk={() => { const x = gate; setGate(null); void run(x.a, x.payload, true, true); }} />}
 
       {confirm && (
         <Sheet onClose={() => setConfirm(null)} testId="confirm">
@@ -716,7 +772,7 @@ export function Detail({ snap, view, onActed, onExplore }: { snap: Snapshot; vie
           <p>{confirm.confirm}</p>
           <div className="sheet-actions">
             <Button onClick={() => setConfirm(null)}>Cancel</Button>
-            <Button kind="primary" onClick={() => { const a = confirm; setConfirm(null); void run(a, { confirmed: true }); }}>Continue</Button>
+            <Button kind="primary" onClick={() => { const a = confirm; setConfirm(null); void run(a, { ...(asked.current as object | undefined), confirmed: true }); }}>Continue</Button>
           </div>
         </Sheet>
       )}

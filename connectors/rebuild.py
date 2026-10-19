@@ -27,6 +27,10 @@ def main(only=()):
         t = time.time()
         try:
             step()
+        except SystemExit as e:  # a step that stops with a message (iLEAPP's results unreadable): the others go on
+            if e.code not in (0, None):
+                failed.append(name)
+                print(e, file=sys.stderr)
         except Exception:
             failed.append(name)
             traceback.print_exc()

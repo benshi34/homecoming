@@ -24,6 +24,8 @@ import base64
 import json
 import os
 import re
+import shutil
+import signal
 import sqlite3
 import statistics
 import subprocess
@@ -41,6 +43,8 @@ CORPUS = Path(os.environ.get("CORPUS_DIR") or REPO / "corpus")
 DB = CORPUS / "corpus.db"
 HOME = Path.home()
 CAP = 20_000  # characters of one tool result
+SECONDS = 30  # one sql or search call, at most: the tools answer one call at a time, so a runaway query is stopped
+LONGEST = 100_000  # characters of a query
 from redact import redact  # noqa: E402
 
 TOOLS = [
@@ -50,7 +54,7 @@ TOOLS = [
                      "ts, ts_end, author, is_me, thread, thread_name, participants, title, text, url, meta). Table fts: FTS5 over "
                      "title, text, author, thread_name, participants (JOIN fts ON fts.rowid = records.rowid WHERE fts MATCH ...). "
                      "Extra functions: regexp(pattern, text) (also `text REGEXP pattern`), local_time(ts, 'America/Los_Angeles'), "
-                     "median(x). Aggregate in SQL rather than pulling rows to count them."),
+                     "median(x). Aggregate in SQL rather than pulling rows to count them. A query is stopped after 30 seconds."),
      "input_schema": {"type": "object", "properties": {
          "query": {"type": "string", "description": "One SQL statement (SELECT / WITH)."},
          "limit": {"type": "integer", "description": "Max rows (default 200, at most 2000)."},
@@ -140,7 +144,9 @@ def _deny(action, *_):
     return sqlite3.SQLITE_OK
 
 
-def connect():
+def connect(seconds=None):
+    """corpus.db, read-only (and nothing attached to it). With seconds, a query running longer is stopped
+    (sqlite3.OperationalError "interrupted")."""
     if not DB.exists():
         raise FileNotFoundError("corpus.db doesn't exist yet: read some sources first")
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=10)
@@ -149,13 +155,42 @@ def connect():
     con.create_function("local_time", 2, _local_time, deterministic=True)
     con.create_aggregate("median", 1, Median)
     con.set_authorizer(_deny)
+    if hasattr(con, "setlimit"):  # no value made bigger than this (zeroblob of a gigabyte), in memory or out
+        con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 100_000_000)
+    if seconds:
+        end = time.monotonic() + seconds
+        con.set_progress_handler(lambda: time.monotonic() > end, 10_000)
     return con
+
+
+def _failed(what, e):
+    """A database error in plain words: a query stopped for taking too long says so, and what to do instead."""
+    if "interrupted" in str(e):
+        return f"Stopped after {SECONDS} second{'s' if SECONDS != 1 else ''}: narrow it (a date range, a source), or aggregate rather than read every row."
+    return f"{what} error: {e}"
+
+
+def _yes(v):
+    """A yes from a model, however it says it: true, 1, "true", "yes"."""
+    return v is True or (isinstance(v, (int, float)) and not isinstance(v, bool) and v == 1) or str(v).strip().casefold() in ("true", "1", "yes")
+
+
+def _when(v, key):
+    """A date or time a model gave, as the database writes times (UTC, '2024-05-01T18:30:00'); or an error saying how
+    to write one. A date alone is its midnight; a time without a zone is UTC."""
+    try:
+        t = datetime.fromisoformat(str(v).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None, f"{key} isn't a date or time: write it like 2024-05-01 or 2024-05-01T18:30:00Z."
+    if t.tzinfo is not None:
+        t = t.astimezone(timezone.utc)
+    return t.strftime("%Y-%m-%dT%H:%M:%S"), None
 
 
 def _cell(v, width):
     if v is None:
         return ""
-    s = v.decode("utf-8", "replace") if isinstance(v, bytes) else str(v)
+    s = v[: width * 4].decode("utf-8", "replace") if isinstance(v, bytes) else str(v)
     s = s.replace("\t", " ").replace("\r", "").replace("\n", " ⏎ ")
     return s if len(s) <= width else s[: width - 1] + "…"
 
@@ -163,21 +198,31 @@ def _cell(v, width):
 def tool_sql(a):
     limit = max(1, min(int(a.get("limit") or 200), 2000))
     width = max(20, min(int(a.get("width") or 300), 20000))
-    con = connect()
+    q = a.get("query")
+    if not isinstance(q, str) or not q.strip():
+        return "Give query: one SQL statement (SELECT or WITH), as text.", True
+    if len(q) > LONGEST:
+        return f"That query is {len(q):,} characters long: keep it under {LONGEST:,}.", True
+    con = connect(SECONDS)
     try:
-        cur = con.execute(a["query"])
+        cur = con.execute(q)
+        lines = ["\t".join(d[0] for d in cur.description or [])]
+        n, size = 0, len(lines[0])
+        for row in cur:
+            if n == limit:
+                lines.append(f"... stopped at {limit} rows (raise limit, or aggregate in SQL)")
+                break
+            line = "\t".join(_cell(v, width) for v in row)
+            if size + len(line) > CAP - 200:  # past what one result holds: the rest would be cut anyway
+                lines.append(f"... stopped at {n} rows, {CAP:,} characters (lower width, pick fewer columns, or aggregate)")
+                break
+            lines.append(line)
+            size += len(line) + 1
+            n += 1
+        else:
+            lines.append(f"({n} rows)")
     except sqlite3.Error as e:
-        return f"SQL error: {e}", True
-    lines = ["\t".join(d[0] for d in cur.description or [])]
-    n = 0
-    for row in cur:
-        if n == limit:
-            lines.append(f"... stopped at {limit} rows (raise limit, or aggregate in SQL)")
-            break
-        lines.append("\t".join(_cell(v, width) for v in row))
-        n += 1
-    else:
-        lines.append(f"({n} rows)")
+        return _failed("SQL", e), True
     return "\n".join(lines), False
 
 
@@ -190,56 +235,91 @@ def _line(r, full=False):
 
 
 def tool_search(a):
-    con = connect()
+    q = a.get("query")
+    if isinstance(q, (int, float)) and not isinstance(q, bool):
+        q = str(q)
+    if q is not None and not isinstance(q, str):
+        return "query is the words to search for, as text.", True
+    if q and len(q) > LONGEST:
+        return f"That query is {len(q):,} characters long: keep it under {LONGEST:,}.", True
+    sort = a.get("sort") or ("rank" if q else "time-desc")
+    if sort not in ("rank", "time", "time-desc"):
+        return "sort is rank (best matches first), time (oldest first) or time-desc (newest first).", True
+    con = connect(SECONDS)
     con.row_factory = sqlite3.Row
     where, args = [], []
     for col, key in (("r.source", "source"), ("r.kind", "kind")):
         if a.get(key):
             parts = [p.strip() for p in str(a[key]).split(",") if p.strip()]
-            where.append("(" + " or ".join(f"{col} like ?" for _ in parts) + ")")
-            args += [f"{p}%" if key == "source" else p for p in parts]
-    if a.get("after"):
-        where.append("r.ts >= ?")
-        args.append(a["after"])
-    if a.get("before"):
-        where.append("r.ts < ?")
-        args.append(a["before"])
-    if a.get("me"):
+            if parts:
+                where.append("(" + " or ".join(f"{col} like ?" for _ in parts) + ")")
+                args += [f"{p}%" if key == "source" else p for p in parts]
+    when = {}
+    for key, op in (("after", ">="), ("before", "<")):
+        if a.get(key):
+            when[key], err = _when(a[key], key)
+            if err:
+                return err, True
+            where.append(f"r.ts {op} ?")
+            args.append(when[key])
+    if len(when) == 2 and when["after"] >= when["before"]:
+        return f"after ({when['after']}) isn't before before ({when['before']}): no time is in between. The other way round?", True
+    if _yes(a.get("me")):
         where.append("r.is_me in (1, '1')")
     for col, key in (("r.thread_name", "thread"), ("r.author", "author")):
         if a.get(key):
             where.append(f"{col} like ?")
             args.append(f"%{a[key]}%")
     limit = max(1, min(int(a.get("limit") or 20), 200))
-    sort = a.get("sort") or ("rank" if a.get("query") else "time-desc")
+    full = _yes(a.get("full"))
     order = {"rank": "rank", "time": "r.ts", "time-desc": "r.ts desc"}[sort]
     cols = "r.rowid, r.ts, r.source, r.kind, r.author, r.is_me, r.thread, r.thread_name, r.title, r.text"
-    if a.get("query"):
+    if q:
         sql = (f"select {cols}, snippet(fts, 1, '[', ']', '…', 32) as snip from fts join records r on r.rowid = fts.rowid "
                f"where fts match ? {''.join(' and ' + w for w in where)} order by {order if sort != 'rank' else 'rank'} limit ?")
-        params = [a["query"], *args, limit]
+        params = [q, *args, limit]
     else:
         sql = f"select {cols}, null as snip from records r {'where ' + ' and '.join(where) if where else ''} order by {order if sort != 'rank' else 'r.ts desc'} limit ?"
         params = [*args, limit]
     try:
         rows = con.execute(sql, params).fetchall()
+        if not rows:
+            return _no_matches(con, a), False
+        ctx = max(0, min(int(a.get("context") or 0), 10))
+        out, size = [], 0
+        for r in rows:
+            if size > CAP - 200:  # past what one result holds
+                out.append(f"... the rest left out: over {CAP:,} characters (lower limit, or leave out full)")
+                break
+            if ctx and r["thread"]:
+                before = con.execute(f"select {cols}, null as snip from records r where r.source = ? and r.thread = ? and r.ts < ? "
+                                     "order by r.ts desc limit ?", (r["source"], r["thread"], r["ts"], ctx)).fetchall()
+                after = con.execute(f"select {cols}, null as snip from records r where r.source = ? and r.thread = ? and r.ts > ? "
+                                    "order by r.ts limit ?", (r["source"], r["thread"], r["ts"], ctx)).fetchall()
+                hit = ["  " + _line(x, full) for x in reversed(before)] + ["> " + _line(r, full)] + ["  " + _line(x, full) for x in after] + [""]
+            else:
+                hit = [_line(r, full)]
+            out += hit
+            size += sum(len(x) + 1 for x in hit)
     except sqlite3.Error as e:
+        if "interrupted" in str(e):
+            return _failed("Search", e), True
         return f"Search error: {e} (FTS5 syntax: quote phrases, and words with - or : in them)", True
-    if not rows:
-        return "No matches. Try other words, a prefix (word*), OR, fewer filters, or the sql tool.", False
-    ctx = max(0, min(int(a.get("context") or 0), 10))
-    out = []
-    for r in rows:
-        if ctx and r["thread"]:
-            before = con.execute(f"select {cols}, null as snip from records r where r.source = ? and r.thread = ? and r.ts < ? "
-                                 "order by r.ts desc limit ?", (r["source"], r["thread"], r["ts"], ctx)).fetchall()
-            after = con.execute(f"select {cols}, null as snip from records r where r.source = ? and r.thread = ? and r.ts > ? "
-                                "order by r.ts limit ?", (r["source"], r["thread"], r["ts"], ctx)).fetchall()
-            out += ["  " + _line(x, a.get("full")) for x in reversed(before)] + ["> " + _line(r, a.get("full"))] \
-                + ["  " + _line(x, a.get("full")) for x in after] + [""]
-        else:
-            out.append(_line(r, a.get("full")))
     return "\n".join(out) + f"\n({len(rows)} hit{'s' if len(rows) != 1 else ''}{', more may exist: raise limit' if len(rows) == limit else ''})", False
+
+
+def _no_matches(con, a):
+    """Why a search found nothing, when it isn't the words: an empty library, or a source or kind there's none of."""
+    if con.execute("select 1 from records limit 1").fetchone() is None:
+        return "No matches: the library is empty (nothing has been read into it yet)."
+    for col, key, prefix in (("source", "source", True), ("kind", "kind", False)):
+        parts = [p.strip() for p in str(a.get(key) or "").split(",") if p.strip()]
+        if not parts:
+            continue
+        if not any(con.execute(f"select 1 from records where {col} like ? limit 1", (f"{p}%" if prefix else p,)).fetchone() for p in parts):
+            have = [v for (v,) in con.execute(f"select distinct {col} from records where {col} is not null order by 1")]
+            return f"No matches: there's no {key} {', '.join(parts)}. The library's {key}s: {', '.join(have)}."
+    return "No matches. Try other words, a prefix (word*), OR, fewer filters, or the sql tool."
 
 
 # ---------------------------------------------------------------- python, sandboxed
@@ -282,30 +362,54 @@ exec(compile(code, "<python tool>", "exec"), {{k: v for k, v in globals().items(
 '''
 
 
-def sandbox_profile():
+def sandbox_profile(scratch):
+    """What the python tool may do: read the library's records and this code, write only its own scratch folder, and
+    nothing else. No network, no other program (not `open`, not `osascript`), no Apple Events or Launch Services, no
+    child processes, nothing of the home folder, other users' or other disks. The last rule that matches wins."""
     c = str(CORPUS.resolve())
     here = str(Path(__file__).resolve().parent)
+    py = {os.path.realpath(sys.executable), sys.executable}
+    # A framework Python (python.org's) starts its Python.app; a standalone one (the installed app's) is itself.
+    run = " ".join(f'(literal "{p}")' for p in sorted(py)) + f' (subpath "{os.path.realpath(sys.base_prefix)}")'
     return ("(version 1)(allow default)(deny network*)"
-            f'(deny file-read* (subpath "{HOME}"))(allow file-read-metadata)'
+            f"(deny process-fork)(deny process-exec)(allow process-exec {run})"
+            "(deny appleevent-send)"
+            '(deny mach-lookup (global-name "com.apple.coreservices.launchservicesd") (global-name-prefix "com.apple.lsd.") '
+            '(global-name "com.apple.coreservices.appleevents") (global-name "com.apple.pasteboard.1"))'
+            f'(deny file-read* (subpath "{HOME}") (subpath "/Users") (subpath "/Volumes"))(allow file-read-metadata)'
             f'(allow file-read* (subpath "{c}/normalized") (subpath "{c}/media") (subpath "{c}/stream") (regex #"^{re.escape(c)}/corpus\\.db(-wal|-shm|-journal)?$") '
-            f'(subpath "{CONNECTORS.resolve()}") (subpath "{here}"))'
-            "(deny file-write*)(allow file-write* (subpath \"/private/tmp\") (subpath \"/private/var/folders\") (literal \"/dev/null\"))"
-            f'(deny file-write* (subpath "{c}"))')  # the last rule that matches wins: never the corpus, wherever it is
+            f'(subpath "{CONNECTORS.resolve()}") (subpath "{here}") (subpath "{os.path.realpath(sys.base_prefix)}") (subpath "{scratch}"))'
+            f'(deny file-write*)(allow file-write* (subpath "{scratch}") (literal "/dev/null"))'
+            f'(deny file-write* (subpath "{c}"))')
 
 
 def tool_python(a):
     boot = BOOT.format(connectors=str(CONNECTORS.resolve()), corpus=str(CORPUS.resolve()), here=str(Path(__file__).resolve().parent))
-    env = {"PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8", "ASK_ME_REDACT": "1", "CORPUS_DIR": str(CORPUS.resolve()), "UMP_REPO": str(REPO)}
+    # Its own scratch folder, gone afterwards: nothing it writes is left where anything else (an agent's run folder, the
+    # next call) would find it.
+    scratch = os.path.realpath(tempfile.mkdtemp(prefix="ump-py-"))
+    env = {"PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8", "ASK_ME_REDACT": "1", "CORPUS_DIR": str(CORPUS.resolve()), "UMP_REPO": str(REPO),
+           "TMPDIR": scratch, "HOME": scratch}
+    p = subprocess.Popen(["/usr/bin/sandbox-exec", "-p", sandbox_profile(scratch), sys.executable, "-I", "-c", boot], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=scratch, start_new_session=True)
     try:
-        p = subprocess.run(["/usr/bin/sandbox-exec", "-p", sandbox_profile(), sys.executable, "-I", "-c", boot], input=a.get("code", ""),
-                           capture_output=True, text=True, timeout=120, env=env, cwd=tempfile.gettempdir())
-        out, err, rc = p.stdout, p.stderr, p.returncode
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        err, rc = "Stopped after 120 s: make it faster (sql is quicker than records()), or do less per call.", 1
+        out, err = p.communicate(a.get("code", ""), timeout=120)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        out, err, rc = "", "Stopped after 120 s: make it faster (sql is quicker than records()), or do less per call.", 1
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)  # anything it started goes with it
+        except OSError:
+            pass
+        p.wait()
+        shutil.rmtree(scratch, ignore_errors=True)
+    # Blanked here too, as a whole: what the tool prints itself is blanked line by line, which a key spread over lines
+    # or a write to sys.__stdout__ gets around.
+    out = redact(out or "")
     text = out if len(out) <= CAP else out[:CAP] + f"\n... (cut at {CAP} of {len(out)} characters: print less, or aggregate)"
     if rc:
-        text += "\n[error]\n" + redact("\n".join(err.strip().splitlines()[-25:]))
+        text += "\n[error]\n" + redact("\n".join((err or "").strip().splitlines()[-25:]))
     return text or "(nothing printed: print what you need)", bool(rc)
 
 
@@ -321,9 +425,13 @@ def _record(rowid):
 def _record_file(a, prefer=None):
     """The path a record points to (meta.path, or meta.files[i]), resolved; or an error message. Without a file index,
     the first file with an extension in `prefer` (a photo's picture rather than its Live Photo video)."""
-    r = _record(a.get("rowid"))
+    try:
+        rowid = int(a.get("rowid"))
+    except (TypeError, ValueError):
+        return None, "Give rowid: a record's number (the # of a search hit)."
+    r = _record(rowid) if abs(rowid) < 2 ** 63 else None
     if not r:
-        return None, f"No record #{a.get('rowid')}."
+        return None, f"No record #{rowid}."
     meta = json.loads(r["meta"] or "{}")
     files = meta.get("files") if isinstance(meta.get("files"), list) else []
     files = [f if isinstance(f, str) else (f.get("path") if isinstance(f, dict) else None) for f in files]
@@ -339,14 +447,36 @@ def _record_file(a, prefer=None):
     else:
         return None, f"Record #{r['rowid']} doesn't point to a file."
     path = Path(p).expanduser()
-    if not path.is_absolute():
-        path = (CORPUS.parent / path) if str(p).startswith("corpus/") else (CORPUS / path)
+    if not path.is_absolute():  # one of the library's own files: never one a ../ takes out of it
+        logical = (CORPUS.parent / path) if str(p).startswith("corpus/") else (CORPUS / path)
+        path = logical.resolve()
+        # The app deliberately links raw/iphone to its local decrypted mirror, outside an iCloud-synced corpus.
+        # A record under that link may reach the mirror, but a link inside it mustn't reach anything beyond it.
+        mirror = CORPUS / "raw/iphone"
+        in_mirror = logical.is_relative_to(mirror) and path.is_relative_to(mirror.resolve())
+        if not path.is_relative_to(CORPUS.resolve()) and not in_mirror:
+            return None, f"Record #{r['rowid']} points to a file outside the library ({Path(p).name}), so it isn't read."
     if not path.exists():
         return None, f"The file record #{r['rowid']} points to isn't on this Mac any more ({path.name})."
     return path, None
 
 
 TEXT_EXT = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".tex", ".py", ".js", ".ts", ".log", ".yaml", ".yml", ".eml", ".vtt", ".srt"}
+def _webarchive_text(path):
+    """A saved web page's text, from the archive itself (no network: nothing it refers to is fetched)."""
+    try:
+        import plistlib
+        main = plistlib.loads(Path(path).read_bytes()).get("WebMainResource") or {}
+        html = (main.get("WebResourceData") or b"").decode(main.get("WebResourceTextEncodingName") or "utf-8", "replace")
+    except Exception:
+        return ""
+    html = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html)
+    text = re.sub(r"<[^>]+>", " ", html)
+    import html as _html
+    return re.sub(r"\s+", " ", _html.unescape(text)).strip()
+
+
+TEXT_MOST = 50_000_000  # bytes of a text file read_file reads
 DOC_EXT = {".docx", ".doc", ".rtf", ".rtfd", ".pages", ".odt", ".webarchive"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tiff", ".tif", ".bmp"}
 VIDEO_EXT = {".mov", ".mp4", ".m4v"}
@@ -361,15 +491,25 @@ def _extract(path):
             return None, "Reading PDFs needs pypdf (the app's Python packages check installs it)."
         return "\n\n".join((pg.extract_text() or "") for pg in PdfReader(str(path)).pages), None
     if ext in DOC_EXT:
+        if ext == ".webarchive":  # its page, read here: textutil would load what the page links to
+            return _webarchive_text(path), None
         p = subprocess.run(["/usr/bin/textutil", "-convert", "txt", "-stdout", str(path)], capture_output=True, text=True, timeout=60)
         return (p.stdout, None) if p.returncode == 0 else (None, f"Couldn't read {path.name}.")
+    if ext in (".xlsx", ".xlsm"):  # each sheet's cell text, as Documents reads it
+        from documents import xlsx_text
+        try:
+            return xlsx_text(path), None
+        except Exception:  # not a real spreadsheet, or a password-protected one
+            return None, f"Couldn't read {path.name}."
     if ext in IMAGE_EXT:
         return None, "That's an image: use view_image."
     if ext in TEXT_EXT or path.stat().st_size < 2_000_000:
-        data = path.read_bytes()
+        with path.open("rb") as f:  # the first 50 MB of a bigger one (a log of years), not all of it in memory
+            data = f.read(TEXT_MOST)
         if b"\x00" in data[:4096]:
             return None, f"{path.name} isn't text."
-        return data.decode("utf-8", "replace"), None
+        more = path.stat().st_size - len(data)
+        return data.decode("utf-8", "replace") + (f"\n\n[{more:,} more bytes of {path.name} aren't read: it's too big]" if more > 0 else ""), None
     return None, f"{path.name} isn't a kind of file the app can read."
 
 
@@ -419,6 +559,8 @@ def call(name, a):
     t = time.time()
     images = []
     try:
+        if not isinstance(a, dict):
+            raise TypeError("they're a JSON object, like {\"query\": \"...\"}")
         if name == "sql":
             text, err = tool_sql(a)
         elif name == "search":
@@ -435,6 +577,8 @@ def call(name, a):
         text, err = f"Bad arguments for {name}: {e}", True
     except (FileNotFoundError, sqlite3.Error, OSError) as e:
         text, err = f"{name} failed: {e}", True
+    except Exception as e:  # noqa: BLE001 - anything else a call trips on is its answer, never the end of the tools
+        text, err = f"{name} failed: {type(e).__name__}: {e}", True
     if name not in ("python", "read_file"):  # those redact what they print themselves
         text = redact(text)
     if len(text) > CAP:
@@ -455,8 +599,13 @@ def record_view(rowid):
 
 
 def inventory():
+    """Records per source, and their first and last dates: of the times that can be right (from 1990 to tomorrow, and
+    not Apple's first second, which is a missing time read as 0), as Explore counts them."""
     con = connect()
-    rows = con.execute("select source, count(*), min(ts), max(ts) from records group by source order by count(*) desc").fetchall()
+    tomorrow = (datetime.now(timezone.utc).date().toordinal() + 1)
+    end = datetime.fromordinal(tomorrow).strftime("%Y-%m-%dT99")
+    ok = f"case when ts >= '1990' and ts < '{end}' and ts not like '2001-01-01T00:00:00%' then ts end"
+    rows = con.execute(f"select source, count(*), min({ok}), max({ok}) from records group by source order by count(*) desc").fetchall()
     return [{"source": s, "count": n, "first": (a or "")[:10], "last": (b or "")[:10]} for s, n, a, b in rows]
 
 
@@ -488,7 +637,12 @@ def mcp(box):
     for line in sys.stdin:
         if not line.strip():
             continue
-        msg = json.loads(line)
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(msg, dict):
+            continue
         mid, method = msg.get("id"), msg.get("method")
         if mid is None:
             continue
@@ -515,9 +669,17 @@ def mcp(box):
         sys.stdout.flush()
 
 
-def ask_command(box, name):
-    """`ask NAME` in Codex's shell: JSON arguments on stdin, the result on stdout (images are saved as files)."""
-    raw = sys.stdin.read().strip()
+def ask_command(box, name, inline=None):
+    """`ask NAME` in Codex's shell: JSON arguments on stdin, the result on stdout (images are saved as files). The
+    arguments on the command line work too (`ask sql '{...}'`): Codex runs commands in a terminal, where waiting on
+    stdin that never comes would hang the lookup for good."""
+    if inline is not None:
+        raw = inline.strip()
+    elif sys.stdin.isatty():
+        print(f"No arguments. Pass them as a JSON object on stdin, in a heredoc: ask {name} <<'EOF' ... EOF")
+        return 1
+    else:
+        raw = sys.stdin.read().strip()
     try:
         args = json.loads(raw or "{}")
     except json.JSONDecodeError as e:
@@ -533,7 +695,12 @@ def serve():
     for line in sys.stdin:
         if not line.strip():
             continue
-        req = json.loads(line)
+        try:
+            req = json.loads(line)
+        except ValueError:
+            continue  # not a call: nothing to answer
+        if not isinstance(req, dict):
+            continue
         sys.stdout.write(json.dumps({"id": req.get("id"), **call(req.get("name", ""), req.get("args") or {})}) + "\n")
         sys.stdout.flush()
 
@@ -553,7 +720,11 @@ def main(argv):
     elif cmd == "mcp":
         mcp(argv[argv.index("--box") + 1])
     elif cmd == "ask":
-        return ask_command(argv[argv.index("--box") + 1], argv[-1])
+        rest = argv[argv.index("--box") + 2:]  # the tool's name, and its arguments if they're given there
+        if not rest:
+            print("Which tool? ask NAME, with its arguments as JSON on stdin.")
+            return 2
+        return ask_command(argv[argv.index("--box") + 1], rest[0], rest[1] if len(rest) > 1 else None)
     else:
         print(__doc__)
         return 2

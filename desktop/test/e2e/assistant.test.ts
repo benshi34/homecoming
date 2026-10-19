@@ -300,7 +300,7 @@ test('the keep-history page explains what each setting protects, and fixes it', 
   assert.equal(await step(), 'keep');
   assert.match(await run.page.locator('.hero p').innerText(), /From now on/);
   const row = run.page.locator('[data-testid=check-retention_claude]');
-  assert.match(await row.innerText(), /deletes conversation transcripts after 30 days/);
+  assert.match(await row.innerText(), /Transcripts are deleted after 7 days/, 'what this Mac\'s Claude Code is set to (cleanupPeriodDays 7)');
   assert.match(await run.page.locator('[data-testid=check-retention_messages]').innerText(), /Already keeps everything/);
   // grouped by where the setting lives; the iPhone's own Messages setting is there
   assert.match(await run.page.locator('[data-testid=check-retention_iphone_messages]').innerText(), /its own Keep Messages setting/);
@@ -341,9 +341,9 @@ test('Back slides back and keeps what was entered', async () => {
   await shot(run.page, 'assistant-13-overview');
   await run.page.locator('button[aria-label="Setup Assistant"]').click();
   await run.page.locator('[data-testid=app][data-mode=assistant]').waitFor();
-  assert.equal(await step(), 'done', 'reopens where it was left');
-  await run.page.locator('button[data-action=assistant-back]').click();
-  await run.page.waitForFunction(() => document.querySelector('[data-testid=assistant]')?.getAttribute('data-step') === 'keep');
+  assert.equal(await step(), 'welcome', 'once it was all done, it starts again from the beginning');
+  await run.page.locator('button[data-action=assistant-continue]').click();
+  await run.page.waitForFunction(() => document.querySelector('[data-testid=assistant]')?.getAttribute('data-step') === 'access');
   assert.deepEqual(run.errors, []);
 });
 
@@ -352,7 +352,7 @@ test('opened again, a restart (as Full Disk Access\'s Quit & Reopen does) comes 
   await run.close();
   run = await launch(env, { assistant: true });
   await run.page.locator('[data-testid=app][data-mode=assistant]').waitFor();
-  assert.equal(await step(), 'keep');
+  assert.equal(await step(), 'access');
 });
 
 test('once it\'s left, after a restart the main window comes first', async () => {
