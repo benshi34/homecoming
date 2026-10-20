@@ -25,7 +25,7 @@ What the app finds on your Mac (your browsers, Mail's accounts, your region) is 
 
 ## Your data, and where it goes
 
-Everything Homecoming collects stays on your Mac, in your library (readable by your account only): the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what iLEAPP reads from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
+Everything Homecoming collects stays on your Mac, in your library (readable by your account only): the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what's read from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
 
 Only four things ever leave your Mac, and each is something you start:
 
@@ -192,7 +192,7 @@ Each source's detail pane has a **Progress** log, and when you run from source, 
 
 1. Quit Homecoming.
 2. Delete your library: `~/Homecoming`, or `corpus/` in the folder you ran it from. That's everything it collected, including the exports it filed. If you chose Keep It on This Mac, the library is in `corpus.nosync` (or `Homecoming.nosync`) beside a shortcut of the old name: delete both.
-3. Delete `~/Library/Application Support/q1_user_model`: the decrypted copy of your iPhone backup and what iLEAPP read from it.
+3. Delete `~/Library/Application Support/q1_user_model`: the decrypted copy of your iPhone backup and what was read from it.
 4. Delete `~/Library/Application Support/Homecoming`: its progress, settings and Ask conversations. If there's a `~/Library/Application Support/User Model` (the app's name before), delete it too. And `~/Library/Caches/Homecoming`: its copies of Mail's index and of your notifications, kept so they aren't copied again every few minutes.
 5. If you used Do It for Me: delete the folders in `~/.claude/projects` whose names contain `homecoming-agent`. They're Claude Code's saved sessions of its work in your browser.
 6. Drag Homecoming from Applications to the Trash (or delete the folder you ran it from).
