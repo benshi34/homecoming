@@ -451,6 +451,58 @@ def explore_corpus(corpus):
     return str(corpus)
 
 
+def inserts_corpus(corpus):
+    """A corpus for what an Ask answer shows (explore.py embed): Explore's (explore_corpus: Grace in two apps, home in
+    Princeton and three days in Tokyo, a day in March 2025 with a bit of everything), and with it an email thread with
+    a reply it quotes, songs and a podcast, nights of sleep, calendar events (an all-day one across the trip, one still
+    to come) and what Facebook and Instagram decided about you. Times UTC; tests run with UMP_TZ=UTC. Everyone is
+    made up."""
+    corpus = Path(explore_corpus(corpus))
+    norm = corpus / "normalized"
+    n = iter(range(1, 10 ** 6))
+    sets = collections.defaultdict(list)
+
+    def add(source, **f):
+        sets[source].append({"id": f"{source}-x{next(n)}", "source": source, "kind": f.pop("kind", "record"), **f})
+
+    add("gmail", kind="email", ts="2025-03-11T15:00:00Z", author="Katherine Johnson", is_me=False, participants=["Ada Lovelace"],
+        title="Orbit numbers for Friday", thread="t-orbit", thread_name="Orbit numbers for Friday",
+        text="Orbit numbers for Friday\nHi Ada,\n\nThe numbers check out: launch at 9:40.\nThe sheet is attached.\n\nKatherine\n\n"
+             "On Mon, Mar 10, 2025 at 9:00 AM Ada Lovelace <ada@example.com> wrote:\n> Can you check the orbit before Friday?",
+        meta={"from": "katherine@example.com", "to": ["ada@example.com"], "attachments": ["orbit.xlsx"], "labels": "Inbox"})
+    add("gmail", kind="email", ts="2025-03-11T16:00:00Z", author="me", is_me=True, participants=["Katherine Johnson"],
+        title="Re: Orbit numbers for Friday", thread="t-orbit", thread_name="Re: Orbit numbers for Friday",
+        text="Re: Orbit numbers for Friday\nThank you!", meta={"from": "ada@example.com", "to": ["katherine@example.com"], "labels": "Sent"})
+    for i in range(5):
+        add("spotify", kind="media", ts=f"2025-03-12T0{i}:10:00Z", author="me", is_me=True, title="Warp", text="Warp — The Weavers (Spotify)",
+            meta={"artist": "The Weavers", "album": "Loom", "seconds": 200})
+    add("spotify", kind="media", ts="2025-03-12T07:00:00Z", author="me", is_me=True, title="Spindle", text="Spindle — The Looms (Spotify)",
+        meta={"artist": "The Looms", "seconds": 180})
+    add("podcasts", kind="listen", ts="2025-03-12T08:30:00Z", author="me", is_me=True, title="Episode 12: Gears", thread="show-1",
+        thread_name="Engine Hour", text="Listened to Episode 12: Gears (Engine Hour)", meta={"show": "Engine Hour", "duration": 2400})
+    for d in (10, 11, 12):
+        add("health", kind="sleep", ts=f"2025-03-{d:02d}T23:00:00Z", ts_end=f"2025-03-{d + 1:02d}T06:00:00Z", title="Sleep", text="Slept",
+            meta={"asleep_min": 420, "tz": "UTC"})
+    add("calendar", kind="event", ts="2025-03-12T15:00:00Z", ts_end="2025-03-12T15:15:00Z", title="Orbit review", thread="Work",
+        thread_name="iCloud / Work", meta={"location": "Room 4"})
+    add("calendar", kind="event", ts="2025-03-19T00:00:00Z", ts_end="2025-03-23T00:00:00Z", title="Tokyo trip", thread="Home",
+        thread_name="iCloud / Home", meta={"all_day": True})
+    later = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=30)).strftime("%Y-%m-%dT16:00:00Z")
+    add("calendar", kind="event", ts=later, ts_end=later.replace("T16", "T17"), title="Dentist", thread="Home", thread_name="iCloud / Home")
+    for site in ("facebook", "instagram"):
+        add(f"{site}_activity", kind="inference", author="x", is_me=False, title="Frequent travelers", text="",
+            meta={"what": "category", "service": site.title()})
+        add(f"{site}_activity", kind="advertiser", author="x", is_me=False, title="Acme Outdoor", text="", meta={"how": "list", "service": site.title()})
+    add("facebook_activity", kind="inference", author="x", is_me=False, title="Rock climbing", text="", meta={"what": "interest", "service": "Facebook"})
+    for source, rows in sets.items():
+        with (norm / f"{source}.jsonl").open("a") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+    env = {**os.environ, "CORPUS_DIR": str(corpus)}
+    subprocess.run([sys.executable, str(REPO / "connectors" / "build_index.py")], check=True, env=env, capture_output=True)
+    return str(corpus)
+
+
 def media_corpus(corpus):
     """A corpus for Explore's Listening, Moving and Sleep, Curiosity and Watching (times UTC; tests run with
     UMP_TZ=UTC): songs from Spotify (one skipped), the Mac's Now Playing (Spotify, and Netflix, which is watching) and
@@ -702,5 +754,7 @@ if __name__ == "__main__":
         print(media_corpus(target))
     elif cmd == "explore-corpus":
         print(json.dumps({"corpus": explore_corpus(target)}))
+    elif cmd == "inserts-corpus":
+        print(json.dumps({"corpus": inserts_corpus(target)}))
     elif cmd == "edge-corpus":  # edge-corpus DIR CASE
         print(json.dumps({"corpus": edge_corpus(target, sys.argv[3])}))

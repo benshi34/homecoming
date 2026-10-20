@@ -4,20 +4,23 @@
 // saved progress in state.json, and what's running right now.
 
 import './env_guard.ts'; // first: the test-only settings are gone before anything reads them
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, safeStorage, shell, systemPreferences, Tray } from 'electron';
 import { agentNeed, isLocalAddress, LINKS, LOCAL_SERVERS, needText, PROVIDER, providerLabel, RETENTION, retentionOk, type AskProvider, type AskSettings } from '../shared/ask.ts';
 import { BY_ID, CATALOG, IMPORT_PARSER_SOURCES, isAccount, KIND_TO_SOURCE, MAC_CONNECTORS, refreshServices, reservedFolders, serviceKey, setServices, type Source } from '../shared/catalog.ts';
-import { bytes, count, waitRange } from '../shared/format.ts';
+import { bytes, count, list, waitRange } from '../shared/format.ts';
 import { CHROME_PERMISSION, claudeLooks, computeSources, INBOX_SIGN_IN, looksDone, MAX_LOOKS, fdaLost, latestBackup, later, nextUp, noMailAccounts, otherPhoneRead, phoneDevice, phoneDevices, producesFor, READ_ONLY_NOTE, READ_ONLY_OK, SIGN_IN_NOTE, signInFor, summarize, totals } from '../shared/status.ts';
 import { batchSummary, linkExpires } from '../shared/request_all.ts';
+import { agentsAtOnce } from '../shared/at_once.ts';
+import { type AgentJob, AgentPool } from './agent_pool.ts';
 import { identityKeys, setPhoneRegion } from '../shared/identity.ts';
 import { inboxesFor, inboxUrl } from '../shared/inbox.ts';
 import { agentBrowser, agentProvider, agentReady, claudeInboxes, macDefault, pageBrowser, setupEnv, type AgentReady } from '../shared/setup.ts';
-import type { AgentMode, AgentState, AppState, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats } from '../shared/types.ts';
+import { buildNote, compareVersions, parseChangelog, type Release, whatsNewSince } from '../shared/version.ts';
+import type { AgentMode, AgentState, AppState, BuildInfo, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats, UpdateView } from '../shared/types.ts';
 import { agentLink } from '../shared/agent_link.ts';
 import { agentProfile, Ask, findClaude, findCodex, addShellPath } from './ask.ts';
 import { NO_HOOKS, pruneRuns, runDir, runRoot, setRunBase } from './run_dirs.ts';
@@ -32,6 +35,7 @@ import { Pusher } from './push.ts';
 import { badPlace, exportName, LibraryExport } from './library_export.ts';
 import { adoptFolder, resolvePaths, urlOverrides, setSetupEnv } from './paths.ts';
 import { fileKey, Store } from './store.ts';
+import { findNode, keptUpdate, lookForUpdate, PUBLIC_REPO, readRun, runUpdate, UPDATE_EVERY, UPDATE_URL } from './updates.ts';
 
 // The demo (scripts/demo.mjs): a made-up library that reads nothing on this Mac (read-only), apart from the made-up
 // downloads it brings home into it; Do It for Me is played by a stand-in that never opens a browser, and links aren't
@@ -57,6 +61,18 @@ const P = resolvePaths(process.env, app.getAppPath(), undefined, app.isPackaged)
 // Not app.getPath('userData'): asking for it creates the folder, and then there'd be nothing to adopt into.
 app.setPath('userData', P.userData ?? adoptFolder(path.join(app.getPath('appData'), 'User Model'), path.join(app.getPath('appData'), 'Homecoming')));
 const URLS = urlOverrides(process.env);
+
+// Which Homecoming this is: package.json's version, and the commit and day build.mjs wrote into dist/build.json. Said in
+// About Homecoming and at the bottom of General.
+const BUILD: BuildInfo = (() => {
+  let b: { commit?: string | null; modified?: boolean; date?: string | null; from?: string | null } = {};
+  try {
+    b = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), 'dist', 'build.json'), 'utf8'));
+  } catch {
+    /* built before builds were stamped */
+  }
+  return { version: app.getVersion(), commit: b.commit ?? null, modified: !!b.modified, date: b.date ?? null, source: !app.isPackaged, from: b.from ?? null };
+})();
 
 const CONNECTOR_TO_SOURCE: Record<string, string> = Object.fromEntries(
   CATALOG.filter((s) => s.connector).map((s) => [s.connector!, s.id]));
@@ -664,6 +680,7 @@ function snapshot(): Snapshot {
     log: logLines.slice(-150),
     ask: askView(),
     libraryExport: libExport.view,
+    build: BUILD, whatsNew: whatsNew.length ? whatsNew : null, update: updateView(),
   };
 }
 
@@ -1742,7 +1759,7 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       await openExternal(mailtoFor(e?.email ?? '', requestLetter(src)));
       break;
     }
-    // Ask for Everything: Claude asks for each of these in turn, unattended (what needs you comes in one notification at the end).
+    // Ask for Everything: Claude asks for each of these, a few at once, unattended (what needs you comes in one notification at the end).
     case 'request-all': {
       if (aiOff()) return { ok: false, error: 'AI is off. Turn it on in AI Settings.' };
       if (!store.state.settings.agentExports) return { ok: false, error: 'Turn on Do It for Me first.' };
@@ -1759,7 +1776,7 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       // Sites Claude hasn't worked on yet: each opened once first, while you're there to say yes to each, then the rest
       // runs by itself (the ones not stopped meanwhile). Not while Claude is at something else (its runs ask as they go, then).
       const fresh = ids.filter((id) => !store.state.sources[id]?.siteAllowed && urlFor(BY_ID[id]));
-      if (!fresh.length || agentRun || visiting || agentQueue.length) ids.forEach(startBatch);
+      if (!fresh.length || visiting || agents.ids().length) ids.forEach(startBatch);
       else {
         const now = new Date().toISOString();
         store.update(() => {
@@ -1819,7 +1836,8 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       push();
       return { ok: true, ids: list.map((x) => x.id) };
     }
-    // Do It for Me: Claude Code in the person's browser (Chrome, or the one picked in Your Setup). One run at a time, since they share it.
+    // Do It for Me: Claude Code in the person's browser (Chrome, or the one picked in Your Setup). A few at once (AI
+    // Settings), each in a tab group of its own; one for a service at a time.
     case 'agent-request':
     case 'agent-download':
       if (aiOff()) return { ok: false, error: 'AI is off. Turn it on in AI Settings.' };
@@ -1840,12 +1858,12 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       if (!agentCan()) return { ok: false, error: cantAgent() };
       if (!claudeSettingsOk()) return CONFIRM;
       // Claude is carrying on already (you signed in): what you said goes with it, or it's said that it's too late.
-      const waiting = agentQueue.find((q) => q.sourceId === sourceId);
+      const waiting = agents.waiting(sourceId);
       if (waiting) {
         if (typeof payload.reply === 'string' && payload.reply.trim()) waiting.reply = payload.reply;
         break;
       }
-      if (agentRun?.sourceId === sourceId) return { ok: false, error: `Claude is carrying on with ${src.name} already.` };
+      if (agents.running.has(sourceId)) return { ok: false, error: `Claude is carrying on with ${src.name} already.` };
       startAgent(sourceId, st().agent!.mode, true, typeof payload.reply === 'string' ? payload.reply : undefined);
       break;
     }
@@ -1853,7 +1871,7 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       stopAgent(sourceId);
       break;
     case 'agent-stop-all': // everything Claude is doing or about to: the first look at each site too
-      for (const id of [...afterVisit, ...agentQueue.map((q) => q.sourceId), ...(agentRun ? [agentRun.sourceId] : [])]) stopAgent(id);
+      for (const id of agentIds()) stopAgent(id);
       visiting?.stop();
       break;
     case 'agent-dismiss':
@@ -2091,12 +2109,14 @@ function chromeStatus(): Promise<'connected' | 'not connected' | 'no claude code
   });
 }
 
-// auto: the app started it, not the person (a look while it's on its way, or the download after a ready email).
-let agentRun: { sourceId: string; run: AgentRun } | null = null;
+// Up to as many at once as AI Settings says, each in a tab group of its own: more starts the waiting ones at once,
+// fewer is taken up as runs finish.
 let quitting = false;
-const agentQueue: { sourceId: string; mode: AgentMode; resume: boolean; reply?: string; auto?: AgentState['auto'] }[] = [];
+const agents = new AgentPool<AgentRun>(() => agentsAtOnce(store.state.settings), (id) => expiresAt(id));
 // Claude at it, about to be, or waiting for its first look at the site (Ask for Everything's).
-const agentBusy = (id: string) => agentRun?.sourceId === id || agentQueue.some((q) => q.sourceId === id) || afterVisit.has(id);
+const agentBusy = (id: string) => agents.busy(id) || afterVisit.has(id);
+// All of them, the ones waiting for that first look too.
+const agentIds = () => [...afterVisit, ...agents.ids()];
 // Runs stopped without a word: AI, Do It for Me or its checks turned off, or Stop Checking.
 const quietStops = new Set<string>();
 
@@ -2106,11 +2126,7 @@ function startAgent(sourceId: string, mode: AgentMode, resume = false, reply?: s
     const st = store.source(sourceId);
     st.agent = { mode, status: 'queued', at: new Date().toISOString(), session: resume ? st.agent?.session : undefined, ...(auto ? { auto } : {}) };
   });
-  // Downloads go first (a link runs out; a request can wait), the one whose link expires soonest first.
-  const entry = { sourceId, mode, resume, reply, auto };
-  const i = mode === 'download' ? agentQueue.findIndex((q) => q.mode !== 'download' || expiresAt(q.sourceId) > expiresAt(sourceId)) : -1;
-  if (i >= 0) agentQueue.splice(i, 0, entry);
-  else agentQueue.push(entry);
+  agents.add({ sourceId, mode, resume, reply, auto }); // downloads first (agent_pool.ts)
   push();
   pumpAgents();
 }
@@ -2247,15 +2263,11 @@ function stopAgent(sourceId: string, quiet = false) {
     if (!afterVisit.size) visiting?.stop();
     push();
   }
-  const i = agentQueue.findIndex((q) => q.sourceId === sourceId);
-  if (i >= 0) {
-    agentQueue.splice(i, 1);
+  if (quiet && agents.running.has(sourceId)) quietStops.add(sourceId);
+  // Waiting its turn: set aside now. Running: once its run has ended (pumpAgents).
+  if (agents.stop(sourceId) === 'waiting') {
     stopped(sourceId, quiet);
     push();
-  }
-  if (agentRun?.sourceId === sourceId) {
-    if (quiet) quietStops.add(sourceId);
-    agentRun.run.stop();
   }
 }
 
@@ -2276,26 +2288,28 @@ function stopped(sourceId: string, quiet: boolean) {
 
 // The ones waiting for Claude's first look at each site too: else they'd start once it's done, whatever was turned off.
 function stopAgents(which: (id: string) => boolean = () => true) {
-  for (const id of [...afterVisit, ...agentQueue.map((q) => q.sourceId), ...(agentRun ? [agentRun.sourceId] : [])]) if (which(id)) stopAgent(id, true);
+  for (const id of agentIds()) if (which(id)) stopAgent(id, true);
 }
 
+// As many as there's room for (AI Settings), never two on one service; none while Claude takes its first look at each
+// site (visitSites), which works alone.
 function pumpAgents() {
-  if (agentRun || visiting || !agentQueue.length || quitting) return;
+  if (visiting || !agents.queue.length || quitting) return;
   // Still waiting when AI or Do It for Me went off, or an AI it can't use was picked: set aside, not started.
   if (aiOff() || !store.state.settings.agentExports || agentReadiness().fix === 'provider') return stopAgents();
-  const next = agentQueue.shift()!;
+  agents.fill(startRun);
+}
+
+// One run: its run, or nothing when it's set aside or ends before it starts.
+function startRun(next: AgentJob): AgentRun | undefined {
   const src = BY_ID[next.sourceId]!;
   const st = store.source(next.sourceId);
   // Skipped while it waited ("I don't use it"): not started.
-  if (st.skipped) {
-    stopped(next.sourceId, true);
-    return pumpAgents();
-  }
+  if (st.skipped) return void stopped(next.sourceId, true);
   const bin = agentBin();
   if (!bin) {
     // (a carry-on keeps its session, for once Claude Code is back)
-    finishAgent(next.sourceId, next.mode, { status: 'failed', note: 'Claude Code isn\'t on this Mac.', reason: 'no-claude', session: next.resume ? st.agent?.session : undefined }, next.auto);
-    return pumpAgents();
+    return void finishAgent(next.sourceId, next.mode, { status: 'failed', note: 'Claude Code isn\'t on this Mac.', reason: 'no-claude', session: next.resume ? st.agent?.session : undefined }, next.auto);
   }
   const now = new Date().toISOString();
   store.update(() => {
@@ -2329,10 +2343,9 @@ function pumpAgents() {
       tell(`${src.name}: Claude is waiting for you`, `${what} Claude carries on as soon as it's done.`, next.sourceId, !next.auto);
     },
   });
-  agentRun = { sourceId: next.sourceId, run };
   void run.done.then((out) => {
     if (quitting) return; // kept as it was (running), for the next start to offer to carry it on
-    agentRun = null;
+    agents.ended(next.sourceId);
     const quiet = quietStops.delete(next.sourceId);
     if (out.stopped) { // stopped: no news
       stopped(next.sourceId, quiet);
@@ -2340,6 +2353,7 @@ function pumpAgents() {
     } else finishAgent(next.sourceId, next.mode, out, next.auto);
     pumpAgents();
   });
+  return run;
 }
 
 // While an export is on its way, Claude looks for it now and then (Do It for Me with downloads and checks on): first once
@@ -2372,7 +2386,8 @@ function maybeCheckExports() {
     }
     return;
   }
-  if (agentRun || agentQueue.length || !claudeSettingsOnce() || Date.now() < agentPausedUntil) return;
+  // Only with room for one more, nothing waiting: Claude's looks don't hold up what you asked for.
+  if (!agents.room() || visiting || !claudeSettingsOnce() || Date.now() < agentPausedUntil) return;
   // Not while you're at the Mac (its tab takes the browser's attention), nor at night. The tests set their own clock.
   if (!process.env.UMP_AGENT_CHECK_AFTER_MS) {
     const h = new Date().getHours();
@@ -2397,7 +2412,7 @@ function maybeCheckExports() {
     if (since < first || since > over || n >= MAX_LOOKS || now - last < CHECK_EVERY * 2 ** Math.max(0, n - 1)) continue;
     store.update(() => (store.source(src.id).looks = { since: st.requestedAt!, n: n + 1 }));
     startAgent(src.id, 'download', false, undefined, 'check');
-    return; // one at a time: the next one on a later tick
+    return; // one a tick: the next one on a later tick
   }
 }
 
@@ -2409,7 +2424,8 @@ function finishAgent(sourceId: string, mode: AgentMode, out: AgentOutcome, auto?
   // (a download of one of them is counted too, so the batch still ends; it's told as it happens, as downloads are)
   const inBatch = batchResult(sourceId, out.status, out.note) && mode === 'request';
   const notify = (title: string, body: string, id?: string) => (inBatch ? log(`${title}. ${body}`) : tell(title, body, id));
-  // The Claude in Chrome extension isn't connected: the rest would stop the same way, so they're set aside.
+  // The Claude in Chrome extension isn't connected, or Claude's usage limit: the rest would stop the same way, so
+  // they're set aside, the ones running alongside too.
   if (inBatch && (out.reason === 'chrome' || out.reason === 'limit')) stopAgents((id) => id !== sourceId && batchIds.includes(id));
   // Claude's usage limit: its looks wait a while too, rather than each meeting the same limit.
   if (out.reason === 'limit') agentPausedUntil = Date.now() + HOUR;
@@ -2621,14 +2637,15 @@ function notify(title: string, body: string, sourceId?: string) {
 }
 // chrome: Claude is waiting in Chrome for you, so it's said with a sound, the Dock icon bounces until you come back, and
 // clicking it brings Chrome forward. UMP_NOTIFY=1: a hidden run that shows real notifications (checking them for real).
-function tell(title: string, body: string, sourceId?: string, chrome = false) {
+// onClick: what clicking it does instead (a newer Homecoming: its sheet).
+function tell(title: string, body: string, sourceId?: string, chrome = false, onClick?: () => void) {
   log(`${title}. ${body}`);
   // Tests: no real notifications, just what it said and what clicking it opens.
   if (process.env.UMP_EXTERNAL_LOG) return fs.appendFileSync(process.env.UMP_EXTERNAL_LOG, `notify: ${title}${sourceId ? ` → ${sourceId}` : ''}\n`);
   if ((HIDDEN && process.env.UMP_NOTIFY !== '1') || !Notification.isSupported()) return;
   const n = new Notification({ title, body, ...(chrome ? { sound: 'Glass' } : {}) });
   if (chrome && !HIDDEN && !watched() && win && !win.isDestroyed()) app.dock?.bounce('critical');
-  n.on('click', () => (chrome ? openApp(claudeBrowser()?.app ?? 'Google Chrome') : sourceId ? openSource(sourceId) : showWindow()));
+  n.on('click', () => (onClick ? onClick() : chrome ? openApp(claudeBrowser()?.app ?? 'Google Chrome') : sourceId ? openSource(sourceId) : showWindow()));
   n.show();
 }
 
@@ -2687,11 +2704,174 @@ function accentColor(): string | undefined {
   }
 }
 
+// ---------------------------------------------------------------- which version, and what's new in it
+
+// What's new: shown once, the first time a newer version opens than the newest that ran before (state.lastVersion),
+// from the CHANGELOG.md built into the app. A library from before versions were kept (0.2.0) gets this version's; a new
+// one, nothing. Hidden test runs leave it alone unless one is about it (UMP_WHATS_NEW=1), and so do read-only mode and
+// the demo.
+let releases: Release[] = [];
+let whatsNew: Release[] = [];
+
+function lookAtVersion() {
+  try {
+    releases = parseChangelog(fs.readFileSync(path.join(app.getAppPath(), 'dist', 'CHANGELOG.md'), 'utf8'));
+  } catch {
+    releases = [];
+  }
+  app.setAboutPanelOptions({ applicationName: 'Homecoming', applicationVersion: BUILD.version, version: buildNote(BUILD) });
+  if (READONLY || (HIDDEN && process.env.UMP_WHATS_NEW !== '1')) return;
+  const seen = store.state.lastVersion;
+  if (seen && compareVersions(seen, BUILD.version) >= 0) return; // never lowered: an older copy run since says nothing
+  const o = store.state.onboarding;
+  whatsNew = seen || o.done || o.step || o.skippedAt ? whatsNewSince(releases, BUILD.version, seen) : [];
+  if (!whatsNew.length) store.update((s) => (s.lastVersion = BUILD.version));
+}
+
+// What's New in Homecoming (the menu, General): this version's, or the newest before it.
+const thisRelease = () => releases.filter((r) => compareVersions(r.version, BUILD.version) <= 0).slice(0, 1);
+
+// ---------------------------------------------------------------- a newer Homecoming (main/updates.ts)
+
+// Looked for once a day unless it's turned off, and by Check for Updates…; never in the demo, read-only mode or the
+// tests, unless a test points it at a copy of its own (UMP_UPDATE_URL). Nothing is installed but by Update.
+const UPDATES = !DEMO && !READONLY && (!HIDDEN || !!process.env.UMP_UPDATE_URL);
+let checking = false;
+let updateHow: UpdateView['how'] = 'off';
+let updateRun: UpdateView['run'];
+let updatePoll: NodeJS.Timeout | null = null;
+// The clone it updates from: the folder it was built from (build.mjs), or a test's (UMP_UPDATE_SOURCE).
+const updateFrom = () => process.env.UMP_UPDATE_SOURCE || BUILD.from || '';
+// What an update writes as it goes (update_app.mjs --status), what it prints, and its process.
+const UPDATE_FILES = (() => {
+  const dir = path.join(app.getPath('userData'), 'update');
+  return { status: path.join(dir, 'status.json'), log: path.join(dir, 'update.log'), pid: path.join(dir, 'pid') };
+})();
+
+// How this copy updates (UpdateView how): Update only in the installed app built from a clone of the public repository.
+function lookAtHow(): UpdateView['how'] {
+  if (!UPDATES) return 'off';
+  const from = updateFrom();
+  if (!app.isPackaged && !process.env.UMP_UPDATE_SOURCE) return 'terminal';
+  if (!from || !fs.existsSync(path.join(from, 'desktop', 'scripts', 'update_app.mjs'))) return 'gone';
+  if (!fs.existsSync(path.join(from, '.git'))) return 'zip'; // git isn't asked: without its tools, that opens an installer
+  try {
+    const url = execFileSync('git', ['-C', from, 'config', '--get', 'remote.origin.url'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return PUBLIC_REPO.test(url) ? 'app' : 'other';
+  } catch {
+    return 'other';
+  }
+}
+
+function updateView(): UpdateView {
+  const u = store.state.update;
+  const from = updateFrom();
+  return {
+    checks: store.state.settings.updateChecks !== false, checkedAt: u?.at, checking, how: updateHow, run: updateRun,
+    available: u?.version && u.releases ? { version: u.version, releases: u.releases } : undefined,
+    from: from ? (from.startsWith(`${P.home}/`) ? `~${from.slice(P.home.length)}` : from) : undefined,
+  };
+}
+
+const showUpdate = () => sendToWindow('show-update');
+
+// Looks now (manual: Check for Updates…, which says how it went), or once a day has passed since the last look. A newer
+// version found is said once, in a notification, and stays in the sidebar until this app is that version.
+async function checkForUpdate(manual = false) {
+  if (!UPDATES) {
+    if (manual) toast('Homecoming doesn\'t look for updates in the demo or read-only mode.');
+    return;
+  }
+  const last = store.state.update?.tried ?? store.state.update?.at;
+  if (checking || (!manual && (store.state.settings.updateChecks === false || (last && Date.now() - Date.parse(last) < UPDATE_EVERY)))) return;
+  checking = true;
+  store.update((s) => (s.update = { ...s.update, tried: new Date().toISOString() }));
+  push();
+  try {
+    const found = await lookForUpdate(process.env.UMP_UPDATE_URL || UPDATE_URL, BUILD.version);
+    updateHow = lookAtHow();
+    const fresh = !!found && store.state.update?.notified !== found.version;
+    store.update((s) => (s.update = { at: new Date().toISOString(), tried: s.update?.tried, notified: fresh ? found!.version : s.update?.notified, ...(found ?? {}) }));
+    log(found ? `Homecoming ${found.version} is out (this is ${BUILD.version})` : 'Homecoming is the newest version');
+    if (manual) {
+      if (found) showUpdate();
+      else toast(`Homecoming ${BUILD.version} is the newest version.`);
+    } else if (fresh) {
+      tell(`Homecoming ${found!.version} is out`, 'See what\'s new in it, and update when you like.', undefined, false, showUpdate);
+    }
+  } catch (e) {
+    log(`Looking for updates: ${(e as Error).message}`);
+    if (manual) toast(`Couldn't look for updates. ${(e as Error).message}`, 'error');
+  } finally {
+    checking = false;
+    push();
+  }
+}
+
+// Update: npm run update from the clone it was built from, on its own (it quits this app to replace it, then opens the
+// new one), with where it is read from what it writes as it goes.
+function startUpdate(): { ok?: boolean; error?: string } {
+  updateHow = lookAtHow();
+  if (updateHow !== 'app') {
+    push();
+    return { error: updateHow };
+  }
+  if (updateRun?.state === 'running') return { ok: true };
+  const node = findNode();
+  if (!node) return { error: 'Homecoming needs Node.js to build the new version, and it isn\'t on this Mac. Install it from nodejs.org (the LTS installer), then click Update again.' };
+  const pid = runUpdate(node, updateFrom(), UPDATE_FILES.status, UPDATE_FILES.log, process.env);
+  if (pid) fs.writeFileSync(UPDATE_FILES.pid, String(pid));
+  log(`Updating, from ${updateFrom()}`);
+  updateRun = { state: 'running', step: 'Starting…', log: [] };
+  watchUpdate(pid);
+  return { ok: true };
+}
+
+// Where an update is, as it goes: from what it writes (updates.ts readRun), until it says how it ended or is gone.
+function watchUpdate(pid?: number) {
+  const { status, log: logFile } = UPDATE_FILES;
+  if (updatePoll) clearInterval(updatePoll);
+  updatePoll = setInterval(() => {
+    updateRun = readRun(status, logFile);
+    // Gone without saying how it went: it stopped (its last lines say why).
+    let alive = true;
+    try {
+      if (pid) process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+    if (updateRun?.state === 'running' && !alive) updateRun = { ...updateRun, state: 'failed', message: 'The update stopped before it finished. What it printed last is below.' };
+    if (updateRun?.state !== 'running') {
+      clearInterval(updatePoll!);
+      updatePoll = null;
+    }
+    push();
+  }, 1000);
+  push();
+}
+
+// An update still going from before this app was quit and opened again: shown, not started twice. One that hasn't
+// printed anything for half an hour isn't it (a reboot ended it, and its process id is someone else's now).
+function resumeUpdate() {
+  let pid = 0;
+  try {
+    pid = Number(fs.readFileSync(UPDATE_FILES.pid, 'utf8'));
+    if (!pid || Date.now() - fs.statSync(UPDATE_FILES.log).mtimeMs > 30 * 60_000) return;
+    process.kill(pid, 0);
+  } catch {
+    return;
+  }
+  updateRun = readRun(UPDATE_FILES.status, UPDATE_FILES.log);
+  if (updateRun?.state === 'running') watchUpdate(pid);
+  else updateRun = undefined;
+}
+
 function buildMenu() {
   const send = (ch: string) => () => win?.webContents.send(ch);
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: app.name, submenu: [
-      { role: 'about' }, { type: 'separator' },
+      { role: 'about' }, { label: 'What\'s New in Homecoming', click: send('show-whats-new') },
+      { label: 'Check for Updates…', click: () => void checkForUpdate(true) }, { type: 'separator' },
       { label: 'Settings…', accelerator: 'Cmd+,', click: send('show-settings') },
       { label: 'Setup Assistant…', accelerator: 'Cmd+Shift+A', click: send('show-assistant') },
       { label: 'All Sources', accelerator: 'Cmd+Shift+S', click: send('show-hub') },
@@ -2717,10 +2897,10 @@ let tray: Tray | null = null;
 const inBackground = () => (!HIDDEN || process.env.UMP_BACKGROUND === '1') && (store.state.settings.background ?? app.isPackaged);
 
 function trayStatus(): string {
-  if (agentRun) {
-    const st = store.state.sources[agentRun.sourceId];
-    return `${BY_ID[agentRun.sourceId]?.name}: ${st?.agent?.step ?? 'working…'}`;
-  }
+  // Claude at one: what it's doing; at several, which.
+  const doing = [...agents.running.keys()];
+  if (doing.length === 1) return `${BY_ID[doing[0]]?.name}: ${store.state.sources[doing[0]]?.agent?.step ?? 'working…'}`;
+  if (doing.length) return `Claude is working on ${list(doing.map((id) => BY_ID[id]?.name ?? id))}`;
   const job = queue.list()[0];
   if (job) return job.label;
   const at = store.state.lastAutoRefresh;
@@ -2851,6 +3031,7 @@ function wireIpc() {
     // file it uses is the real one.
     if (READONLY && !DEMO) for (const k of Object.keys(patch) as (keyof typeof patch)[]) if (k !== 'aiOn' && k !== 'aiAgreedAt') delete patch[k];
     const was = { ...store.state.settings };
+    if ('agentsAtOnce' in patch) patch.agentsAtOnce = agentsAtOnce(patch); // 1 to 5
     store.update((s) => Object.assign(s.settings, patch));
     setupChanged(was, store.state.settings);
     if ('background' in patch || 'openAtLogin' in patch) syncLoginItem();
@@ -2870,12 +3051,33 @@ function wireIpc() {
       dropUnwantedWaits();
     }
     if (patch.aiOn === false) ask.stopAll();
+    // More at once: the ones waiting start now. Fewer: the ones running finish first, and the rest start as they do.
+    if (patch.agentsAtOnce !== undefined) pumpAgents();
     if (patch.aiOn === true && was.aiOn !== true) void checkBrowserSignIns().then(push); // checked only while AI is on
     // Watch Downloads back on: what landed while it was off is looked at now.
     if (patch.watchDownloads === true && !was.watchDownloads) watchAgain();
+    if (patch.updateChecks === true && was.updateChecks === false) void checkForUpdate();
     push();
     maybeAutoRefresh();
     return settingsView();
+  });
+  // What's new: this version's (to show from the menu), or seen (the sheet closed: it isn't shown again).
+  ipcMain.handle('whats-new', (_e, op: 'get' | 'seen') => {
+    if (op === 'get') return thisRelease();
+    if (whatsNew.length) {
+      whatsNew = [];
+      store.update((s) => (s.lastVersion = BUILD.version));
+      push();
+    }
+    return [];
+  });
+  // A newer Homecoming: look now, update to it, or put away how an update ended.
+  ipcMain.handle('update', (_e, op: 'check' | 'start' | 'clear') => {
+    if (op === 'check') return checkForUpdate(true).then(() => ({ ok: true }));
+    if (op === 'start') return startUpdate();
+    if (updateRun?.state !== 'running') updateRun = undefined;
+    push();
+    return { ok: true };
   });
   ipcMain.handle('directory', () => directory());
   // Is the Claude in Chrome extension there for Do It for Me? Claude Code says so as it starts, before asking the
@@ -2968,6 +3170,14 @@ if (!app.requestSingleInstanceLock()) {
     setRunBase(path.join(app.getPath('userData'), 'runs'));
     pruneRuns();
     store = new Store(path.join(app.getPath('userData'), 'state.json'));
+    lookAtVersion();
+    // A newer version found before, until this is it; how this copy updates; and a look once a day, from a moment after
+    // the launch's own work.
+    if (store.state.update) store.update((s) => (s.update = keptUpdate(s.update, BUILD.version)));
+    updateHow = lookAtHow();
+    resumeUpdate();
+    setTimeout(() => void checkForUpdate(), HIDDEN ? 1000 : 30_000);
+    setInterval(() => void checkForUpdate(), HOUR);
     // Your shell's PATH, before anything looks for Claude Code or Codex (an app opened from Finder has the system's).
     const added = await addShellPath();
     applySetupEnv(); // before anything runs Python
@@ -3050,7 +3260,7 @@ if (!app.requestSingleInstanceLock()) {
     queue.cancelAll(); // don't leave a connector (or iLEAPP under it) running without the app
     // Nor Claude in Chrome: left running, it would go on in Chrome with nobody to hear from it. Its run is saved as it
     // was, so the next start says it was interrupted and offers to carry it on.
-    agentRun?.run.stop(true);
+    for (const r of agents.running.values()) r.stop(true);
     visiting?.stop(true);
     for (const p of signInProcs.values()) p.kill(); // a sign-in, too: its page has nothing to come back to
     libExport.stop(); // nor an export, which removes what it had written

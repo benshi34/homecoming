@@ -1,10 +1,14 @@
 // General settings: how Homecoming itself behaves. Reading this Mac, watching for exports coming home (Downloads,
 // Mail, notifications), notifications, working in the background, and your library. Who you are and what's on this
-// Mac are in Your Setup; everything AI does is in AI Settings. ⌘, and the menu bar's Settings… open this page.
+// Mac are in Your Setup; everything AI does is in AI Settings. ⌘, and the menu bar's Settings… open this page. Then
+// updates: whether Homecoming looks for a newer version once a day (main/updates.ts), and looking now. At the bottom,
+// quietly, which version this is (as About Homecoming says it), with What's New.
 
 import type { ReactNode } from 'react';
+import { ago } from '../shared/format.ts';
 import { READ_ONLY_NOTE } from '../shared/status.ts';
 import type { Settings, Snapshot } from '../shared/types.ts';
+import { buildNote } from '../shared/version.ts';
 import { api } from './api.ts';
 import { GlyphTile } from './icons.tsx';
 import { NotificationsRow } from './notifications.tsx';
@@ -12,7 +16,8 @@ import { Button, Group, GroupRow, Toggle } from './ui.tsx';
 
 const set = (patch: Partial<Settings>) => void api.settings(patch);
 
-export function GeneralPage({ snap, toolbar, onAssistant, onExport }: { snap: Snapshot; toolbar?: ReactNode; onAssistant: () => void; onExport: () => void }) {
+export function GeneralPage({ snap, toolbar, onAssistant, onExport, onWhatsNew, onUpdate }: { snap: Snapshot; toolbar?: ReactNode; onAssistant: () => void;
+  onExport: () => void; onWhatsNew: () => void; onUpdate: () => void }) {
   const s = snap.settings;
   const su = snap.setup;
   // Read-only mode: its switches are shown, not changed (ui.tsx ReadOnly).
@@ -61,6 +66,8 @@ export function GeneralPage({ snap, toolbar, onAssistant, onExport }: { snap: Sn
                 : <Toggle checked={!!s.openAtLogin} onChange={(v) => set({ openAtLogin: v })} label="Open at login" testId="toggle-login" />} />
           </Group>
 
+          {snap.update && <Updates snap={snap} onUpdate={onUpdate} />}
+
           <Group title="Your library">
             <GroupRow icon={<GlyphTile glyph="drive" color="gray" />} title="Where it's kept" chevron={false} subtitle={<code className="selectable">{snap.corpusPath}</code>}
               trailing={<Button size="small" onClick={onExport} testAction="settings-export">Export…</Button>} />
@@ -69,8 +76,35 @@ export function GeneralPage({ snap, toolbar, onAssistant, onExport }: { snap: Sn
           <Group>
             <GroupRow icon={<GlyphTile glyph="signpost" color="blue" />} title="Setup Assistant" subtitle="Go through setting up again, step by step." onClick={onAssistant} testId="general-assistant" />
           </Group>
+
+          {snap.build && (
+            <div className="about-line" data-testid="general-version">
+              <span className="selectable">Homecoming {snap.build.version}{buildNote(snap.build) && ` (${buildNote(snap.build)})`}</span>
+              <button className="link" onClick={onWhatsNew} data-action="general-whats-new">What's New</button>
+            </div>
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+// Looking for a newer Homecoming: once a day unless it's off, or now. Found, it's a click to what's new and Update.
+function Updates({ snap, onUpdate }: { snap: Snapshot; onUpdate: () => void }) {
+  const u = snap.update!;
+  const off = u.how === 'off';
+  const when = u.checking ? 'Looking now…' : u.checkedAt ? `Last looked ${ago(u.checkedAt, new Date())}.` : 'Not looked yet.';
+  return (
+    <Group title="Updates" testId="general-updates"
+      footer="It fetches one public file, Homecoming's list of versions (CHANGELOG.md on github.com/benshi34/homecoming). GitHub sees that this Mac asked, from its internet address, and nothing about you or your library. Nothing is installed until you click Update.">
+      <GroupRow icon={<GlyphTile glyph="sync" color="blue" />} title="Look for updates every day" chevron={false}
+        subtitle={off ? 'Not in the demo or read-only mode.' : 'Homecoming tells you when there\'s a newer version, and what\'s new in it.'}
+        trailing={<Toggle checked={u.checks} onChange={(v) => set({ updateChecks: v })} label="Look for updates every day" testId="toggle-updates" />} />
+      <GroupRow icon={<GlyphTile glyph="house" color="blue" />} chevron={false} testId="general-update-status"
+        title={u.available ? `Homecoming ${u.available.version} is out` : `Homecoming ${snap.build?.version ?? ''}`} subtitle={when}
+        trailing={u.available
+          ? <Button size="small" kind="primary" onClick={onUpdate} testAction="general-see-update">See What's New…</Button>
+          : <Button size="small" onClick={() => void api.update('check')} disabled={off || u.checking} testAction="update-check">Check Now</Button>} />
+    </Group>
   );
 }

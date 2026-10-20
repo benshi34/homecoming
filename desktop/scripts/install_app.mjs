@@ -3,6 +3,7 @@
 // Built here, it's never marked as downloaded, so macOS opens it without asking about it (an app from the .dmg is
 // marked, and macOS asks once: Open Anyway). An earlier Homecoming there is quit and replaced; your library and
 // progress are kept elsewhere, so they stay. HOMECOMING_APPLICATIONS puts it in another folder instead (tests).
+// --open: opens it once it's in place (the app's Update, which this quits to replace it).
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -41,9 +42,13 @@ if (fs.existsSync(dest)) {
   const exe = path.join(dest, 'Contents', 'MacOS', 'Homecoming');
   const open = () => spawnSync('pgrep', ['-f', `^${exe}`]).status === 0;
   if (open()) {
+    // Asked to quit as from its menu: it does on SIGTERM (main.ts), which needs no permission to control another app;
+    // one too old for that is asked by AppleScript.
     console.log('\nQuitting Homecoming, to replace it…');
-    spawnSync('osascript', ['-e', `tell application "${dest}" to quit`]);
-    for (let i = 0; i < 40 && open(); i++) execFileSync('sleep', ['0.5']);
+    spawnSync('pkill', ['-TERM', '-f', `^${exe}`]);
+    for (let i = 0; i < 30 && open(); i++) execFileSync('sleep', ['0.5']);
+    if (open()) spawnSync('osascript', ['-e', `tell application "${dest}" to quit`]);
+    for (let i = 0; i < 30 && open(); i++) execFileSync('sleep', ['0.5']);
     if (open()) fail('Homecoming is still open. Quit it, then run this again.');
   }
   fs.rmSync(dest, { recursive: true, force: true });
@@ -53,3 +58,4 @@ if (fs.existsSync(dest)) {
 run('ditto', ['--noqtn', built, dest]);
 fs.rmSync(path.join(DESKTOP, 'release'), { recursive: true, force: true }); // the copy left in release/
 console.log(`\nHomecoming is in ${dir}. Open it from there, or:  open "${dest}"`);
+if (process.argv.includes('--open')) spawnSync('open', [dest]);

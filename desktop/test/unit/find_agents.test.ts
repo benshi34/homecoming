@@ -42,6 +42,8 @@ test('the Claude app\'s own copy, newest version first, with the files the app k
     exe(path.join(root, '2.1.293/0a1b2c/claude.app/Contents/MacOS/claude'));
     exe(path.join(root, '2.1.295/9d6405/claude.app/Contents/MacOS/claude'));
     fs.writeFileSync(path.join(root, 'auto-update-candidate.json'), '{"version":"2.1.296"}');
+    fs.writeFileSync(path.join(root, 'auto-update-state.json'), '{}');
+    fs.writeFileSync(path.join(root, '2.1.295/auto-update-state.json'), '{}');
     fs.writeFileSync(path.join(root, '2.1.295/.DS_Store'), '');
     if (!['/opt/homebrew/bin/claude', '/usr/local/bin/claude'].some((p) => fs.existsSync(p))) {
       assert.equal(findClaude(home), path.join(root, '2.1.295/9d6405/claude.app/Contents/MacOS/claude'));

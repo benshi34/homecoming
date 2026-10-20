@@ -19,11 +19,12 @@ const opened = () => (fs.existsSync(path.join(sb.userData, 'opened.txt')) ? fs.r
 
 before(async () => {
   sb = sandbox({ identity: true });
-  // Spotify goes first (its wait is longest): GitHub-style, it asks to confirm with a passkey, and Claude waits.
+  // Spotify, GitHub-style, asks to confirm with a passkey, and Claude waits; Instagram, at the same time, doesn't. (Each
+  // service its own run: the two start at once, in no set order.)
   fs.writeFileSync(file('plan.json'), JSON.stringify({
     request: [
-      { steps: ['Opening Spotify\'s privacy page', 'WAITING: Confirm it\'s you with your passkey in Chrome.', 'Confirmed: requesting the export'], result: 'requested', sleep: 1.5 },
-      { steps: ['Requesting the export'], result: 'requested', sleep: 0.3 },
+      { for: 'Spotify', steps: ['Opening Spotify\'s privacy page', 'WAITING: Confirm it\'s you with your passkey in Chrome.', 'Confirmed: requesting the export'], result: 'requested', sleep: 1.5 },
+      { for: 'Instagram', steps: ['Requesting the export'], result: 'requested', sleep: 0.3 },
     ],
     download: [],
   }));

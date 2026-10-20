@@ -6,12 +6,15 @@ import { createRoot } from 'react-dom/client';
 import { setServices } from '../shared/catalog.ts';
 import { setPhoneRegion } from '../shared/identity.ts';
 import type { Snapshot } from '../shared/types.ts';
+import type { Release } from '../shared/version.ts';
 import { api } from './api.ts';
 import { Assistant } from './assistant.tsx';
 import { Celebrations } from './celebrate.tsx';
 import { ExportSheet } from './export_sheet.tsx';
 import { Glyph } from './icons.tsx';
 import { MainWindow, type Nav } from './main_window.tsx';
+import { UpdateSheet } from './update_sheet.tsx';
+import { WhatsNewSheet } from './whats_new.tsx';
 import { animate, ReadOnly } from './ui.tsx';
 import { READ_ONLY_NOTE } from '../shared/status.ts';
 
@@ -23,6 +26,10 @@ function App() {
   const [toasts, setToasts] = useState<{ id: number; text: string; kind: string; undo?: { sourceId: string; action: string }; about?: string }[]>([]);
   const [assistant, setAssistant] = useState<boolean | null>(null); // null: follow onboarding.done
   const [exportOpen, setExportOpen] = useState(false); // Export Your Library
+  // What's New: from the menu bar or General (this version's); and the one shown once after an update, closed.
+  const [whatsNew, setWhatsNew] = useState<Release[] | null>(null);
+  const [newSeen, setNewSeen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false); // a newer Homecoming: its sheet
   const [adding, setAdding] = useState(false);
   const [nav, setNav] = useState<Nav>('overview');
   const [dragging, setDragging] = useState(false);
@@ -33,6 +40,7 @@ function App() {
     setAssistant(true);
     void api.onboarding({ open: true });
   };
+  const showWhatsNew = () => void api.whatsNew('get').then((r) => r.length && setWhatsNew(r));
   const toMain = () => {
     setAssistant(false);
     void api.onboarding({ open: false });
@@ -64,6 +72,8 @@ function App() {
     const offM = api.onMenu((cmd) => {
       if (cmd === 'show-settings') animate(() => { toMain(); setNav('general'); });
       if (cmd === 'show-export') setExportOpen(true);
+      if (cmd === 'show-whats-new') showWhatsNew();
+      if (cmd === 'show-update') setUpdateOpen(true);
       if (cmd === 'add-service') animate(() => { toMain(); setAdding(true); });
       if (cmd === 'show-hub') animate(() => { toMain(); setNav('hub'); });
       if (cmd === 'show-assistant') animate(() => openAssistant());
@@ -124,6 +134,15 @@ function App() {
     if (showId) setFocus({ id: showId, n: Date.now() });
   };
   const exit = () => leave({ skippedAt: new Date().toISOString() });
+  // What's new since the version you had, over whatever is open, until it's closed: then it isn't shown again.
+  const newOnes = whatsNew ?? (newSeen ? null : snap.whatsNew ?? null);
+  const closeNew = () => {
+    if (snap.whatsNew && !newSeen) {
+      setNewSeen(true);
+      void api.whatsNew('seen');
+    }
+    setWhatsNew(null);
+  };
   const style = snap.accent ? ({ '--accent': snap.accent } as CSSProperties) : undefined;
   return (
     <ReadOnly.Provider value={snap.readOnly && !snap.demo ? READ_ONLY_NOTE : null}>
@@ -131,8 +150,11 @@ function App() {
       {showAssistant
         ? <Assistant snap={snap} onFinish={finish} onExit={exit} />
         : <MainWindow snap={snap} nav={nav} setNav={setNav} focus={focus}
-          adding={adding} setAdding={setAdding} onAssistant={() => animate(() => openAssistant())} onExport={() => setExportOpen(true)} />}
+          adding={adding} setAdding={setAdding} onAssistant={() => animate(() => openAssistant())} onExport={() => setExportOpen(true)} onWhatsNew={showWhatsNew}
+          onUpdate={() => setUpdateOpen(true)} />}
       {exportOpen && <ExportSheet snap={snap} onClose={() => setExportOpen(false)} />}
+      {newOnes && <WhatsNewSheet releases={newOnes} onClose={closeNew} />}
+      {updateOpen && !newOnes && <UpdateSheet snap={snap} onClose={() => setUpdateOpen(false)} />}
       <div className="toasts" data-testid="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`}>

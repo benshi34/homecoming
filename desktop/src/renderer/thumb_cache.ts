@@ -5,6 +5,7 @@ export class ThumbCache {
   private map = new Map<string, string>(); // oldest first
   private shown = new Map<object, Set<string>>();
   readonly cap: number;
+  generation = 0;
 
   constructor(cap = 2000) {
     this.cap = cap;
@@ -12,6 +13,12 @@ export class ThumbCache {
 
   get size() {
     return this.map.size;
+  }
+
+  // A changed library invalidates both pictures and cached "no picture" results, including visible grids.
+  clear() {
+    this.map.clear();
+    this.generation++;
   }
 
   has(k: string): boolean {

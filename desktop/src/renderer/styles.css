@@ -541,6 +541,32 @@ button.link:hover { text-decoration: underline; }
 .export-result > svg { flex: none; color: var(--green); }
 .export-result[data-testid=export-failed] > svg { color: var(--orange); }
 .sheet .note.error { color: var(--red); }
+
+/* What's New (whats_new.tsx): centered like a Mac app's, then each version's words. And General's version line. */
+.whats-new-head { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 6px 0 4px; }
+.whats-new-head h2 { font-size: 17px; letter-spacing: -0.2px; margin: 0; }
+.whats-new-release { margin-top: 14px; }
+.whats-new-release h3 { font-size: 11px; font-weight: 600; color: var(--secondary); margin: 0 2px 6px; }
+.whats-new-release p { margin: 0 2px 6px; }
+.whats-new-release ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
+.whats-new-release li { font-size: 12.5px; line-height: 1.45; color: var(--secondary); }
+.whats-new-release li strong { color: var(--label); font-weight: 600; }
+/* A newer Homecoming (update_sheet.tsx): the sheet, and its card at the bottom of the sidebar. */
+.whats-new-head .sheet-text { margin-top: -4px; }
+.update-how { margin-top: 14px; padding-top: 12px; border-top: 0.5px solid var(--separator, rgba(0, 0, 0, 0.1)); }
+.update-how p { font-size: 12px; margin: 0 2px 6px; }
+.update-how code { user-select: text; overflow-wrap: anywhere; }
+.update-step { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 14px 2px 8px; }
+.update-message { white-space: pre-line; color: var(--label); margin-top: 10px; user-select: text; }
+.sheet .update-log { margin-top: 10px; max-height: 180px; background: var(--fill); border-radius: 8px; }
+.update-card { display: flex; align-items: center; gap: 9px; margin: 8px 8px 0; padding: 8px 10px; border: 0; border-radius: 8px; background: var(--fill);
+  color: var(--label); font: inherit; text-align: left; cursor: default; }
+.update-card:hover { background: var(--fill-strong); }
+.update-card svg { color: var(--accent); flex: none; }
+.update-card span { display: flex; flex-direction: column; min-width: 0; }
+.update-card b { font-size: 12px; font-weight: 600; }
+.update-card small { font-size: 11px; color: var(--secondary); }
+.about-line { display: flex; justify-content: center; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 22px; font-size: 11.5px; color: var(--secondary); }
 .record-text { margin-top: 10px; max-height: 300px; overflow: auto; font: 12px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; background: var(--fill); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------- explore */
@@ -1082,6 +1108,75 @@ button.msg-edited { color: var(--accent); cursor: pointer; }
 .embed-loading.chat { height: 150px; }
 .embed-loading.photos { height: 120px; }
 .embed-missing { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--tertiary); margin: 6px 0 10px; }
+/* The rest an answer can show: a card like the conversation's (a map, a day, a chart, a person, an email, songs, a trip,
+   a calendar), each rising in as it's drawn and its rows following in turn. */
+.embed-card { max-width: 440px; margin: 10px 0 12px; background: var(--group-box); border-radius: 18px; overflow: hidden;
+  box-shadow: 0 0 0 0.5px var(--separator), 0 6px 22px rgba(0, 0, 0, 0.06); animation: rise 0.4s var(--ease) both; user-select: text; }
+.embed-chat-head.static { cursor: default; }
+.embed-chat-head.static:hover { background: transparent; }
+.embed-badge { flex: none; width: 28px; height: 28px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(var(--tone), color-mix(in srgb, var(--tone) 80%, #000)); }
+.embed-card > .embed-photos-cap { margin: 0; padding: 8px 12px 10px; }
+.embed-map .viz.map, .embed-trip .viz.map { border-bottom: 0.5px solid var(--separator); }
+.embed-map .map-sea, .embed-trip .map-sea { fill: var(--map-sea); }
+.map-label { font-size: 10.5px; font-weight: 600; fill: var(--label); paint-order: stroke; stroke: var(--map-land); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+.embed-day-photos { display: grid; gap: 2px; grid-template-columns: repeat(4, 1fr); border-bottom: 0.5px solid var(--separator); }
+.embed-day-photos.n1 { grid-template-columns: 1fr; }
+.embed-day-photos.n2 { grid-template-columns: 1fr 1fr; }
+.embed-day-photos.n3, .embed-day-photos.n6 { grid-template-columns: repeat(3, 1fr); }
+.embed-day-photos.n5 { grid-template-columns: repeat(5, 1fr); }
+.embed-day-photos button { border: 0; padding: 0; aspect-ratio: 1; background: var(--fill); overflow: hidden; cursor: pointer; animation: photo-in 0.7s var(--spring) backwards; }
+.embed-day-photos.n1 button, .embed-day-photos.n2 button { aspect-ratio: 16 / 9; }
+.embed-day-photos img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.4s var(--ease); }
+.embed-day-photos button:hover img { transform: scale(1.04); }
+.embed-rows { padding: 4px 0; }
+.embed-row, .embed-song, .embed-event { width: 100%; display: flex; align-items: center; gap: 9px; padding: 6px 12px; border: 0; background: transparent; font: inherit;
+  text-align: left; color: var(--label); cursor: pointer; animation: rise 0.35s var(--ease) backwards; }
+.embed-row:hover, .embed-song:hover, .embed-event:hover { background: var(--fill); }
+.embed-row-time { flex: none; width: 58px; font-size: 11px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.embed-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 13px; line-height: 1.3; }
+.embed-row-sub { font-size: 11px; color: var(--secondary); }
+.embed-foot { padding: 2px 12px 10px; font-size: 11.5px; color: var(--tertiary); }
+.embed-more { border: 0; background: transparent; padding: 0; font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
+.embed-more:hover { text-decoration: underline; }
+.embed-trend { padding-bottom: 2px; }
+.embed-trend-head { display: flex; flex-direction: column; gap: 1px; padding: 11px 14px 6px; line-height: 1.3; }
+.embed-trend-head b { font-size: 13px; font-weight: 600; }
+.embed-trend-head span { font-size: 11.5px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.embed-trend .viz { padding: 0 10px 0 2px; box-sizing: border-box; }
+.embed-person-body { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px; }
+.embed-stats { display: flex; gap: 18px; flex-wrap: wrap; }
+.embed-stats b { display: block; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.embed-stats span { font-size: 11px; color: var(--secondary); }
+.embed-person .mini-cols { height: 44px; }
+.embed-person .chip em, .embed-card .chip em { font-style: normal; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.embed-email-body { display: flex; flex-direction: column; gap: 6px; padding: 10px 14px 10px; }
+.embed-email-subject { font-size: 14px; font-weight: 600; line-height: 1.3; }
+.embed-email-to { font-size: 11.5px; color: var(--secondary); }
+.embed-email-text { font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.embed-email-text.folded { -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.embed-email-body .embed-more { align-self: flex-start; }
+.embed-songs { padding: 4px 0; }
+.embed-art { flex: none; width: 34px; height: 34px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, var(--tone), color-mix(in srgb, var(--tone) 60%, #000)); }
+.embed-song-meta { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-size: 11px; color: var(--secondary);
+  font-variant-numeric: tabular-nums; max-width: 40%; text-align: right; }
+.embed-song-meta span:first-child { color: var(--label); font-weight: 500; }
+.embed-faces { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 12px 11px; font-size: 12px; }
+.embed-face { display: inline-flex; align-items: center; gap: 5px; }
+.embed-agenda { padding: 2px 0 6px; }
+.embed-agenda-date { font-size: 11px; font-weight: 600; color: var(--secondary); text-transform: uppercase; letter-spacing: 0.03em; padding: 9px 14px 3px; }
+.embed-event { gap: 10px; }
+.embed-event-bar { flex: none; width: 4px; align-self: stretch; min-height: 30px; border-radius: 2px; background: var(--tone); }
+.embed-they-know { max-width: 440px; margin: 10px 0 12px; display: flex; flex-direction: column; gap: 10px; animation: rise 0.4s var(--ease) both; }
+.embed-they-know .embed-photos-cap { margin: 0 2px; }
+.embed-they-know .tk-facts { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.embed-cap-text { flex: 1; min-width: 0; }
+.embed-loading.map, .embed-loading.trip { height: 260px; }
+.embed-loading.day, .embed-loading.agenda, .embed-loading.email { height: 180px; }
+.embed-loading.trend { height: 200px; }
+.embed-loading.person, .embed-loading.songs { height: 140px; }
+.embed-loading.they-know { height: 220px; }
 
 /* Explore's newer artifacts: your year as a story, journeys on a night map, group chats. */
 @keyframes drift { from { transform: translate(-12%, 8%) rotate(0deg); } to { transform: translate(12%, -8%) rotate(35deg); } }

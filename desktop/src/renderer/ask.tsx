@@ -1,7 +1,8 @@
 // Ask: questions about your own data, answered by the model you pick, which looks things up with the corpus tools.
 // Laid out like Messages: conversations on the left, the chosen one on the right with the composer under it. Every
 // answer shows what was looked up, and cites the records it rests on; a citation opens the record. An answer can also
-// show a stretch of a conversation or a few photos in place (embeds.tsx). The agent that answers is picked from one
+// show things in place (embeds.tsx): a stretch of a conversation, photos, a map, a day, a chart over time, a person, an
+// email, songs, a trip, a calendar, what a company decided about you. The agent that answers is picked from one
 // list (AgentChoices), here and in AI Settings, for everything AI does; the composer says what it still needs, and fixes it in place.
 
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
@@ -14,14 +15,14 @@ import {
 } from '../shared/ask.ts';
 import { CATALOG } from '../shared/catalog.ts';
 import { ago } from '../shared/format.ts';
-import { type Block, blocks, embedOf, partialEmbed } from '../shared/markdown.ts';
+import { type Block, blocks, embedOf, embedWords, partialEmbed } from '../shared/markdown.ts';
 import { PHONE_SOURCES } from '../shared/phone.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api, type AskRecord } from './api.ts';
-import { EmbedBlock } from './embeds.tsx';
+import { EmbedBlock, EmbedOpenContext } from './embeds.tsx';
 import { Cite, CitedSheet, CiteContext, EventDetails } from './cited.tsx';
 import { type ExploreAt, isCalendarEvent, kindName, recordTitle } from '../shared/explore.ts';
-import { ConversationSheet, exploreOpenAt } from './explore.tsx';
+import { ConversationSheet, type ExploreLink, exploreOpenAt, exploreShow } from './explore.tsx';
 import { Glyph } from './icons.tsx';
 import { Banner, Button, GroupRow, Sheet, Spinner } from './ui.tsx';
 
@@ -51,6 +52,11 @@ export function AskPage({ snap, toolbar, onExplore }: { snap: Snapshot; toolbar:
     exploreOpenAt(at);
     onExplore();
   });
+  // What an answer shows (a person, a trip, a day, What They Know) opens its page in Explore.
+  const showInExplore = useMemo(() => onExplore && ((l: ExploreLink) => {
+    exploreShow(l);
+    onExplore();
+  }), [onExplore]);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -191,8 +197,10 @@ export function AskPage({ snap, toolbar, onExplore }: { snap: Snapshot; toolbar:
           {toolbar}
         </div>
         <CiteContext.Provider value={setCited}>
-          <Chat conv={conv} running={running} onRecord={setRecord} onConversation={setConversation} onExample={(q) => void send(q)} onRetry={retry}
-            onSettings={() => setSheet('provider')} />
+          <EmbedOpenContext.Provider value={showInExplore ?? null}>
+            <Chat conv={conv} running={running} onRecord={setRecord} onConversation={setConversation} onExample={(q) => void send(q)} onRetry={retry}
+              onSettings={() => setSheet('provider')} />
+          </EmbedOpenContext.Provider>
         </CiteContext.Provider>
         {error && <div className="ask-error"><Banner kind="error">{error}</Banner></div>}
         <Composer text={draft} setText={setDraft} running={running} onSend={(q) => send(q)} onStop={() => sel && void api.ask({ op: 'stop', id: sel })} snap={snap}
@@ -545,10 +553,11 @@ function renderBlock(b: Block, key: number, onRecord: (n: number) => void, onCon
 }
 
 // Inline Markdown: `code`, **bold**, *italic*, [label](record:123) citations, [label](https://…) links (shown,
-// not opened: they come from the data). A [[chat:…]] or [[photos:…]] inside a sentence is a citation of its first record.
+// not opened: they come from the data). A [[chat:…]], [[photos:…]] or the like inside a sentence is a citation of its
+// first record, or just its words (a day, a person) when it names no record.
 export function inline(s: string, onRecord: (n: number) => void): ReactNode[] {
   const out: ReactNode[] = [];
-  const re = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s][^*]*?)\*(?!\w)|(\[\[\s*(?:chat|photos?)\s*:[\d\s,–-]+\]\])|\[([^\]]+)\]\(([^)\s]+)\)|\b(record:|#)(\d{3,})\b/g;
+  const re = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<![\w*])\*([^*\s][^*]*?)\*(?!\w)|(\[\[\s*[a-z][a-z-]*\s*(?::[^\]\n]*)?\]\])|\[([^\]]+)\]\(([^)\s]+)\)|\b(record:|#)(\d{3,})\b/g;
   let at = 0;
   let m: RegExpExecArray | null;
   let k = 0;
@@ -559,10 +568,8 @@ export function inline(s: string, onRecord: (n: number) => void): ReactNode[] {
     else if (m[4] !== undefined) out.push(<em key={k++}>{inline(m[4], onRecord)}</em>);
     else if (m[5] !== undefined) {
       const e = embedOf(m[5]);
-      const first = e && (e.kind === 'chat' ? e.from : e.ids[0]);
-      out.push(first
-        ? <Cite key={k++} rowid={first} onRecord={onRecord}>{e.kind === 'chat' ? 'the conversation' : 'the photos'}</Cite>
-        : m[5]);
+      const w = e && embedWords(e);
+      out.push(!w ? m[5] : w.rowid ? <Cite key={k++} rowid={w.rowid} onRecord={onRecord}>{w.words}</Cite> : w.words);
     } else if (m[6] !== undefined) {
       const rec = /^record:(\d+)$/.exec(m[7]);
       out.push(rec

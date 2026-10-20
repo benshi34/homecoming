@@ -625,7 +625,7 @@ function exportsList(ctx: Ctx): PageSpec {
   };
 }
 
-// Claude asks for all of them, one after another (Ask for Everything), while you go on with the rest of the setup.
+// Claude asks for all of them, a few at once (Ask for Everything), while you go on with the rest of the setup.
 function AskAllBox({ ctx, n, onAsked }: { ctx: Ctx; n: number; onAsked: () => void }) {
   const [open, setOpen] = useState(false);
   return (

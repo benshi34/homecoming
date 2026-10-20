@@ -2,7 +2,8 @@
 // With --app, the app alone (npm run install-app puts it in Applications).
 //
 // The app carries everything it needs, so nothing is installed or downloaded when it runs:
-//   Resources/app/         the built interface (dist/), py/ and data/
+//   Resources/app/         the built interface (dist/, with CHANGELOG.md and build.json: its version's commit and the
+//                          day it was built, which About Homecoming shows), py/ and data/
 //   Resources/connectors/  the connectors, with the vendored iLEAPP and its wheels
 //   Resources/python/      its own Python 3.14, with cryptography and pypdf installed, compiled ahead of time
 // Two things are downloaded here, and each must match its pinned SHA-256: the standalone Python build

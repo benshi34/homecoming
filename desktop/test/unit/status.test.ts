@@ -547,6 +547,22 @@ describe('web exports', () => {
     assert.equal(vs.find((v) => v.id === 'facebook')!.waiting, undefined);
   });
 
+  test('several at once (AI Settings): each running says what it\'s doing, and one waiting names them all', () => {
+    const vs = views({ state: state((s) => {
+      s.sources.instagram = { agent: { mode: 'request', status: 'running', at: hoursAgo(0), step: 'Choosing JSON' } };
+      s.sources.spotify = { agent: { mode: 'request', status: 'running', at: hoursAgo(0), step: 'Opening Spotify\'s privacy page' } };
+      s.sources.discord = { agent: { mode: 'download', status: 'running', at: hoursAgo(0) } };
+      s.sources.reddit = { agent: { mode: 'request', status: 'queued', at: hoursAgo(0) } };
+    }) });
+    const at = (id: string) => vs.find((v) => v.id === id)!;
+    assert.equal(at('instagram').status, 'Choosing JSON');
+    assert.equal(at('spotify').status, 'Opening Spotify\'s privacy page');
+    assert.equal(at('discord').status, 'Downloading it in Chrome…');
+    assert.ok(['instagram', 'spotify', 'discord'].every((id) => at(id).section === 'working' && !at(id).waiting));
+    assert.equal(at('reddit').status, 'Waiting: Claude is doing Instagram, Spotify and Discord first');
+    assert.equal(at('reddit').waiting, true);
+  });
+
   test('after Homecoming quit mid-run: carry on or start over, with nothing to answer', () => {
     const quit = (session?: string) => view('instagram', { state: state((s) => (s.sources.instagram = {
       agent: { mode: 'request', status: 'needs_you', at: hoursAgo(0), note: 'Homecoming quit before it finished.', reason: 'quit', session } })) });

@@ -71,6 +71,17 @@ export function exploreOpenAt(at: ExploreAt) {
   for (const f of onHome) f();
 }
 
+// Explore on a person's page, a trip's, a day of Your Stream or What They Know, from something Ask showed: with Back to
+// the page it's part of, then home.
+export type ExploreLink = { page: 'person'; key: string; name: string } | { page: 'trip'; trip: Trip } | { page: 'stream'; day: string } | { page: 'they-know' };
+export function exploreShow(l: ExploreLink) {
+  if (l.page === 'person') return exploreOpenAt({ page: 'person', key: l.key, name: l.name });
+  const path: View[] = l.page === 'trip' ? [{ id: 'places' }, { id: 'trip', trip: l.trip }] : l.page === 'stream' ? [{ id: 'stream', month: l.day.slice(0, 7), day: l.day }] : [{ id: 'they-know' }];
+  history = [entryOf({ id: 'home' }), ...path.map(entryOf)];
+  returnTo = null;
+  for (const f of onHome) f();
+}
+
 // A page's choice, kept in its entry in Back's history under a name unique on the page: useState that comes back as
 // it was. No name: not kept.
 const Kept = createContext<Map<string, unknown> | null>(null);
@@ -265,27 +276,33 @@ function useArtifact<T>(op: string, args: string[] = []): { data: T | null; erro
 const progress = new Map<string, ExploreProgress>();
 const listeners = new Set<() => void>();
 let listening = false;
+function listenForProgress() {
+  if (!listening) {
+    listening = true;
+    api.onExploreProgress((p) => {
+      // The library changed: what's here is built again (main has it built ahead, or builds it when asked).
+      if (p.changed) {
+        cache.clear();
+        progress.clear();
+        thumbCache.clear();
+        thumbsComing.clear();
+        for (const f of thumbsArrived) f();
+        return;
+      }
+      // Main says all of where it stands (in line, or building and how far); a quick look says only what's new.
+      progress.set(p.key, p.started || p.place ? p : { ...progress.get(p.key), ...p });
+      for (const l of listeners) l();
+    });
+    void api.exploreStatus().then((all) => {
+      for (const s of all) if (!progress.has(s.key)) progress.set(s.key, s); // what came since is newer
+      for (const l of listeners) l();
+    });
+  }
+}
 function useProgress(k: string): ExploreProgress | undefined {
   const [, bump] = useState(0);
   useEffect(() => {
-    if (!listening) {
-      listening = true;
-      api.onExploreProgress((p) => {
-        // The library changed: what's here is built again (main has it built ahead, or builds it when asked).
-        if (p.changed) {
-          cache.clear();
-          progress.clear();
-          return;
-        }
-        // Main says all of where it stands (in line, or building and how far); a quick look says only what's new.
-        progress.set(p.key, p.started || p.place ? p : { ...progress.get(p.key), ...p });
-        for (const l of listeners) l();
-      });
-      void api.exploreStatus().then((all) => {
-        for (const s of all) if (!progress.has(s.key)) progress.set(s.key, s); // what came since is newer
-        for (const l of listeners) l();
-      });
-    }
+    listenForProgress();
     const l = () => bump((n) => n + 1);
     listeners.add(l);
     return () => {
@@ -320,7 +337,7 @@ const ART: Record<ArtifactId, { glyph: string; tone: string; title: string }> = 
 const OP_TITLE: Record<string, string> = { 'on-this-day': 'On This Day', people: 'Your People', person: 'a person', places: 'Places and Trips',
   rhythms: 'Your Rhythms', firsts: 'Firsts', made: 'What You Made', summary: 'Explore', year: 'Your Year', journeys: 'Journeys',
   groups: 'Group Chats', stream: 'Your Stream', listening: 'Listening', movement: 'Moving and Sleep', curiosity: 'Curiosity', watching: 'Watching', 'they-know': 'What They Know' };
-const tone = (t: string) => ({ '--tone': `var(--${t})` } as CSSProperties);
+export const tone = (t: string) => ({ '--tone': `var(--${t})` } as CSSProperties);
 
 // "182,500 of 602,591" (or "182,500 so far" when the total isn't known).
 function progressText(p: ExploreProgress | undefined): string {
@@ -400,6 +417,7 @@ function useThumbs(rowids: number[], size = 240): { get(r: number): string | und
   const [, bump] = useState(0);
   const grid = useRef({}).current;
   useEffect(() => {
+    if (!example) listenForProgress();
     const f = () => bump((n) => n + 1);
     thumbsArrived.add(f);
     return () => {
@@ -407,24 +425,26 @@ function useThumbs(rowids: number[], size = 240): { get(r: number): string | und
       thumbCache.showing(grid, null);
     };
   }, []);
+  const generation = thumbCache.generation;
+  const pending = (r: number) => `${generation}:${size}:${r}`;
   thumbCache.showing(grid, rowids.map((r) => `${size}:${r}`)); // these stay while this grid shows them
-  const want = rowids.filter((r) => !thumbCache.has(`${size}:${r}`) && !thumbsComing.has(`${size}:${r}`));
-  const k = want.join(',');
+  const want = rowids.filter((r) => !thumbCache.has(`${size}:${r}`) && !thumbsComing.has(pending(r)));
+  const k = `${generation}:${want.join(',')}`;
   useEffect(() => {
     if (example || !want.length) return;
     let live = true;
-    for (const id of want) thumbsComing.add(`${size}:${id}`);
+    for (const id of want) thumbsComing.add(pending(id));
     void (async () => {
       for (let i = 0; i < want.length; i += 60) {
         const part = want.slice(i, i + 60);
         if (!live) {
-          for (const id of part) thumbsComing.delete(`${size}:${id}`);
+          for (const id of part) thumbsComing.delete(pending(id));
           continue;
         }
         const r = await api.explore<Record<string, string>>('thumbs', [part.join(','), String(size)]);
         for (const id of part) {
-          thumbsComing.delete(`${size}:${id}`);
-          if (!isError(r)) thumbCache.set(`${size}:${id}`, r[String(id)] ?? '');
+          thumbsComing.delete(pending(id));
+          if (generation === thumbCache.generation && !isError(r)) thumbCache.set(`${size}:${id}`, r[String(id)] ?? '');
         }
         for (const f of thumbsArrived) f();
       }
@@ -567,7 +587,7 @@ export function Num({ value, id, format = (n) => count(Math.round(n)) }: { value
 }
 const pct = (n: number) => `${Math.round(n)}%`;
 // "1 trip", "2 trips", "1,240 people": a number and the word that goes with it.
-const counted = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
+export const counted = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
 const word = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
 // A chart's unit for one: "messages" -> "message", "searches" -> "search", "steps on average" -> "step on average".
 function unitOf(n: number, unit: string): string {
@@ -705,7 +725,7 @@ const FLAG_ALIAS: Record<string, string> = {
   'hong kong': 'HK', macao: 'MO', macau: 'MO', 'czech republic': 'CZ', turkey: 'TR', 'côte d\'ivoire': 'CI', 'ivory coast': 'CI',
   myanmar: 'MM', burma: 'MM', congo: 'CG', 'democratic republic of the congo': 'CD', 'palestinian territories': 'PS', 'vatican city': 'VA',
 };
-function flagOf(country: string): string | null {
+export function flagOf(country: string): string | null {
   const norm = (s: string) => s.toLowerCase().replace(/&/g, 'and').replace(/’/g, '\'').trim();
   if (!FLAGS) {
     FLAGS = new Map(Object.entries(FLAG_ALIAS));
@@ -1364,14 +1384,14 @@ function PlacesView({ ctx }: { ctx: Ctx }) {
 
 // A trip by its places: "Kyoto and Tokyo, Japan"; one across countries by its cities alone ("Paris and London"), or by
 // its countries when no city is known.
-function tripTitle(t: { places: string[]; countries: string[] }) {
+export function tripTitle(t: { places: string[]; countries: string[] }) {
   const cs = t.countries.filter(Boolean);
   if (!t.places[0]) return cs.length ? andList(cs.slice(0, 3)) : 'A trip';
   const where = andList(t.places.slice(0, 2));
   return cs.length === 1 ? `${where}, ${cs[0]}` : where;
 }
 // "Mar 3 to 5, 2025", "Dec 30, 2024 to Jan 2, 2025"
-function shortRange(a: string, b: string) {
+export function shortRange(a: string, b: string) {
   if (a === b) return dayLabel(a);
   const da = new Date(`${a}T12:00:00`), db = new Date(`${b}T12:00:00`);
   if (da.getFullYear() !== db.getFullYear()) return rangeLabel(a, b);
@@ -1441,12 +1461,12 @@ function TripView({ ctx, trip: t }: { ctx: Ctx; trip: Trip }) {
 // A Mercator map of where your photos were taken, drawn from bundled coastlines (data/world_land.json): no tiles,
 // nothing fetched. Dots are places (about 10 km across), sized by photos. `mini` is the home tile's: no controls,
 // filling its box.
-function MapView({ points, world, onRecord, mini }: { points: Places['points']; world: World | null; onRecord?: (n: number) => void; mini?: boolean }) {
+export function MapView({ points, world, onRecord, mini, inset }: { points: Places['points']; world: World | null; onRecord?: (n: number) => void; mini?: boolean; inset?: boolean }) {
   const [ref, size] = useSize<HTMLDivElement>();
-  const [zoom, setZoom] = useKept<'yours' | 'world'>(mini ? null : 'map-zoom', 'yours');
+  const [zoom, setZoom] = useKept<'yours' | 'world'>(mini || inset ? null : 'map-zoom', 'yours');
   const [tip, setTip] = useState<Tip>(null);
   const width = size.w;
-  const height = mini ? size.h : Math.round(Math.min(500, Math.max(320, width * 0.5)));
+  const height = mini ? size.h : inset ? 230 : Math.round(Math.min(500, Math.max(320, width * 0.5)));
   const merc = (lat: number) => Math.log(Math.tan(Math.PI / 4 + (Math.max(-85, Math.min(85, lat)) * Math.PI) / 360)) * (180 / Math.PI);
   const view = useMemo(() => {
     let [x0, x1, y0, y1] = [-180, 180, merc(-58), merc(78)];
@@ -1476,17 +1496,22 @@ function MapView({ points, world, onRecord, mini }: { points: Places['points']; 
   }, [rings, view, width, height]);
   const maxP = Math.max(...points.map((p) => p.photos));
   const radius = (n: number) => (mini ? 1.6 + 4.5 * Math.sqrt(n / maxP) : 3 + 10 * Math.sqrt(n / maxP));
+  // An inset names its three biggest places (one a name), the way Maps labels a few towns.
+  const labelled = useMemo(() => {
+    const seen = new Set<string>();
+    return [...points].sort((a, b) => b.photos - a.photos).filter((p) => p.place && !seen.has(p.place) && seen.add(p.place)).slice(0, 3);
+  }, [points]);
   // Biggest first in the pop-in, smallest drawn last on top.
   const order = useMemo(() => new Map([...points].sort((a, b) => b.photos - a.photos).map((p, i) => [p, i])), [points]);
   return (
     <div ref={ref} className={`viz map ${mini ? 'mini' : ''}`} style={mini ? undefined : { height }} onPointerLeave={() => setTip(null)}>
-      {!mini && (
+      {!mini && !inset && (
         <div className="map-bar">
           <Segmented glass value={zoom} onChange={setZoom} items={[{ id: 'yours', label: 'Where You\'ve Been' }, { id: 'world', label: 'World' }]} />
         </div>
       )}
       {width > 0 && height > 0 && (
-        <svg width={width} height={height} role="img" aria-label={`Map of ${points.length} places`}>
+        <svg width={width} height={height} role="img" aria-label={`Map of ${counted(points.length, 'place')}`}>
           {!mini && <rect width={width} height={height} className="map-sea" />}
           <path d={land} className="map-land" />
           {[...points].reverse().map((p) => {
@@ -1501,6 +1526,11 @@ function MapView({ points, world, onRecord, mini }: { points: Places['points']; 
                 <circle cx={x} cy={y} r={radius(p.photos)} className="dot pop" style={delay} />
               </g>
             );
+          })}
+          {inset && labelled.map((p) => {
+            // Beside its dot, or on the other side where it would run off the map.
+            const x = sx(p.lon), r = radius(p.photos) + 4, left = x + r + p.place!.length * 6.4 > width;
+            return <text key={`l-${p.lat},${p.lon}`} x={left ? x - r : x + r} y={sy(p.lat) + 4} textAnchor={left ? 'end' : 'start'} className="map-label">{p.place}</text>;
           })}
         </svg>
       )}
@@ -1523,6 +1553,9 @@ function atDateLine(r: [number, number][]): [number, number][][] {
   }
   return out.filter((x) => x.length > 2);
 }
+
+// The coastlines (they come with the app), for a map outside Explore.
+export const useWorld = () => useArtifact<World>('world').data;
 
 // ---------------------------------------------------------------- rhythms
 
@@ -2841,7 +2874,7 @@ function niceMax(v: number): number {
 
 // Columns: one series, one blue. Bars at most 24px wide with a 4px rounded cap, from one baseline, growing up from it
 // in turn; the whole band is the hover target.
-function Columns({ data, height, unit, xTicks }: { data: { key: string; label: string; value: number; detail?: [string, string][] }[]; height: number; unit: string; xTicks?: { key: string; label: string }[] }) {
+export function Columns({ data, height, unit, xTicks }: { data: { key: string; label: string; value: number; detail?: [string, string][] }[]; height: number; unit: string; xTicks?: { key: string; label: string }[] }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [tip, setTip] = useState<Tip>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -2857,7 +2890,7 @@ function Columns({ data, height, unit, xTicks }: { data: { key: string; label: s
           {[0, 0.5, 1].map((f) => (
             <g key={f}>
               <line x1={left} x2={width} y1={top + plotH * (1 - f)} y2={top + plotH * (1 - f)} className={f === 0 ? 'axis' : 'grid'} />
-              <text x={left - 6} y={top + plotH * (1 - f) + 3.5} className="tick" textAnchor="end">{count(Math.round(max * f))}</text>
+              <text x={left - 6} y={top + plotH * (1 - f) + 3.5} className="tick" textAnchor="end">{Number.isInteger(max * f) ? count(max * f) : (max * f).toFixed(1)}</text>
             </g>
           ))}
           {data.map((d, i) => {
@@ -3108,7 +3141,7 @@ function MonthColumns({ months, unit, average, year }: { months: Record<string, 
   const ticks = year ? ms.filter((_, i) => i % 3 === 0).map((m) => ({ key: m, label: new Date(`${m}-15T12:00:00`).toLocaleDateString(undefined, { month: 'short' }) })) : yearTicks(ms);
   return <Columns data={ms.map((m) => ({ key: m, label: monthLabel(m), value: months[m] ?? 0 }))} height={150} unit={average ? `${unit} a day, on average` : unit} xTicks={ticks} />;
 }
-function MiniCols({ values, from, to }: { values: number[]; from?: string; to?: string }) {
+export function MiniCols({ values, from, to }: { values: number[]; from?: string; to?: string }) {
   const max = Math.max(1, ...values);
   return (
     <div className="mini-cols-wrap">
@@ -3449,7 +3482,7 @@ const short = (name: string) => (name.length > 26 ? `${name.slice(0, 24).trimEnd
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const monthYear = (ts: string) => new Date(ts).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 const dayLabel = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-const monthLabel = (m: string) => new Date(`${m}-15T12:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+export const monthLabel = (m: string) => new Date(`${m}-15T12:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 function rangeLabel(a: string, b: string) {
   if (a === b) return dayLabel(a);
   const da = new Date(`${a}T12:00:00`), db = new Date(`${b}T12:00:00`);
@@ -3457,7 +3490,7 @@ function rangeLabel(a: string, b: string) {
   return `${dayLabel(a)} to ${dayLabel(b)}`;
 }
 // Every month from the first to the last with messages, so quiet months show as gaps, not as nothing.
-function fillMonths(ms: string[]): string[] {
+export function fillMonths(ms: string[]): string[] {
   if (!ms.length) return [];
   const sorted = [...ms].sort();
   const out: string[] = [];
@@ -3470,7 +3503,7 @@ function fillMonths(ms: string[]): string[] {
   }
   return out;
 }
-function yearTicks(months: string[]) {
+export function yearTicks(months: string[]) {
   const ys = months.filter((m) => m.endsWith('-01'));
   const step = Math.ceil(ys.length / 8);
   return ys.filter((_, i) => i % step === 0).map((m) => ({ key: m, label: m.slice(0, 4) }));
@@ -3485,7 +3518,7 @@ const HOW_SAID: Record<AdHow, string> = {
 };
 // The source each service's records come from, for its icon.
 const SERVICE_SOURCE: Record<string, string> = { Facebook: 'facebook', Instagram: 'instagram', X: 'x', LinkedIn: 'linkedin', Google: 'google_takeout', TikTok: 'tiktok' };
-const andList = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+export const andList = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 // "Facebook and Instagram: uploaded a list you were on · X: aims at people like you": services that got you the same way, together.
 function howSaid(services: Record<string, AdHow[]>) {
   const by = new Map<string, string[]>();
@@ -3676,7 +3709,7 @@ function DecidedGroups({ groups, of, onRecord }: { groups: Decided[]; of: string
 
 // The you each service sees: Facebook and Instagram as one (Meta keeps one profile), X, LinkedIn. Its guesses at
 // who you are, large; a few of what it files you under and thinks you're into; the rest a click away.
-const familyOf = (g: Decided) => (/Facebook|Instagram/.test(g.services?.[0] ?? g.service) ? 'Meta' : g.services?.[0] ?? g.service);
+export const familyOf = (g: Decided) => (/Facebook|Instagram/.test(g.services?.[0] ?? g.service) ? 'Meta' : g.services?.[0] ?? g.service);
 function Few({ title, items, onRecord, n = 6 }: { title: string; items: Decided['items']; onRecord: (r: number) => void; n?: number }) {
   return (
     <div className="tk-few">
@@ -3699,7 +3732,7 @@ function Facts({ facts, onRecord }: { facts: Decided[]; onRecord: (r: number) =>
     </div>
   );
 }
-function ProfileCard({ groups, onRecord }: { groups: Decided[]; onRecord: (r: number) => void }) {
+export function ProfileCard({ groups, onRecord }: { groups: Decided[]; onRecord: (r: number) => void }) {
   const [all, setAll] = useState(false);
   const services = [...new Set(groups.flatMap((g) => g.services ?? [g.service]))];
   const name = andList(services);

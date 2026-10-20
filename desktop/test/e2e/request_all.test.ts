@@ -1,8 +1,8 @@
 // Ask for Everything, end to end, with a made-up Chrome (a profile with Claude in Chrome, and a cookie file that says
 // what it's signed in to: names and dates only) and the stand-in for Claude Code in Chrome. Chrome is signed in to
-// Instagram, not Spotify: its page opens in Chrome, you sign in, Check Again, and Claude asks for both, one after the
-// other, saying what needs you once at the end. Spotify's sign-in had lapsed: once Chrome has it again, Claude carries
-// on by itself. Reddit is yours (Claude in Chrome isn't allowed there); a service you added gets its request by email,
+// Instagram, not Spotify: its page opens in Chrome, you sign in, Check Again, and Claude asks for them all at once (3
+// at once, as usual: each a session with a tab group of its own), saying what needs you once at the end. Spotify's
+// sign-in had lapsed: once Chrome has it again, Claude carries on by itself. Reddit is yours (Claude in Chrome isn't allowed there); a service you added gets its request by email,
 // sent from Mail once you say so.
 
 import assert from 'node:assert/strict';
@@ -17,7 +17,9 @@ let sb: Sandbox;
 let run: Running;
 const file = (n: string) => path.join(sb.home, n);
 const opened = () => (fs.existsSync(path.join(sb.userData, 'opened.txt')) ? fs.readFileSync(path.join(sb.userData, 'opened.txt'), 'utf8') : '');
-const runs = () => (fs.existsSync(file('agent.log')) ? fs.readFileSync(file('agent.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+const lines = (n: string) => (fs.existsSync(file(n)) ? fs.readFileSync(file(n), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+const runs = () => lines('agent.log');
+const ended = () => lines('agent.log.ended'); // when each run ended, by session
 const chromeUs = (ms: number) => BigInt(ms + 11644473600000) * 1000n; // Chrome counts microseconds from 1601
 const COOKIES = () => file('Library/Application Support/Google/Chrome/Default/Cookies');
 
@@ -43,11 +45,20 @@ before(async () => {
   db.close();
   signIn('.instagram.com', 'sessionid');
   signIn('.instagram.com', 'csrftoken');
-  // Claude: Spotify's sign-in had lapsed (it stops for it), then Instagram is asked for, and Spotify once you're in.
+  // Claude, at all three at once: Spotify's sign-in had lapsed (it stops for it), Instagram and Lumen Notes are asked
+  // for, and Spotify once you're in. Each takes a few seconds, long enough to be seen at it together.
   fs.writeFileSync(file('plan.json'), JSON.stringify({
     request: [
-      { steps: ['Opening Spotify\'s privacy page', 'Spotify wants you to sign in first'], result: 'needs_you Sign in to Spotify in Chrome.', sleep: 0.4 },
-      { steps: ['Choosing all of your data', 'Requesting the export'], result: 'requested', sleep: 0.3 },
+      { for: 'Spotify', steps: ['Opening Spotify\'s privacy page', 'Spotify wants you to sign in first'], result: 'needs_you Sign in to Spotify in Chrome.', sleep: 1.2 },
+      { for: 'Spotify', steps: ['Choosing all of your data', 'Requesting the export'], result: 'requested', sleep: 0.3 },
+      { for: 'Spotify', steps: ['Choosing all of your data', 'Requesting the export'], result: 'requested', sleep: 0.3 },
+      { for: 'Instagram', steps: ['Opening Instagram\'s export page', 'Choosing all of your data', 'Requesting the export'], result: 'requested', sleep: 0.9 },
+      { for: 'Lumen Notes', steps: ['Opening Lumen Notes\' settings', 'Requesting the export'], result: 'requested', sleep: 1.2 },
+      // Asked for again, at once: Instagram meets Claude's usage limit while Lumen Notes is still at it.
+      { for: 'Instagram', steps: ['Opening Instagram\'s export page'], limit: 'You\'ve hit your usage limit · resets 7pm', sleep: 1.5 },
+      { for: 'Lumen Notes', steps: ['Opening Lumen Notes\' settings', 'Choosing everything', 'Choosing JSON', 'Requesting the export'], result: 'requested', sleep: 3 },
+      // And again, one at a time (AI Settings), then three at once: each slow enough to be seen waiting its turn.
+      ...['Instagram', 'Spotify', 'Lumen Notes'].map((n) => ({ for: n, steps: [`Opening ${n}`, 'Choosing everything', 'Requesting the export'], result: 'requested', sleep: 6 })),
     ],
     download: [{ steps: ['Downloading'], result: 'downloading', sleep: 0.2 }],
     // First, each new site opened once: Chrome asks to allow Claude on one, and it waits for you.
@@ -110,25 +121,43 @@ test('Ask for Everything: who does each, Chrome signed in to Spotify from its pa
   assert.deepEqual(run.errors, []);
 });
 
-test('Claude asks for both in turn, says what needs you once at the end, and carries on by itself once Chrome has the sign-in', async () => {
+test('Claude asks for all three at once, says what needs you once at the end, and carries on by itself once Chrome has the sign-in', async () => {
   const p = run.page;
   const sheet = p.locator('[data-testid=request-all]');
   assert.match(await sheet.locator('[data-testid=ra-fresh]').innerText(), /^First, Claude opens the 3 sites it hasn't worked on before, so Chrome can ask you to allow Claude on each/);
+  assert.match(await sheet.locator('[data-testid=ra-how]').innerText(), /^Claude asks for each one in your Chrome, all at once, each in a tab group of its own, while you do something else/);
   await sheet.locator('button[data-action=ra-ask]', { hasText: 'Ask Claude for 3' }).click();
   await sheet.waitFor({ state: 'detached' });
-  // Spotify first (its wait is longest): it stops for the sign-in; then Instagram is requested.
-  let s = await until(p, 'Instagram and Lumen Notes requested, Spotify waiting on you', (x) => !!find(x, 'instagram').requestedAt && !!find(x, 'svc_lumennotes').requestedAt
+  // Once each site has been opened: all three at once, each saying what it's doing, on the Overview as on each page.
+  const ids = ['spotify', 'instagram', 'svc_lumennotes'];
+  const atIt = (x: Awaited<ReturnType<typeof snap>>, id: string) => find(x, id).actions.some((a) => a.id === 'agent-stop') && !find(x, id).waiting;
+  let s = await until(p, 'three at once', (x) => ids.every((id) => atIt(x, id)), 30_000);
+  assert.ok(ids.every((id) => !/^Waiting/.test(find(s, id).status)), ids.map((id) => find(s, id).status).join(' / '));
+  const box = p.locator('[data-testid=overview] [data-testid=claude-work]');
+  await box.locator('[data-testid=claude-work-title]', { hasText: 'Claude is working on 3 services at once' }).waitFor({ timeout: 5_000 });
+  await shot(p, 'request-all-at-once');
+  // Spotify stops for the sign-in; Instagram and Lumen Notes are requested.
+  s = await until(p, 'Instagram and Lumen Notes requested, Spotify waiting on you', (x) => !!find(x, 'instagram').requestedAt && !!find(x, 'svc_lumennotes').requestedAt
     && find(x, 'spotify').status === 'Needs you: Sign in to Spotify in Chrome.', 60_000);
   assert.match(find(s, 'spotify').detail ?? '', /Once you're signed in, Claude carries on by itself/);
   s = await until(p, 'one notification at the end', (x) => x.log.some((l) => /^Claude asked for 2 of your exports\. 1 needs you: Spotify \(sign in to Spotify in Chrome\)\.$/.test(l.line)), 15_000);
   assert.match(opened(), /notify: Claude asked for 2 of your exports\n/);
   assert.doesNotMatch(opened(), /notify: Requested your Instagram data|notify: Claude needs you for Spotify/, 'not one each as it went');
   assert.deepEqual(runs().map((r) => [r.mode, r.resume]), [['visit', false], ['request', false], ['request', false], ['request', false]], 'the sites first, then the requests');
+  // Three Claude Code sessions at once, each in a folder (and a session) of its own: all started before any ended.
+  const asked = runs().filter((r) => r.mode === 'request');
+  assert.deepEqual(asked.map((r) => r.service).sort(), ['Instagram', 'Lumen Notes', 'Spotify']);
+  assert.equal(new Set(asked.map((r) => r.session)).size, 3);
+  assert.equal(new Set(asked.map((r) => r.cwd)).size, 3);
+  const endOf = (r: { session: string }) => ended().find((e) => e.session === r.session)!.t;
+  assert.ok(Math.max(...asked.map((r) => r.t)) < Math.min(...asked.map(endOf)), 'at once, not one after another');
+  assert.ok(runs()[0].t < Math.min(...asked.map((r) => r.t)) && ended()[0].t <= Math.min(...asked.map((r) => r.t)), 'the first look at each site first, alone');
+  assert.ok(asked.every((r) => /each in a tab group of its own\. Work only in the tab you open/.test(r.prompt)), 'each keeps to its own tabs');
   assert.match(runs()[0].prompt, /Open each of these pages in turn[\s\S]*don't click, type or sign in[\s\S]*- Spotify: https:\/\/www\.spotify\.com\/account\/privacy\//);
   assert.match(opened(), /notify: Claude is waiting for you\n/, 'said at once, while you are there');
   const st = JSON.parse(fs.readFileSync(path.join(sb.userData, 'state.json'), 'utf8'));
   assert.ok(['spotify', 'instagram', 'svc_lumennotes'].every((id) => st.sources[id].siteAllowed), 'each allowed now: not asked about again');
-  assert.match(runs()[2].prompt, /Request a full export of their Lumen Notes data[\s\S]*Open https:\/\/lumennotes\.example\/settings\/export[\s\S]*Settings → Export → Request export\./);
+  assert.match(asked.find((r) => r.service === 'Lumen Notes').prompt, /Request a full export of their Lumen Notes data[\s\S]*Open https:\/\/lumennotes\.example\/settings\/export[\s\S]*Settings → Export → Request export\./);
   // You sign in to Spotify in Chrome (its cookie is renewed): with Do It for Me off, Claude doesn't carry on; on again, it does,
   // in the same session.
   const settings = (patch: Record<string, unknown>) => p.evaluate((x) => (window as unknown as { api: { settings(x: unknown): Promise<unknown> } }).api.settings(x), patch);
@@ -140,7 +169,7 @@ test('Claude asks for both in turn, says what needs you once at the end, and car
   s = await until(p, 'Spotify requested', (x) => !!find(x, 'spotify').requestedAt, 30_000);
   const last = runs().at(-1);
   assert.equal(last.resume, true, 'carried on, not started again');
-  assert.equal(last.session, runs()[1].session);
+  assert.equal(last.session, asked.find((r) => r.service === 'Spotify').session);
   assert.ok(s.log.some((l) => l.line === 'Signed in to Spotify in Chrome: Claude carries on.'));
   // Reddit: Claude in Chrome isn't allowed there.
   await selectSource(p, 'reddit');
@@ -149,5 +178,66 @@ test('Claude asks for both in turn, says what needs you once at the end, and car
   const r = await p.evaluate(() => (window as unknown as { api: { action(a: string, b: string): Promise<{ ok: boolean; error?: string }> } }).api.action('reddit', 'agent-request'));
   assert.equal(r.ok, false);
   await act(p, '*', 'check-sign-ins');
+  assert.deepEqual(run.errors, []);
+});
+
+test('Claude\'s usage limit in one stops the rest, the ones running alongside too; one notification says so', async () => {
+  const p = run.page;
+  const before = runs().length;
+  const notified = (opened().match(/notify: /g) ?? []).length;
+  const r = await act(p, '*', 'request-all', { ids: ['instagram', 'spotify', 'svc_lumennotes'] });
+  assert.equal(r.ok, true, r.error ?? '');
+  // Each site is allowed now: no first look, all three at once straight away.
+  await until(p, 'three at once', (x) => ['instagram', 'spotify', 'svc_lumennotes'].filter((id) => find(x, id).actions.some((a) => a.id === 'agent-stop')).length === 3, 10_000);
+  const s = await until(p, 'Instagram meets the limit, Lumen Notes is stopped', (x) => /usage limit was reached/.test(find(x, 'instagram').detail ?? find(x, 'instagram').status)
+    && !find(x, 'svc_lumennotes').actions.some((a) => a.id === 'agent-stop') && !find(x, 'spotify').actions.some((a) => a.id === 'agent-stop'), 30_000);
+  const again = runs().slice(before);
+  assert.deepEqual(again.map((x) => x.service).sort(), ['Instagram', 'Lumen Notes', 'Spotify'], 'no first look this time');
+  const notes = again.find((x) => x.service === 'Lumen Notes');
+  assert.equal(ended().some((e) => e.session === notes.session), false, 'Lumen Notes was stopped partway, not left to finish');
+  assert.notEqual(find(s, 'svc_lumennotes').status, 'Interrupted when Homecoming quit');
+  await until(p, 'one notification', () => (opened().match(/notify: /g) ?? []).length > notified, 10_000);
+  const said = opened().split('\n').filter((l) => l.startsWith('notify: ')).slice(notified);
+  assert.equal(said.length, 1, said.join(' / '));
+  assert.match(said[0], /^notify: Claude asked for 1 of your exports$/);
+  assert.ok(s.log.some((l) => /^Claude asked for 1 of your exports\. 1 needs you: Instagram \(claude's usage limit was reached \(resets 7pm\)\. Try again then\)\.$/.test(l.line)), s.log.map((l) => l.line).slice(-8).join('\n'));
+  assert.deepEqual(run.errors, []);
+});
+
+test('Sites at once, in AI Settings: one at a time, the rest waiting their turn; set to 3 mid-run, the waiting ones start', async () => {
+  const p = run.page;
+  await p.locator('[data-testid=nav-ai]').click();
+  const row = p.locator('[data-testid=settings-at-once]');
+  assert.match(await row.innerText(), /Sites at once[\s\S]*How many sites Claude works on at the same time, each in a tab group of its own in (Chrome|your browser)\. More is faster, but uses more of your Claude usage at a time\./);
+  const pick = row.locator('[data-testid=setup-at-once-pick]');
+  assert.equal(await pick.inputValue(), '3', 'as usual');
+  assert.deepEqual(await pick.locator('option').allInnerTexts(), ['One at a time', '2 at once', '3 at once', '4 at once', '5 at once']);
+  await row.scrollIntoViewIfNeeded();
+  await shot(p, 'ai-sites-at-once');
+  await pick.selectOption('1');
+  await until(p, 'one at a time', (x) => x.settings.agentsAtOnce === 1);
+  await until(p, 'kept', () => JSON.parse(fs.readFileSync(path.join(sb.userData, 'state.json'), 'utf8')).settings.agentsAtOnce === 1, 5_000);
+  const ids = ['instagram', 'spotify', 'svc_lumennotes'];
+  // Claude at it (its Stop, and a busy bar), or waiting its turn (its Stop, and the clock).
+  const claude = (x: Awaited<ReturnType<typeof snap>>, turn: boolean) => ids.filter((id) => find(x, id).actions.some((a) => a.id === 'agent-stop') && !!find(x, id).waiting === turn);
+  const atIt = (x: Awaited<ReturnType<typeof snap>>) => claude(x, false);
+  const waiting = (x: Awaited<ReturnType<typeof snap>>) => claude(x, true);
+  assert.equal((await act(p, '*', 'request-all', { ids })).ok, true);
+  let s = await until(p, 'one at it, two waiting', (x) => atIt(x).length === 1 && waiting(x).length === 2, 10_000);
+  assert.deepEqual(atIt(s), ['instagram']);
+  assert.equal(find(s, 'spotify').status, 'Waiting: Claude is doing Instagram first');
+  await p.click('[data-testid=nav-overview]');
+  const box = p.locator('[data-testid=overview] [data-testid=claude-work]');
+  assert.match(await box.innerText(), /Claude is working on 3 services[\s\S]*2 more wait their turn: Claude works on one at a time, as set in AI Settings\./);
+  await p.waitForTimeout(1500);
+  assert.equal(atIt(await snap(p)).length, 1, 'still one at a time');
+  // Three at once again, while the first is still at it: the two waiting start now.
+  await p.locator('[data-testid=nav-ai]').click();
+  await pick.selectOption('3');
+  s = await until(p, 'all three at once', (x) => atIt(x).length === 3, 10_000);
+  await p.click('[data-testid=nav-overview]');
+  await box.locator('[data-testid=claude-work-title]', { hasText: 'Claude is working on 3 services at once' }).waitFor({ timeout: 5_000 });
+  await box.locator('button[data-action=agent-stop-all]').click();
+  await until(p, 'all stopped', (x) => atIt(x).length === 0 && waiting(x).length === 0, 15_000);
   assert.deepEqual(run.errors, []);
 });

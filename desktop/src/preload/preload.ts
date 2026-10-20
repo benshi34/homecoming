@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('api', {
   exploreStatus: () => ipcRenderer.invoke('explore-status'),
   exploreFirst: (key: string) => ipcRenderer.invoke('explore-first', key),
   libraryExport: (op: string, parts?: string[]) => ipcRenderer.invoke('library-export', { op, parts }),
+  whatsNew: (op: 'get' | 'seen') => ipcRenderer.invoke('whats-new', op),
+  update: (op: 'check' | 'start' | 'clear') => ipcRenderer.invoke('update', op),
   // How far an Explore artifact has got while it's built (main explore.ts).
   onExploreProgress: (cb: (p: unknown) => void) => {
     const h = (_e: unknown, p: unknown) => cb(p);
@@ -43,9 +45,10 @@ contextBridge.exposeInMainWorld('api', {
     });
     return () => hs.forEach(([ch, h]) => ipcRenderer.removeListener(ch, h));
   },
-  // Menu commands: Settings…, Setup Assistant…, Overview, AI Settings (from Settings), Export Your Library….
+  // Menu commands: Settings…, Setup Assistant…, Overview, AI Settings (from Settings), Export Your Library…, What's New,
+  // and a newer Homecoming (Check for Updates…, its notification).
   onMenu: (cb: (cmd: string) => void) => {
-    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub', 'show-ai', 'show-export', 'show-setup', 'open-source'].map((ch) => {
+    const hs = ['show-settings', 'show-assistant', 'show-overview', 'add-service', 'show-hub', 'show-ai', 'show-export', 'show-setup', 'show-whats-new', 'show-update', 'open-source'].map((ch) => {
       // open-source carries the source to open: a notification about it was clicked.
       const h = (_e: unknown, id?: string) => cb(ch === 'open-source' ? `open-source:${id}` : ch);
       ipcRenderer.on(ch, h);

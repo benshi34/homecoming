@@ -1,7 +1,7 @@
 {
   "name": "homecoming-desktop",
   "productName": "Homecoming",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Brings your data home: gathers what every service keeps about you into one library on your Mac, to explore and ask questions of",
@@ -12,6 +12,7 @@
     "fresh": "node build.mjs && node scripts/fresh.mjs",
     "package": "node scripts/package_mac.mjs",
     "install-app": "node scripts/install_app.mjs",
+    "update": "node scripts/update_app.mjs",
     "icon": "electron scripts/app_icon.cjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:py && npm run test:e2e",

@@ -1,8 +1,10 @@
 // What Claude is doing for you, wherever you are: its first look at each site (and what it's waiting for you to do
-// there), each service it's asking for or downloading, how far Ask for Everything has got, and Stop. In full on the
-// Overview; in the Setup Assistant, a strip that opens to the same.
+// there), each service it's asking for or downloading (a few at once, as AI Settings says, and the rest waiting their
+// turn), how far Ask for Everything has got, and Stop. In full on the Overview; in the Setup Assistant, a strip that
+// opens to the same.
 
 import { useState } from 'react';
+import { agentsAtOnce } from '../shared/at_once.ts';
 import type { Snapshot, SourceView } from '../shared/types.ts';
 import { api } from './api.ts';
 import { SourceIcon } from './icons.tsx';
@@ -24,9 +26,13 @@ export function ClaudeWork({ snap, onJump, compact }: { snap: Snapshot; onJump?:
   if (!visit && !rows.length) return null;
   const B = snap.setup?.agentBrowser?.name ?? 'Chrome';
   const waiting = visit?.waiting ?? rows.find(waitingOnYou)?.status.replace(/^Waiting for you: /, '');
+  // At them now, and waiting their turn (v.waiting: the clock).
+  const now = rows.filter((v) => !v.waiting).length;
+  const later = rows.length - now;
   const title = waiting ? `Claude needs you in ${B}` : visit ? 'Claude is opening each site first'
-    : rows.length === 1 ? `Claude is working on ${rows[0].name}` : `Claude is working on ${rows.length} services`;
-  const sub = waiting ?? (visit ? `So ${B} can ask you to allow it on each (${visit.sites.join(', ')}). Then it asks for your exports by itself.` : undefined);
+    : rows.length === 1 ? `Claude is working on ${rows[0].name}` : now > 1 ? `Claude is working on ${now} services at once` : `Claude is working on ${rows.length} services`;
+  const sub = waiting ?? (visit ? `So ${B} can ask you to allow it on each (${visit.sites.join(', ')}). Then it asks for your exports by itself.`
+    : now && later ? `${later} more ${later === 1 ? 'waits its' : 'wait their'} turn: Claude works on ${agentsAtOnce(snap.settings) === 1 ? 'one at a time' : `up to ${agentsAtOnce(snap.settings)} at once`}, as set in AI Settings.` : undefined);
   const stopAll = () => void api.action('*', 'agent-stop-all');
   const openBrowser = () => void api.action('*', 'open-chrome');
   const head = (

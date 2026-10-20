@@ -3,7 +3,7 @@
     python3 desktop/scripts/release_copy.py OUT [--corpus PATH] [--allow TERM ...]
 
 Copies the committed versions (git archive HEAD, so nothing uncommitted and nothing ignored) of README.md, WHAT_TO_TRY.md,
-.gitignore, desktop/ and connectors/ into OUT, which must not exist yet. The research notes, the evals and the
+CHANGELOG.md, .gitignore, desktop/ and connectors/ into OUT, which must not exist yet. The research notes, the evals and the
 experiments stay behind, and so does the demo (npm run demo).
 
 Then it scans every text file in OUT for the names, emails, usernames and phone numbers in the corpus's
@@ -12,7 +12,7 @@ Third-party data (vendored iLEAPP, the services directory, icons, coastlines) is
 terms that belong there, such as the GitHub username in the clone URL. The corpus defaults to <repo>/corpus.
 
 To update the release repo: clone it, replace everything but its .git with a new copy
-(rsync -a --delete --exclude .git OUT/ CLONE/), then commit and push.
+(rsync -a --delete --exclude .git OUT/ CLONE/), then commit and push. publish_release.py does all of that but the push.
 """
 
 import argparse
@@ -27,7 +27,7 @@ import tarfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PATHS = ["README.md", "WHAT_TO_TRY.md", ".gitignore", "desktop", "connectors"]
+PATHS = ["README.md", "WHAT_TO_TRY.md", "CHANGELOG.md", ".gitignore", "desktop", "connectors"]
 DEMO_FILES = ["desktop/scripts/demo.mjs", "desktop/scripts/demo_library.py", "desktop/test/e2e/demo.test.ts", "desktop/test/unit/demo.test.ts"]
 NOT_SCANNED = re.compile(r"(^|/)vendor/|services\.json$|service_icons\.json$|world_land\.json$|categories\.json$|link_check\.json$|THIRD_PARTY\.md$")
 

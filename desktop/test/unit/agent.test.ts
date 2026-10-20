@@ -1,4 +1,5 @@
-// Do It for Me's instructions to Claude and how its answer is read (main/export_agent.ts).
+// Do It for Me's instructions to Claude and how its answer is read (main/export_agent.ts), and its runs, a few at once
+// (main/agent_pool.ts).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -7,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { BY_ID } from '../../src/shared/catalog.ts';
 import { agentPrompt, CONTINUE, outcomeOf, runAgent, visitPrompt } from '../../src/main/export_agent.ts';
+import { type AgentJob, AgentPool } from '../../src/main/agent_pool.ts';
+import { agentsAtOnce } from '../../src/shared/at_once.ts';
 
 const FAKE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fakes/fake_claude_browser.py');
 
@@ -105,7 +108,7 @@ test('one tab: Claude works in the tab it opens, reloads it to look again, and c
   assert.match(look, /look at that tab again every 15 seconds or so \(wait, then read it again\)/);
   assert.match(agentPrompt(BY_ID.instagram, 'request'), /- Use one tab/, 'asking for it too');
   assert.match(agentPrompt(BY_ID.chatgpt, 'download', undefined, undefined, {}), /every account signed in to Chrome, one after another in the same tab .*, and in any other webmail/, 'no addresses known: any');
-  assert.match(CONTINUE, /in the same tab \(tabs_context_mcp lists it\), or in one new tab if it's gone/);
+  assert.match(CONTINUE, /in the same tab \(tabs_context_mcp lists your own\), or in one new tab if it's gone: never in another session's tab/);
   assert.match(visitPrompt([{ name: 'Instagram', url: 'https://instagram.com/' }]), /in one tab of your own \(go from one to the next in it\)/);
 });
 
@@ -206,4 +209,134 @@ test('a visit before Ask for Everything: only opening each page, waiting for All
   assert.match(p, /WAITING: Allow Claude on <site> in Brave\./);
   const out = outcomeOf('OPENED: https://www.spotify.com/account/privacy/\nOPENED: https://x.com/settings\nRESULT: requested');
   assert.deepEqual(out?.opened, ['https://www.spotify.com/account/privacy/', 'https://x.com/settings']);
+});
+
+test('several at once: each run keeps to its own tab group, and never touches another session\'s tabs', () => {
+  const own = /Other Claude sessions may be working in this browser at the same time, each in a tab group of its own\. Work only in the tab you open \(tabs_context_mcp lists your own\): never switch to, read, use or close any other tab, even one on the same site\./;
+  assert.match(agentPrompt(BY_ID.instagram, 'request'), own);
+  assert.match(agentPrompt(BY_ID.discord, 'download', undefined, '2026-10-14T20:00:00Z'), own);
+  assert.match(visitPrompt([{ name: 'Spotify', url: 'https://www.spotify.com/account/privacy/' }]), own);
+  for (const p of [agentPrompt(BY_ID.instagram, 'request'), agentPrompt(BY_ID.google_takeout, 'download', 'https://takeout.google.com/settings/takeout/downloads'), visitPrompt([{ name: 'X', url: 'https://x.com/' }])]) {
+    assert.doesNotMatch(p, /current tab|active tab|the tab that's open|tab you're on/i, 'its own new tab, never whatever is in front');
+    assert.match(p, /in a new tab|one tab of your own/);
+  }
+});
+
+// The queue (main.ts pumpAgents), with stand-ins for Claude's runs: each says whether it was told to stop.
+type Fake = { id: string; stopped: boolean; stop(): void };
+function pool(cap: { n: number }, expires: Record<string, number> = {}) {
+  const started: string[] = [];
+  const runs = new Map<string, Fake>();
+  const p = new AgentPool<Fake>(() => cap.n, (id) => expires[id] ?? Infinity);
+  const start = (j: AgentJob) => {
+    started.push(`${j.mode} ${j.sourceId}`);
+    const r: Fake = { id: j.sourceId, stopped: false, stop() { this.stopped = true; } };
+    runs.set(j.sourceId, r);
+    return r;
+  };
+  const add = (sourceId: string, mode: AgentJob['mode'] = 'request') => {
+    if (!p.busy(sourceId)) p.add({ sourceId, mode, resume: false });
+    p.fill(start);
+  };
+  // A run ends (as runAgent's done does): room for the next.
+  const end = (id: string) => {
+    p.ended(id);
+    p.fill(start);
+  };
+  return { p, started, runs, add, end, fill: () => p.fill(start), at: () => [...p.running.keys()], waiting: () => p.queue.map((q) => q.sourceId) };
+}
+
+test('a few at once, 3 unless set: no more than that, in the order asked, and never two on one service', () => {
+  assert.equal(agentsAtOnce({}), 3, 'as usual');
+  assert.equal(agentsAtOnce({ agentsAtOnce: 8 }), 5);
+  const q = pool({ n: agentsAtOnce({}) });
+  for (const id of ['instagram', 'spotify', 'discord', 'linkedin', 'x']) q.add(id);
+  assert.deepEqual(q.at(), ['instagram', 'spotify', 'discord'], 'three at once');
+  assert.deepEqual(q.waiting(), ['linkedin', 'x'], 'the rest wait their turn');
+  q.add('spotify');
+  q.add('linkedin');
+  assert.equal(q.started.length, 3, 'one already at it or waiting isn\'t asked for twice');
+  assert.deepEqual(q.p.ids(), ['linkedin', 'x', 'instagram', 'spotify', 'discord']);
+  q.end('spotify');
+  assert.deepEqual(q.at(), ['instagram', 'discord', 'linkedin'], 'one ends, the next in line starts');
+  q.end('instagram');
+  q.end('discord');
+  q.end('linkedin');
+  assert.deepEqual(q.at(), ['x']);
+  assert.equal(q.p.room(), true, 'room, and nothing waiting: Claude\'s own looks may start');
+  assert.deepEqual(q.started, ['request instagram', 'request spotify', 'request discord', 'request linkedin', 'request x']);
+  // A service it's at already, asked for again behind it (its download, once its request is done): not alongside it.
+  const one = pool({ n: 3 });
+  one.add('instagram');
+  one.p.add({ sourceId: 'instagram', mode: 'download', resume: false });
+  one.add('spotify');
+  assert.deepEqual(one.at(), ['instagram', 'spotify']);
+  assert.deepEqual(one.waiting(), ['instagram'], 'waits for the one on its own service');
+  one.end('instagram');
+  assert.deepEqual(one.at(), ['spotify', 'instagram']);
+  assert.deepEqual(one.started, ['request instagram', 'request spotify', 'download instagram']);
+});
+
+test('downloads go first, the link that runs out soonest first; set to one at a time, one after another', () => {
+  const q = pool({ n: 1 }, { discord: 3, google_takeout: 1, chatgpt: 2 });
+  q.add('instagram');
+  q.add('spotify');
+  q.add('discord', 'download');
+  q.add('x');
+  q.add('google_takeout', 'download');
+  q.add('chatgpt', 'download');
+  assert.deepEqual(q.at(), ['instagram'], 'one at a time');
+  assert.deepEqual(q.waiting(), ['google_takeout', 'chatgpt', 'discord', 'spotify', 'x'], 'downloads first, soonest to expire first');
+  for (const id of ['instagram', 'google_takeout', 'chatgpt', 'discord', 'spotify']) q.end(id);
+  assert.deepEqual(q.started, ['request instagram', 'download google_takeout', 'download chatgpt', 'download discord', 'request spotify', 'request x']);
+});
+
+test('stopping the rest (the extension gone, or Claude\'s usage limit): the ones waiting are taken out, the ones running alongside told to stop', () => {
+  const q = pool({ n: 3 });
+  const batch = ['instagram', 'spotify', 'discord', 'linkedin', 'x'];
+  for (const id of batch) q.add(id);
+  // Instagram ends on the limit: the rest of Ask for Everything (not a look Claude is making by itself) is stopped.
+  q.p.ended('instagram');
+  q.p.add({ sourceId: 'chatgpt', mode: 'download', resume: false, auto: 'check' });
+  const how = Object.fromEntries(q.p.ids().filter((id) => batch.includes(id)).map((id) => [id, q.p.stop(id)]));
+  assert.deepEqual(how, { linkedin: 'waiting', x: 'waiting', spotify: 'running', discord: 'running' });
+  assert.equal(q.runs.get('spotify')!.stopped, true, 'running alongside: told to stop');
+  assert.equal(q.runs.get('discord')!.stopped, true);
+  assert.equal(q.runs.get('instagram')!.stopped, false, 'the one that ended: nothing to stop');
+  assert.deepEqual(q.waiting(), ['chatgpt'], 'what wasn\'t one of them stays');
+  assert.deepEqual(q.at(), ['spotify', 'discord'], 'still running until each has stopped');
+  assert.equal(q.p.busy('spotify'), true, 'and still busy until then: not asked for again meanwhile');
+  q.end('spotify');
+  q.end('discord');
+  assert.deepEqual(q.started, ['request instagram', 'request spotify', 'request discord', 'download chatgpt'], 'none of the stopped ones started');
+  assert.equal(q.p.stop('linkedin'), null, 'stopped already: nothing to stop');
+  // Stop All: everything, at it or waiting.
+  q.add('reddit');
+  q.add('notion');
+  for (const id of q.p.ids()) q.p.stop(id);
+  assert.deepEqual(q.waiting(), []);
+  assert.ok(['chatgpt', 'reddit', 'notion'].every((id) => q.runs.get(id)!.stopped));
+});
+
+test('the number changed mid-run: more starts the waiting ones now; fewer lets the ones running finish, and the next waits for room', () => {
+  const cap = { n: 3 };
+  const q = pool(cap);
+  for (const id of ['instagram', 'spotify', 'discord', 'linkedin', 'x', 'chatgpt']) q.add(id);
+  assert.deepEqual(q.at(), ['instagram', 'spotify', 'discord']);
+  cap.n = 5; // AI Settings: 5 at once (main.ts pumps again when it changes)
+  q.fill();
+  assert.deepEqual(q.at(), ['instagram', 'spotify', 'discord', 'linkedin', 'x']);
+  assert.deepEqual(q.waiting(), ['chatgpt']);
+  cap.n = 2; // then 2 at once
+  q.fill();
+  assert.equal(q.at().length, 5, 'none of the running ones is stopped');
+  assert.ok([...q.runs.values()].every((r) => !r.stopped));
+  q.end('instagram');
+  q.end('spotify');
+  q.end('discord');
+  assert.deepEqual(q.at(), ['linkedin', 'x'], 'still two running: the next waits');
+  assert.deepEqual(q.waiting(), ['chatgpt']);
+  q.end('linkedin');
+  assert.deepEqual(q.at(), ['x', 'chatgpt'], 'room again: it starts');
+  assert.equal(q.p.room(), false, 'two of two');
 });

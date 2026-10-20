@@ -6,9 +6,25 @@ Homecoming is a Mac app that brings it home. It gathers your data into one libra
 
 1. **Request your data.** It finds the accounts you use, opens each one's download page with the steps, and tells you when your data is ready. What's on your Mac and your iPhone is read right away.
 2. **Bring it home.** Each download is recognized by what's inside, filed, and read into one organized library.
-3. **Explore it.** Browse what Homecoming makes from your data (your year, your people, your places, the rhythm of your days), or ask questions in plain words and get answers that point to the messages and photos they came from.
+3. **Explore it.** Browse what Homecoming makes from your data (your year, your people, your places, the rhythm of your days), or ask questions in plain words and get answers that point to the messages and photos they came from, and show them in place: the conversation, the photos, a map, the day, a chart over the years, the person, the email, the songs, the trip, the calendar.
 
-**This is version 0, an early release:** it works, with rough edges. Thank you for trying it. [What to try first](WHAT_TO_TRY.md), and [how to tell us what went wrong](#reporting-a-problem).
+**This is version 0.3, an early release:** it works, with rough edges. Thank you for trying it. [What to try first](WHAT_TO_TRY.md), [what's new](CHANGELOG.md), and [how to tell us what went wrong](#reporting-a-problem).
+
+## Install
+
+On a Mac with Apple silicon, with [Node.js](https://nodejs.org/) installed (the LTS installer), paste this into Terminal. It builds Homecoming and puts it in Applications, in about five minutes:
+
+```bash
+git clone https://github.com/benshi34/homecoming.git ~/Developer/homecoming
+cd ~/Developer/homecoming/desktop && npm ci && npm run install-app
+```
+
+Then:
+
+1. **Open Homecoming** from Applications.
+2. **Turn on Full Disk Access** when it asks (System Settings → Privacy & Security → Full Disk Access → Homecoming), then quit and reopen it.
+
+The first time you use `git`, macOS offers to install its command line tools: say yes, then paste the commands again. To ask questions about your data, you'll also want [Claude Code](https://claude.com/claude-code) or Codex. More detail, including how to update: [Install and run](#install-and-run).
 
 ## What it works with
 
@@ -27,14 +43,15 @@ What the app finds on your Mac (your browsers, Mail's accounts, your region) is 
 
 Everything Homecoming collects stays on your Mac, in your library (readable by your account only): the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what's read from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
 
-Only four things ever leave your Mac, and each is something you start:
+Only these things ever leave your Mac. The first four are something you start; the last is Homecoming looking for a newer version of itself, which you can turn off:
 
 - **Asking a question.** Ask sends the model you pick (Claude through Claude Code, or a model through Codex) what it looks up to answer you: the text with secrets such as passwords and keys blanked out, and any photo it looks at as it is. Before a company's model is used for the first time, the app shows what that company keeps and how to turn off training on your data, and waits for you. You can also pick a model that runs on your Mac (through Codex, with Ollama or LM Studio).
 - **An export the app doesn't know yet.** It can ask the AI you picked in AI Settings how that export is laid out. The request holds file and field names, plus one example value per field only if you tick that box, and you see it and approve it before it's sent. Without one on this Mac, you copy the request into any AI chat yourself.
 - **Requesting your data.** Download pages open in your own browser, signed in as you, like any other site you visit.
 - **Do It for Me**, if you turn it on: Claude Code works in your browser through the Claude in Chrome extension, on each service's export page and, if you let it, in the inboxes turned on in AI Settings (only those), for the "your data is ready" email. What's on those pages goes to Anthropic, as when you use Claude in Chrome yourself.
+- **Looking for updates**, once a day: Homecoming fetches one public file from [its GitHub repository](https://github.com/benshi34/homecoming), its list of versions (`CHANGELOG.md`), and compares the newest with yours. Nothing about you or your library is sent: GitHub sees only that this Mac asked (its internet address, and when). Nothing is installed until you click Update. Turn it off in General → Updates; Check for Updates… in the Homecoming menu still looks once, when you ask.
 
-There's no analytics, no account, no update check and no telemetry.
+There's no analytics, no account and no telemetry.
 
 ## What it changes on your Mac
 
@@ -51,8 +68,8 @@ It reads, and changes only what you tell it to:
 
 - **It takes a few days, not an afternoon.** What's on your Mac is read first, while you request the rest. Some services take hours to prepare your download and others take weeks (Spotify can take 30 days), and some links expire within days. The app tracks each one, reminds you, and picks the file up from Downloads.
 - **AI, in one place** (optional, off until you turn it on): the Setup Assistant asks once, and AI Settings (under Settings in the sidebar) lets you pick the agent (Claude Code or Codex, with your own sign-in, an API key, or a model on this Mac), shows whether it's signed in, and turns Do It for Me on or off. Everything that uses AI uses the one picked: Ask, making sense of a download, and Do It for Me. Ask and making sense of a download send nothing until you ask. Everything that uses AI carries a sparkle mark.
-- **Do It for Me** (optional): Claude Code requests each export in your browser (Chrome, or the one you pick in AI Settings), where you're signed in, and when the service's "your data is ready" email arrives, it downloads it (the one whose link expires soonest first). It stops only when you need to sign in or enter a code, and carries on when you click Continue, or by itself once you've signed in.
-- **Ask for Everything**: one sheet, from the Overview, with every export still to ask for. The app checks which services the browser Claude works in is signed in to (from its session cookies' names and expiry dates, never their values or your passwords), so Claude asks for those one after another while you do something else. A sign-in or a site to allow it on is said right away; the rest, once, at the end. The rest you sign in to first (your saved password, a passkey or your password manager fills it in), and Claude does those too. Services you added with a known export page are done by Claude like the built-in ones. Reddit and Patreon are yours to do (Claude in Chrome isn't allowed there), and a service you added with no page but an address gets its request by email, sent from Mail once you say so. The first time, Claude opens each service's site once before it starts, so Claude in Chrome can ask you to allow it on each in the first minute or two, while you're there; after that it runs by itself. The Setup Assistant offers it too, on its exports list (Ask Claude for All), and each export page leads with Do It for Me. While Claude works, the top of the Overview (and a strip in the Setup Assistant) shows each service it's at, how many are done, and anything it's waiting for you to do in your browser, with Stop for one or Stop All.
+- **Do It for Me** (optional): Claude Code requests each export in your browser (Chrome, or the one you pick in AI Settings), where you're signed in, and when the service's "your data is ready" email arrives, it downloads it (the one whose link expires soonest first). It stops only when you need to sign in or enter a code, and carries on when you click Continue, or by itself once you've signed in. It works on 3 sites at once, each in a tab group of its own; AI Settings changes that, from one at a time to 5 at once (more is faster, but uses more of your Claude usage at a time).
+- **Ask for Everything**: one sheet, from the Overview, with every export still to ask for. The app checks which services the browser Claude works in is signed in to (from its session cookies' names and expiry dates, never their values or your passwords), so Claude asks for those, 3 at once (or as many as AI Settings says), while you do something else. A sign-in or a site to allow it on is said right away; the rest, once, at the end. The rest you sign in to first (your saved password, a passkey or your password manager fills it in), and Claude does those too. Services you added with a known export page are done by Claude like the built-in ones. Reddit and Patreon are yours to do (Claude in Chrome isn't allowed there), and a service you added with no page but an address gets its request by email, sent from Mail once you say so. The first time, Claude opens each service's site once before it starts, so Claude in Chrome can ask you to allow it on each in the first minute or two, while you're there; after that it runs by itself. The Setup Assistant offers it too, on its exports list (Ask Claude for All), and each export page leads with Do It for Me. While Claude works, the top of the Overview (and a strip in the Setup Assistant) shows each service it's at, how many are done, and anything it's waiting for you to do in your browser, with Stop for one or Stop All.
 - **Your iPhone** is read from an encrypted backup on this Mac, made in Finder. The app walks you through it. You'll need the backup's password, and making the backup can take a while.
 - **Free space:** the app warns you below 20 GB. A big Google or Photos download can be tens of gigabytes.
 
@@ -65,6 +82,7 @@ Every setting has one home, under Settings in the sidebar. ⌘, opens General, a
   - Watching for exports coming home: in Downloads, and the "your data is ready" email in Mail or notification on this Mac.
   - Notifications: whether macOS shows them, with a test.
   - Keeping working when the window is closed, and opening at login.
+  - Updates: looking for a newer Homecoming once a day, or now.
   - Your library: where it's kept, and Export.
 - **Your Setup:** who you are, and what's on your Mac that Homecoming uses. It starts as what was found, and anything you don't change stays that way.
   - **You:** your names, email addresses, phone numbers and usernames, which decide what's marked as yours. You change them right there. When an export turns up an address that might be yours, it's there to look at, with a count on Your Setup. Also the region your phone numbers are in: a number saved without its country code ("07700 900123") is read as one from there. It starts as your Mac's region (System Settings → General → Language & Region).
@@ -74,7 +92,7 @@ Every setting has one home, under Settings in the sidebar. ⌘, opens General, a
 - **AI Settings:** everything AI does.
   - Whether AI is used at all.
   - The agent that does the work, with its sign-in, key or model.
-  - Do It for Me: on or off, the browser Claude works in, downloading exports when they're ready, looking for them every few hours, and the inboxes Claude may look in for the email saying one is ready.
+  - Do It for Me: on or off, the browser Claude works in, how many sites it works on at once (3 unless you change it), downloading exports when they're ready, looking for them every few hours, and the inboxes Claude may look in for the email saying one is ready.
 
 **Setup Checks**, under This Mac, are the things to fix or turn on: Full Disk Access, Python, keeping your history, free space.
 
@@ -107,11 +125,22 @@ Then:
 1. **Open Homecoming** from Applications.
 2. **Turn on Full Disk Access** when the app asks: System Settings → Privacy & Security → Full Disk Access → Homecoming. Then quit and reopen it.
 
-**Updating:** run the same commands, starting with `git pull`. Your library and progress stay where they are. Each step runs only if the one before it worked, so a failed download or build leaves the Homecoming you have in place.
+**Updating:** when there's a new version, Homecoming says so, once, in a notification, and at the bottom of its sidebar, with what's new in it. Click **Update**: it gets the new version from GitHub, builds it from the folder you cloned and puts it in Applications in place of the one you have, in about five minutes. Then Homecoming quits and opens again. Nothing is installed until you click it. Homecoming → Check for Updates… looks now.
+
+If you'd rather use Terminal, this does the same:
+
+```bash
+cd ~/Developer/homecoming/desktop
+npm run update
+```
+
+Either way, your library and progress stay where they are. Each step runs only if the one before it worked, so a failed download or build leaves the Homecoming you have in place. It never throws away a change of yours: if you've changed a file in the folder, it stops and says what to do. Which version you have is in Homecoming → About Homecoming, and at the bottom of General.
+
+Homecoming 0.2.0 can't look for updates, and has no `npm run update`. To update from it, once:
 
 ```bash
 cd ~/Developer/homecoming
-git pull --ff-only && cd desktop && npm ci && npm run install-app
+git pull --ff-only && cd desktop && npm run update
 ```
 
 After an update, macOS can turn Full Disk Access off for Homecoming without saying so (the new build is a different app to it). If Homecoming says so, open System Settings → Privacy & Security → Full Disk Access, turn Homecoming off and on again, then quit and reopen it.
@@ -137,7 +166,7 @@ For developers working on Homecoming: it runs from Terminal, without building th
 Do one of these:
 
 - **Download it.** On the repository page, click the green **Code** button, then **Download ZIP**. Unzip it, rename the folder (`homecoming-main`) to `homecoming`, and move it to a `Developer` folder in your home folder (`~/Developer/homecoming`). To update, download it again the same way.
-- **Clone it with git**, which makes updating a one-line command:
+- **Clone it with git**, which makes updating one command (`npm run update`):
 
   ```bash
   git clone https://github.com/benshi34/homecoming.git ~/Developer/homecoming
@@ -169,14 +198,16 @@ macOS keeps Messages, Mail, Photos, Notes and call history behind Full Disk Acce
 
 #### Updating
 
-If you cloned it:
+Run from Terminal, Homecoming still says when there's a new version, and what's new in it, but you bring it in yourself. If you cloned it, quit Homecoming, then:
 
 ```bash
-cd ~/Developer/homecoming
-git pull --ff-only && cd desktop && npm ci && npm start
+cd ~/Developer/homecoming/desktop
+npm run update -- --no-install && npm start
 ```
 
-If you downloaded the ZIP, download it again and put the new folder in place of the old one. Keep the old folder's `corpus/`: it's everything you've collected. Move it into the new folder first.
+`--no-install` updates the code and its packages without building the app.
+
+If you downloaded the ZIP, it can't update itself: download it again and put the new folder in place of the old one. Keep the old folder's `corpus/`: it's everything you've collected. Move it into the new folder first.
 
 ## Reporting a problem
 

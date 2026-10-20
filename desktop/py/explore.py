@@ -28,6 +28,9 @@ open it.
     python3 explore.py thumbs ROWID,...     small JPEGs of photos, base64
     python3 explore.py thread ROWID [before|after TS]   the conversation a message is in: its day, and a little
                                             either side; or the next messages before or after a time
+    python3 explore.py embed KIND SPEC      what an Ask answer shows in place: a conversation, photos, a map, a day,
+                                            a chart over time, a person, an email, songs, a trip, a calendar, or what a
+                                            company decided about you
 
 Times are local: this Mac's time zone (UMP_TZ to change it), or a record's own (photos and Health keep theirs).
 Results are cached (UMP_EXPLORE_CACHE, else the temp folder) until corpus.db changes. While an artifact is built,
@@ -2114,35 +2117,44 @@ SAVED_FROM = {re.sub(r"\W", "", a).casefold() for a in (
     "Firefox", "Mail", "Gmail", "Outlook", "Files", "Drive", "Dropbox", "AirDrop", "Teams", "Zoom", "Skype")}
 
 
-def located(con, pg=None, step=0):
-    """(local time, lat, lon, place, country, rowid) for every record that says where you were, by time. A point far
-    from the ones either side of it that nothing could have reached in time (a picture saved with someone else's
-    location, a wrong clock) is left out."""
+def located_row(rowid, ts, text, meta):
+    """(local time, lat, lon, place, country, rowid) for a record that says where you were; None when it doesn't (no
+    place on Earth, or "none" written as 0,0; a picture saved from a chat, with its sender's)."""
+    m = meta_of(meta)
+    try:
+        lat, lon = float(m["lat"]), float(m["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):  # not a place on Earth (nor NaN)
+        return None
+    if abs(lat) < 0.01 and abs(lon) < 0.01:  # "no location" written as 0,0
+        return None
+    if re.sub(r"\W", "", str(m.get("imported_by") or "")).casefold() in SAVED_FROM:
+        return None
+    t = parse(ts, m.get("timezone"))
+    if not t:
+        return None
+    place, country = place_parts(text)
+    return (t, lat, lon, place or m.get("place") or m.get("city"), country or m.get("country"), rowid)
+
+
+def located(con, pg=None, step=0, between=None):
+    """(local time, lat, lon, place, country, rowid) for every record that says where you were, by time (between two
+    UTC times, when given). A point far from the ones either side of it that nothing could have reached in time (a
+    picture saved with someone else's location, a wrong clock) is left out."""
     # Not photos others shared with you (photos.py's shared_photos): where they were, not you.
     where = (f"kind in ({','.join(repr(k) for k in WHERE_YOU_WERE)}) and source != 'shared_photos' and ts is not null "
-             "and json_extract(meta, '$.lat') is not null")
+             "and json_extract(meta, '$.lat') is not null") + (" and ts >= ? and ts < ?" if between else "")
+    args = tuple(between or ())
     if pg:
-        pg.step(step, count_where(con, where))
+        pg.step(step, count_where(con, where, args))
     pts = []
-    for i, (rowid, ts, text, meta) in enumerate(con.execute(f"select rowid, ts, text, meta from records where {where}")):
+    for i, row in enumerate(con.execute(f"select rowid, ts, text, meta from records where {where}", args)):
         if pg:
             pg.tick(i)
-        m = meta_of(meta)
-        try:
-            lat, lon = float(m["lat"]), float(m["lon"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):  # not a place on Earth (nor NaN)
-            continue
-        if abs(lat) < 0.01 and abs(lon) < 0.01:  # "no location" written as 0,0
-            continue
-        if re.sub(r"\W", "", str(m.get("imported_by") or "")).casefold() in SAVED_FROM:
-            continue
-        t = parse(ts, m.get("timezone"))
-        if not t:
-            continue
-        place, country = place_parts(text)
-        pts.append((t, lat, lon, place or m.get("place") or m.get("city"), country or m.get("country"), rowid))
+        pt = located_row(*row)
+        if pt:
+            pts.append(pt)
     pts.sort(key=lambda p: p[0])
 
     def impossible(a, b):
@@ -2432,7 +2444,8 @@ def embed(kind, spec):
     """What an Ask answer shows rather than cites. "chat" with "ROWID": that message with two before it and three
     after, in its conversation; with "FROM-TO": those two messages and every one between them (the first SNIPPET).
     "photos" with "ROWID,ROWID": each photo (or message with an image) and where and when it was taken, with its
-    thumbnail. Read from corpus.db on this Mac; nothing here goes to the model."""
+    thumbnail. And the rest (map, day, trend, person, email, songs, trip, agenda, they-know): below, embed_*. Read
+    from corpus.db on this Mac; nothing here goes to the model."""
     con = connect()
     if kind == "chat":
         ids = [int(x) for x in re.findall(r"\d+", spec)][:2]
@@ -2476,7 +2489,434 @@ def embed(kind, spec):
             place = next((ln.split(":", 1)[1].strip() for ln in (r[1] or "").splitlines() if ln.startswith("Place:")), None)
             out.append({"rowid": rowid, "ts": t.isoformat(timespec="seconds") if t else None, "place": place, "thumb": pics[str(rowid)]})
         return {"kind": "photos", "photos": out} if out else {"error": "no photos to show"}
+    kind = EMBED_ALIAS.get(kind, kind)
+    if kind in EMBEDS:
+        return EMBEDS[kind](con, spec)
     return {"error": f"can't show {kind}"}
+
+
+# ---------------------------------------------------------------- what else an Ask answer shows
+# Each one named by rowids, a date or a name the answer writes (shared/markdown.ts parses it), and read here: a map, a
+# day, a chart over time, a person, an email, songs, a trip, a calendar, what a company decided about you.
+
+DATE = r"\d{4}-\d\d-\d\d"
+MAX_MAP = 200  # records one map shows
+MAX_SONGS = 10
+MAX_EVENTS = 12  # events named one by one
+AGENDA_DAYS, AGENDA_MOST = 14, 40  # a calendar's days, and the events it lists
+DAY_EVENTS = 80  # events one day lists
+
+
+def _ids(spec, most):
+    return list(dict.fromkeys(int(x) for x in re.findall(r"\d+", spec or "")))[:most]
+
+
+def _dates(spec, most=366, ahead=False):
+    """'2024-03-01', or '2024-03-01..2024-03-05' -> (first, last), at most `most` days; None when it isn't one (or is
+    after today, unless it may be: a calendar's plans)."""
+    m = re.fullmatch(rf"\s*({DATE})\s*(?:(?:\.\.|to)\s*({DATE})\s*)?", spec or "")
+    if not m:
+        return None
+    try:
+        a = date.fromisoformat(m.group(1))
+        b = date.fromisoformat(m.group(2) or m.group(1))
+    except ValueError:
+        return None
+    a, b = min(a, b), max(a, b)
+    if a.year < FIRST_YEAR or (a > LATEST.date() and not ahead) or a.year > LATEST.year + 10:
+        return None
+    return a, min(b, a + timedelta(days=most - 1))
+
+
+def _utc_between(a, b):
+    """The UTC times to look between for local days a to b: a day either side, for records in their own zones."""
+    lo = datetime(a.year, a.month, a.day, tzinfo=TZ) - timedelta(days=1)
+    hi = datetime(b.year, b.month, b.day, tzinfo=TZ) + timedelta(days=2)
+    return lo.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"), hi.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _iso(t):
+    return t.isoformat(timespec="seconds") if t else None
+
+
+def _map_points(pts, a=None, b=None):
+    """Where you were (located() points) as the map's: pooled into spots about a kilometer across, each with how many
+    records and days, its place, and its first record. Between local days a and b, when given."""
+    cells = {}
+    pts = [p for p in pts if not a or a <= p[0].date() <= b]
+    places, countries = collections.Counter(), collections.Counter()
+    for t, lat, lon, place, country, rowid in pts:
+        c = cells.setdefault((round(lat, 2), round(lon, 2)), {"lat": 0.0, "lon": 0.0, "photos": 0, "places": collections.Counter(),
+                                                             "first": t, "last": t, "rowid": rowid, "days": set()})
+        c["lat"] += lat
+        c["lon"] += lon
+        c["photos"] += 1
+        c["first"], c["last"] = min(c["first"], t), max(c["last"], t)
+        c["days"].add(t.date())
+        if place:
+            c["places"][place] += 1
+            places[place] += 1
+        if country:
+            countries[country] += 1
+    points = [{"lat": round(c["lat"] / c["photos"], 4), "lon": round(c["lon"] / c["photos"], 4), "photos": c["photos"],
+               "days": len(c["days"]), "place": c["places"].most_common(1)[0][0] if c["places"] else None,
+               "first": c["first"].date().isoformat(), "last": c["last"].date().isoformat(), "rowid": c["rowid"]} for c in cells.values()]
+    points.sort(key=lambda p: -p["photos"])
+    return {"points": points, "records": len(pts), "places": [p for p, _ in places.most_common(4)], "countries": [c for c, _ in countries.most_common(4)],
+            "from": min(p[0] for p in pts).date().isoformat() if pts else None, "to": max(p[0] for p in pts).date().isoformat() if pts else None}
+
+
+def _located_between(con, a, b):
+    return located(con, between=_utc_between(a, b))
+
+
+def embed_map(con, spec):
+    """"ROWID,ROWID": where those were; "DATE" or "DATE..DATE": everywhere you were those days (a year at most)."""
+    span = _dates(spec)
+    if span:
+        out = _map_points(_located_between(con, *span), *span)
+    else:
+        ids = _ids(spec, MAX_MAP)
+        if not ids:
+            return {"error": "no places"}
+        rows = con.execute(f"select rowid, ts, text, meta from records where rowid in ({','.join('?' * len(ids))})", ids).fetchall()
+        out = _map_points(sorted(filter(None, (located_row(*r) for r in rows)), key=lambda p: p[0]))
+    return {"kind": "map", **out} if out["points"] else {"error": "nothing there has a place"}
+
+
+def embed_day(con, spec):
+    """A day as Your Stream has it: what happened, in order, and a few of its photos."""
+    span = _dates(spec, 1)
+    if not span:
+        return {"error": "not a day"}
+    d = span[0]
+    st = _stream()
+    lo = datetime(d.year, d.month, d.day, tzinfo=st.TZ)
+    r = st.between(lo, lo + timedelta(days=1), con)
+    events = [{k: v for k, v in e.items() if k != "refs"} for e in r["events"]]
+    if not events:
+        return {"error": "nothing that day"}
+    photos = [p for e in events for p in (e.get("photos") or [])]
+    pics = thumbs(middle_out(photos)[:12], 240)
+    cover = [int(k) for k in pics][:4]
+    return {"kind": "day", "date": d.isoformat(), "events": events[:DAY_EVENTS], "more": max(0, len(events) - DAY_EVENTS),
+            "records": r["records"], "photos": len(photos), "cover": [{"rowid": k, "thumb": pics[str(k)]} for k in cover]}
+
+
+# What a chart over time can show, in plain words: [one, many], and whether it's an average a day (or night).
+TREND = {"messages": ("message", "messages"), "calls": ("call", "calls"), "photos": ("photo", "photos"), "emails": ("email", "emails"),
+         "searches": ("search", "searches"), "songs": ("song played", "songs played"), "videos": ("video", "videos"),
+         "visits": ("page visited", "pages visited"), "commits": ("commit", "commits"), "ai": ("message to an AI", "messages to an AI"),
+         "steps": ("step a day, on average", "steps a day, on average"), "sleep": ("hour a night, on average", "hours a night, on average")}
+TREND_ALIAS = {"texts": "messages", "message": "messages", "chats": "messages", "call": "calls", "photo": "photos", "pictures": "photos",
+               "email": "emails", "mail": "emails", "search": "searches", "song": "songs", "music": "songs", "plays": "songs",
+               "listening": "songs", "video": "videos", "watching": "videos", "visit": "visits", "browsing": "visits", "pages": "visits",
+               "commit": "commits", "code": "commits", "prompts": "ai", "step": "steps", "walking": "steps", "nights": "sleep"}
+TREND_LABEL = {"messages": "Messages", "calls": "Calls", "photos": "Photos", "emails": "Emails", "searches": "Searches", "songs": "Songs you played",
+               "videos": "Videos you watched", "visits": "Pages you visited", "commits": "Commits", "ai": "Your messages to AIs",
+               "steps": "Steps", "sleep": "Sleep"}
+
+
+def _by_month(con, where, args=()):
+    """How many records a local month, counted by the hour in SQL (fast: no row read one by one), then each hour put
+    in its month here."""
+    out = collections.Counter()
+    for hour, n in con.execute(f"select substr(ts, 1, 13), count(*) from records where ({where}) and ts is not null and {SANE_TS} group by 1", args):
+        t = parse(f"{hour}:00:00Z") if len(hour or "") == 13 else (datetime.fromisoformat(hour).replace(tzinfo=TZ) if re.fullmatch(DATE, hour or "") else None)
+        if t:
+            out[t.strftime("%Y-%m")] += n
+    return out
+
+
+def _like(s):
+    return "%" + re.sub(r"([%_\\])", r"\\\1", s) + "%"
+
+
+def find_person(name):
+    """Someone in Your People by any name of theirs: exactly, or by a first name only one of them has (or that the
+    one you talk to most has, by twice anyone else's messages)."""
+    P = cached("people", people)["people"]
+    k = key(name)
+    if not k:
+        return None
+    exact = [p for p in P if name == p["key"] or k == key(p["name"]) or k == p["key"] or k in p.get("aliases", [])]
+    if exact:
+        return max(exact, key=lambda p: p["messages"])
+    firsts = sorted((p for p in P if key((p["name"].split() or [""])[0]) == k), key=lambda p: -p["messages"])
+    if len(firsts) == 1 or (len(firsts) > 1 and firsts[0]["messages"] > 2 * firsts[1]["messages"]):
+        return firsts[0]
+    return None
+
+
+def embed_trend(con, spec):
+    """"WHAT", "WHAT:FILTER", either with ":YYYY" or ":YYYY-YYYY" after: a month by month count of something, from
+    the whole library (only the chart's numbers are read: no record's text leaves this Mac). FILTER is a person for
+    messages and calls, an artist or song for songs, a channel or title for videos, a site for visits, a repository for
+    commits, and words to look for in the rest."""
+    parts = [p.strip() for p in (spec or "").split(":")]
+    what = TREND_ALIAS.get(parts[0].casefold(), parts[0].casefold())
+    if what not in TREND:
+        return {"error": f"can't chart {parts[0] or 'that'}"}
+    rest, years = parts[1:], None
+    if rest and (y := re.fullmatch(r"(\d{4})(?:\s*(?:-|–|\.\.|to)\s*(\d{4}))?", rest[-1])):
+        years, rest = (min(y.group(1), y.group(2) or y.group(1)), max(y.group(1), y.group(2) or y.group(1))), rest[:-1]
+    filt = ":".join(rest).strip() or None
+    label = TREND_LABEL[what]
+    months, average = collections.Counter(), what in ("steps", "sleep")
+    f = (filt or "").casefold()
+    if what in ("messages", "calls") and filt:
+        p = find_person(filt)
+        if not p:
+            return {"error": f"no one called {filt}"}
+        label = f"{label} with {p['name']}"
+        if what == "messages":
+            d = cached(f"person-{p['key']}", person, p["key"])
+            for m, by_app in d["months"].items():
+                months[m] += sum(by_app.values())
+        else:
+            ident, keys = identities(con, me_names()), {p["key"], *p.get("aliases", [])}
+            for ts, thread, thread_name, meta in con.execute("select ts, thread, thread_name, meta from records where source = 'calls'"):
+                t = parse(ts)
+                if t and ident("calls", thread, thread_name, person_meta(meta)) in keys:
+                    months[t.strftime("%Y-%m")] += 1
+    elif what == "messages":
+        months = _by_month(con, MESSAGES)
+    elif what == "calls":
+        months = _by_month(con, "source = 'calls' and kind = 'call'")
+    elif what == "photos":
+        where, args = "kind = 'photo' and source != 'shared_photos'", ()
+        if filt:
+            where, args, label = where + " and text like ? escape '\\'", (_like(filt),), f"Photos with “{filt}”"
+        months = _by_month(con, where, args)
+    elif what == "emails":
+        where, args = "kind = 'email'", ()
+        if filt:
+            where += " and (author like ? escape '\\' or title like ? escape '\\' or json_extract(meta, '$.from') like ? escape '\\')"
+            args, label = (_like(filt),) * 3, f"Emails from or about “{filt}”"
+        months = _by_month(con, where, args)
+    elif what in ("commits", "ai"):
+        where = "kind = 'commit' and is_me = '1'" if what == "commits" else "kind = 'ai_turn' and is_me = '1'"
+        args = ()
+        if filt:
+            where += " and (thread_name like ? escape '\\' or thread like ? escape '\\' or title like ? escape '\\' or text like ? escape '\\')"
+            args, label = (_like(filt),) * 4, f"{label}: “{filt}”"
+        months = _by_month(con, where, args)
+    elif what == "visits":
+        where, args = " or ".join(f"(source = '{s}' and kind = '{k}')" for s, k in VISITS), ()
+        if filt:
+            where, args, label = f"({where}) and (url like ? escape '\\' or title like ? escape '\\')", (_like(filt),) * 2, f"Visits to “{filt}”"
+        months = _by_month(con, where, args)
+    elif what == "searches":
+        for t, q, _ in searches(con):
+            if not f or f in q.casefold():
+                months[t.strftime("%Y-%m")] += 1
+        label = f"Searches for “{filt}”" if filt else label
+    elif what == "songs":
+        ps = plays(con)
+        by_artist = [p for p in ps if f and p[2].casefold() == f]
+        for t, track, artist, *_ in by_artist or ps:
+            if by_artist or not f or f in track.casefold() or f in artist.casefold():
+                months[t.strftime("%Y-%m")] += 1
+        label = f"Songs you played by {by_artist[0][2]}" if by_artist else f"Songs you played: “{filt}”" if filt else label
+    elif what == "videos":
+        for t, title, channel, service, _ in videos(con):
+            if not f or f in title.casefold() or f in (channel or "").casefold() or f == service.casefold():
+                months[t.strftime("%Y-%m")] += 1
+        label = f"Videos you watched: “{filt}”" if filt else label
+    elif what == "steps":
+        days = collections.defaultdict(list)
+        for ts, meta in con.execute("select ts, meta from records where source = 'health' and kind = 'health_day'"):
+            d, n = day_of(ts), steps_of(meta)
+            if d and n > 0:
+                days[d.strftime("%Y-%m")].append(n)
+        months = {m: round(sum(v) / len(v)) for m, v in days.items()}
+    else:  # sleep: nights of two hours or more, as Moving and Sleep counts them
+        nights = collections.defaultdict(list)
+        for ts, end, meta in con.execute("select ts, ts_end, meta from records where source = 'health' and kind = 'sleep' and ts is not null"):
+            m = meta_of(meta)
+            b = parse(end, m.get("tz")) if end else None
+            mins = num(m.get("asleep_min")) or num(m.get("in_bed_min"))
+            if b and mins >= 120:
+                nights[b.strftime("%Y-%m")].append(mins / 60)
+        months = {m: round(sum(v) / len(v), 1) for m, v in nights.items()}
+    months = {m: v for m, v in sorted(months.items()) if v and (not years or years[0] <= m[:4] <= years[1])}
+    if not months:
+        return {"error": "nothing to chart"}
+    peak = max(months, key=lambda m: months[m])
+    return {"kind": "trend", "what": what, "label": label, "unit": list(TREND[what]), "average": average, "months": months,
+            "total": None if average else sum(months.values()), "peak": {"month": peak, "value": months[peak]},
+            "years": list(years) if years else None}
+
+
+def embed_person(con, spec):
+    p = find_person(spec)
+    if not p:
+        return {"error": f"no one called {spec}"}
+    keep = ("key", "name", "messages", "sent", "apps", "years", "first", "last", "calls", "call_minutes", "photos")
+    return {"kind": "person", **{k: p.get(k) for k in keep}, "app_names": {a: app_label(a, con) for a in p.get("apps", {})}}
+
+
+QUOTED = re.compile(r"^(On .{8,200} wrote:|-{2,}\s*Original Message\s*-{2,}|From: .+|_{10,})$", re.I)
+
+
+def embed_email(con, spec):
+    """An email as Mail shows one: subject, who it's from and to, when, and what it says (without the reply it quotes)."""
+    ids = _ids(spec, 1)
+    r = con.execute("select source, kind, ts, author, is_me, participants, title, text, meta, thread from records where rowid = ?", ids[:1]).fetchone() if ids else None
+    if not r or r[1] != "email":
+        return {"error": "not an email"}
+    source, _, ts, author, is_me, participants, title, text, meta, thread = r
+    m = meta_of(meta)
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    if lines and title and lines[0].strip() == title.strip():
+        lines = lines[1:]
+    body = []
+    for ln in lines:
+        if QUOTED.match(ln.strip()) and any(x.strip() for x in body):
+            break
+        if ln.startswith(">"):
+            continue
+        body.append(ln.rstrip())
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(body)).strip()
+    to = [p.strip() for p in (participants or "").split(",") if p.strip()] or [a for a in (m.get("to") or []) if a]
+    mine = me_names()
+    to = ["You" if key(x) in mine or x in (m.get("account"),) else x for x in to]
+    count = con.execute("select count(*) from records where thread = ? and +source = ? and +kind = 'email'", (thread, source)).fetchone()[0] if thread else 1
+    me = str(is_me) == "1" or author == "me"
+    return {"kind": "email", "rowid": ids[0], "app": app_label(source, con), "subject": (title or "").strip() or "No subject",
+            "from": "You" if me else (author or m.get("from") or "Someone"), "address": None if me else m.get("from"),
+            "to": list(dict.fromkeys(to))[:6], "to_more": max(0, len(set(to)) - 6), "ts": _iso(parse(ts)),
+            "body": body[:2400], "more": len(body) > 2400, "attachments": [a for a in (m.get("attachments") or []) if isinstance(a, str)][:8],
+            "folder": m.get("folder"), "thread_count": count}
+
+
+def embed_songs(con, spec):
+    """Songs (or podcast episodes) you played: each with its artist or show, when, and how often you've played it."""
+    out = []
+    for rowid in _ids(spec, MAX_SONGS):
+        r = con.execute("select source, kind, ts, title, text, meta, thread_name from records where rowid = ?", (rowid,)).fetchone()
+        if not r or r[1] not in ("media", "song", "listen") or not r[3]:
+            continue
+        source, kind, ts, title, text, meta, show = r
+        m = meta_of(meta)
+        podcast = kind == "listen" or source == "podcasts"
+        artist = m.get("artist") or m.get("show") or show
+        app = m.get("app") or ("Podcasts" if source == "podcasts" else app_label(source, con))
+        if source == "google_activity":
+            lines = (text or "").split("\n")
+            artist, app = (lines[1].strip().removesuffix(" - Topic") if len(lines) > 1 else None), "YouTube"
+        same = con.execute("select meta, text from records where source = ? and kind = ? and title = ?", (source, kind, title)).fetchall()
+        times = sum(1 for sm, st in same if not artist or artist in (meta_of(sm).get("artist"), meta_of(sm).get("show"))
+                    or (source != "spotify" and artist in (st or "")))
+        secs = m.get("seconds") or m.get("duration")
+        out.append({"rowid": rowid, "title": str(title).strip(), "artist": artist, "album": m.get("album"), "app": app, "ts": _iso(parse(ts)),
+                    "plays": max(1, times), "seconds": num(secs) if isinstance(secs, (int, float)) else None, "podcast": podcast})
+    return {"kind": "songs", "songs": out} if out else {"error": "no songs there"}
+
+
+def embed_trip(con, spec):
+    """A trip from Places and Trips: the one a day was in (or by its id), with its map and a few of its photos."""
+    trips = cached("places", places)["trips"]
+    span = _dates(spec, 1)
+    t = next((x for x in trips if span and x["start"] <= span[0].isoformat() <= x["end"]), None) if span \
+        else next((x for x in trips if x["id"] == spec.strip()), None)
+    if not t:
+        return {"error": "no trip then"}
+    a, b = date.fromisoformat(t["start"]), date.fromisoformat(t["end"])
+    pics = thumbs(t["sample"][:6], 360)
+    return {"kind": "trip", "trip": t, "map": _map_points(_located_between(con, a, b), a, b),
+            "thumbs": [{"rowid": int(k), "thumb": v} for k, v in pics.items()]}
+
+
+def _planned(ts, tz=None):
+    """A calendar's time: as parse() reads one, but a plan for later is a time too (ten years ahead at most)."""
+    try:
+        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    if t.year < FIRST_YEAR or t.year > LATEST.year + 10 or t in ZEROS:
+        return None
+    try:
+        return t.astimezone(zone_of(tz) or TZ)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _event_of(rowid, source, ts, ts_end, title, text, thread, meta):
+    m = meta_of(meta)
+    fields = m.get("fields") if isinstance(m.get("fields"), dict) else {}
+    tz = m.get("timezone") or fields.get("Timezone")
+    all_day = m.get("all_day") is True or str(fields.get("All Day") or "").casefold() in ("1", "true", "yes")
+    if all_day:
+        whole = lambda x: (lambda t: t.date() if t else None)(_planned(str(x)[:10] + "T12:00:00")) if x else None  # noqa: E731
+        start, end = whole(ts), whole(ts_end)
+        if start and end and end > start:
+            end -= timedelta(days=1)  # a calendar keeps the start of the day after
+        start, end = (start.isoformat() if start else None), (end.isoformat() if end and end != start else None)
+    else:
+        a, b = _planned(ts, tz), _planned(ts_end, tz) if ts_end else None
+        start, end = _iso(a), _iso(b) if b and a and b > a else None
+    place = m.get("location") or fields.get("Location")
+    return {"rowid": rowid, "title": (title or "").strip() or "An event", "start": start, "end": end, "all_day": all_day,
+            "place": place if isinstance(place, str) and place.strip() else None,
+            "calendar": fields.get("Calendar Name") or thread or None, "app": APP_NAMES.get(source) or _stream().app_name(source)}
+
+
+def embed_agenda(con, spec):
+    """Calendar events, as Calendar lists them: "ROWID,ROWID" those; "DATE" or "DATE..DATE" every one those days
+    (two weeks at most)."""
+    cols = "rowid, source, ts, ts_end, title, text, thread, meta"
+    cal = "kind = 'event' and source like '%calendar%'"
+    span = _dates(spec, AGENDA_DAYS, ahead=True)
+    if span:
+        lo, hi = _utc_between(*span)
+        rows = con.execute(f"select {cols} from records where {cal} and ts >= ? and ts < ? order by ts", (lo, hi)).fetchall()
+    else:
+        ids = _ids(spec, MAX_EVENTS)
+        rows = con.execute(f"select {cols} from records where {cal} and rowid in ({','.join('?' * len(ids))})", ids).fetchall() if ids else []
+    out, seen = [], set()
+    for r in rows:
+        e = _event_of(*r)
+        if not e["start"] or (span and not span[0].isoformat() <= e["start"][:10] <= span[1].isoformat()):
+            continue
+        k = (e["title"].casefold(), e["start"][:16])  # one event in two calendars that both sync it
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    out.sort(key=lambda e: (e["start"][:10], not e["all_day"], e["start"]))
+    if not out:
+        return {"error": "no events then"}
+    return {"kind": "agenda", "events": out[:AGENDA_MOST], "more": max(0, len(out) - AGENDA_MOST),
+            "from": span[0].isoformat() if span else None, "to": span[1].isoformat() if span else None}
+
+
+SERVICE_ALIAS = {"meta": ("facebook", "instagram"), "twitter": ("x",), "youtube": ("google",), "gmail": ("google",)}
+
+
+def embed_they_know(con, spec):
+    """What a service decided about you, as What They Know has it: its guesses and interests, and how many
+    advertisers have you. No service: every one's."""
+    tk = cached("they-know-v2", they_know)
+    want = (spec or "").strip().casefold()
+    names = [s["service"] for s in tk["services"]]
+    pick = [s for s in names if not want or s.casefold() == want or s.casefold() in SERVICE_ALIAS.get(want, ())]
+    if not pick:
+        return {"error": f"nothing from {spec}"}
+    groups = [g for g in tk["decided"] if set(g.get("services") or [g["service"]]) & set(pick)]
+    adv = [a for a in tk["advertiser_list"] if set(a["services"]) & set(pick)]
+    row = {s["service"]: s for s in tk["services"]}
+    if not groups and not adv:
+        return {"error": f"nothing from {spec}"}
+    return {"kind": "they-know", "services": pick, "decided": groups, "advertisers": len(adv), "advertiser_names": [a["name"] for a in adv[:6]],
+            "told": sum(row[s]["told"] for s in pick), "ads": sum(row[s]["ads"] for s in pick)}
+
+
+EMBEDS = {"map": embed_map, "day": embed_day, "trend": embed_trend, "person": embed_person, "email": embed_email,
+          "songs": embed_songs, "trip": embed_trip, "agenda": embed_agenda, "they-know": embed_they_know}
+EMBED_ALIAS = {"places": "map", "events": "agenda", "calendar": "agenda", "music": "songs", "podcasts": "songs", "chart": "trend",
+               "they_know": "they-know", "profile": "they-know"}
 
 
 # ---------------------------------------------------------------- summary and thumbnails
@@ -2573,23 +3013,36 @@ def preview_file(source, rid, files):
 
 def thumbs(rowids, size=360):
     """{rowid: data URL} for photos (and image attachments), made with sips from the record's file or Photos' own
-    preview; cached by rowid and size."""
+    preview; cached by the record's identity, image version and requested size."""
     con = connect()
     out = {}
     tdir = CACHE / "thumbs"
     tdir.mkdir(parents=True, exist_ok=True)
     for rowid in rowids:
-        f = tdir / f"{int(rowid)}-{size}.jpg"
+        r = con.execute("select source, id, meta from records where rowid = ?", (int(rowid),)).fetchone()
+        path = preview_file(r[0], r[1], meta_of(r[2]).get("files")) if r else None
+        if not path:
+            continue
+        try:
+            st = path.stat()
+        except OSError:  # the original was removed while the thumbnail was requested
+            continue
+        # A row number alone could reuse another record's image after an older index was rebuilt. The same
+        # record can also acquire a new original or edited picture without changing its number.
+        version = [r[0], r[1], str(path.resolve()), st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, size]
+        name = hashlib.sha256(json.dumps(version).encode()).hexdigest()
+        f = tdir / f"{name}.jpg"
         if not f.exists():
-            r = con.execute("select source, id, meta from records where rowid = ?", (int(rowid),)).fetchone()
-            path = preview_file(r[0], r[1], meta_of(r[2]).get("files")) if r else None
-            if not path:
-                continue
-            p = subprocess.run(["/usr/bin/sips", "-s", "format", "jpeg", "-s", "formatOptions", "70", "-Z", str(size), str(path), "--out", str(f)],
-                               capture_output=True, timeout=60)
-            if p.returncode or not f.exists():
-                continue
+            # Concurrent requests may make the same thumbnail; readers only see a complete image.
+            with tempfile.TemporaryDirectory(dir=tdir) as tmp:
+                image = Path(tmp) / "thumb.jpg"
+                p = subprocess.run(["/usr/bin/sips", "-s", "format", "jpeg", "-s", "formatOptions", "70", "-Z", str(size), str(path), "--out", str(image)],
+                                   capture_output=True, timeout=60)
+                if p.returncode or not image.exists():
+                    continue
+                image.replace(f)
         out[str(rowid)] = "data:image/jpeg;base64," + base64.b64encode(f.read_bytes()).decode()
+    con.close()
     return out
 
 

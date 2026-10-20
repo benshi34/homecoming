@@ -5,6 +5,7 @@
 
 import { type ReactNode, useEffect, useState } from 'react';
 import { type AskProvider, PROVIDER, RETENTION, retentionOk } from '../shared/ask.ts';
+import { AT_ONCE, agentsAtOnce } from '../shared/at_once.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { AgentChoices, RetentionSheet } from './ask.tsx';
@@ -149,9 +150,9 @@ function DownloadsRow({ snap }: { snap: Snapshot }) {
   );
 }
 
-// Do It for Me's own settings: the browser it works in, downloading when ready, looking for exports every few hours,
-// and the inboxes it may look in for the email saying one's ready. Notifications (how it tells you it needs you) are
-// in General: said here when macOS isn't showing them.
+// Do It for Me's own settings: the browser it works in, how many sites it works on at once, downloading when ready,
+// looking for exports every few hours, and the inboxes it may look in for the email saying one's ready. Notifications
+// (how it tells you it needs you) are in General: said here when macOS isn't showing them.
 function DoItForMe({ snap, onGeneral }: { snap: Snapshot; onGeneral?: () => void }) {
   const s = snap.settings;
   const su = snap.setup;
@@ -178,6 +179,10 @@ function DoItForMe({ snap, onGeneral }: { snap: Snapshot; onGeneral?: () => void
             : `Needs ${CLAUDE_BROWSER_NAMES}: the Claude in Chrome extension works only in those.`}
           trailing={claude.length ? <Picker value={su.agentBrowser?.id ?? ''} onChange={(v) => void api.settings({ agentBrowser: v })} label="Do It for Me works in" testId="setup-agent-browser-pick"
             options={claude.map((b) => ({ value: b.id, label: b.name }))} /> : <span className="tag">None here</span>} />
+        <GroupRow icon={<GlyphTile glyph="gauge" color="blue" />} title="Sites at once" chevron={false} testId="settings-at-once"
+          subtitle={`How many sites Claude works on at the same time, each in a tab group of its own in ${browser}. More is faster, but uses more of your Claude usage at a time.`}
+          trailing={<Picker value={String(agentsAtOnce(s))} onChange={(v) => void api.settings({ agentsAtOnce: Number(v) })} label="Sites Claude works on at once" testId="setup-at-once-pick"
+            options={Array.from({ length: AT_ONCE.max - AT_ONCE.min + 1 }, (_, i) => AT_ONCE.min + i).map((n) => ({ value: String(n), label: n === 1 ? 'One at a time' : `${n} at once` }))} />} />
         <DownloadsRow snap={snap} />
         <GroupRow icon={<GlyphTile glyph="clock" color="orange" />} title="Look for exports every few hours" chevron={false} testId="settings-checks"
           subtitle={checks ? `While an export is on its way, Claude opens ${browser} now and then to check the service's page, or your inbox for the email saying it's ready, and downloads it.`

@@ -283,7 +283,29 @@ export interface Thread { rowid: number; app: string; name: string; group: boole
 // What an Ask answer shows rather than cites (py/explore.py embed): a stretch of a conversation, or a few photos.
 export interface ChatEmbed { kind: 'chat'; rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: (ThreadMessage & { thumb?: string })[]; anchors: number[] }
 export interface PhotosEmbed { kind: 'photos'; photos: { rowid: number; ts: string | null; place: string | null; thumb: string }[] }
-export type EmbedData = ChatEmbed | PhotosEmbed;
+// The rest (embed_* there): where things were, a day, a count over time, a person, an email, songs, a trip, a
+// calendar, and what a company decided about you.
+export interface MapSpots { points: Places['points']; records: number; places: string[]; countries: string[]; from: string | null; to: string | null }
+export interface MapEmbed extends MapSpots { kind: 'map' }
+export interface DayEmbed { kind: 'day'; date: string; events: StreamEvent[]; more: number; records: number; photos: number; cover: { rowid: number; thumb: string }[] }
+export interface TrendEmbed {
+  kind: 'trend'; what: string; label: string; unit: [string, string]; average: boolean; months: Record<string, number>; total: number | null;
+  peak: { month: string; value: number }; years: [string, string] | null;
+}
+export interface PersonEmbed extends Pick<Person, 'key' | 'name' | 'messages' | 'sent' | 'apps' | 'years' | 'first' | 'last' | 'calls' | 'call_minutes' | 'photos'> {
+  kind: 'person'; app_names: Record<string, string>;
+}
+export interface EmailEmbed {
+  kind: 'email'; rowid: number; app: string; subject: string; from: string; address: string | null; to: string[]; to_more: number; ts: string | null;
+  body: string; more: boolean; attachments: string[]; folder: string | null; thread_count: number;
+}
+export interface SongPlay { rowid: number; title: string; artist: string | null; album: string | null; app: string; ts: string | null; plays: number; seconds: number | null; podcast: boolean }
+export interface SongsEmbed { kind: 'songs'; songs: SongPlay[] }
+export interface TripEmbed { kind: 'trip'; trip: Trip; map: MapSpots; thumbs: { rowid: number; thumb: string }[] }
+export interface AgendaEvent { rowid: number; title: string; start: string; end: string | null; all_day: boolean; place: string | null; calendar: string | null; app: string }
+export interface AgendaEmbed { kind: 'agenda'; events: AgendaEvent[]; more: number; from: string | null; to: string | null }
+export interface TheyKnowEmbed { kind: 'they-know'; services: string[]; decided: Decided[]; advertisers: number; advertiser_names: string[]; told: number; ads: number }
+export type EmbedData = ChatEmbed | PhotosEmbed | MapEmbed | DayEmbed | TrendEmbed | PersonEmbed | EmailEmbed | SongsEmbed | TripEmbed | AgendaEmbed | TheyKnowEmbed;
 
 // A record's kind in plain words, for a record shown by itself ("health_day" -> "A day in Health"). A media record
 // is a song from Spotify or the Mac's Now Playing, a video elsewhere.

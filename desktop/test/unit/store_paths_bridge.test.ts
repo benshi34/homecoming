@@ -45,7 +45,7 @@ describe('store', () => {
   test('normalize fills gaps and keeps settings', () => {
     const n = normalize({ sources: { x: { skipped: 'no' } }, settings: { autoRefresh: false }, found: 'bad', extra: 1 });
     assert.deepEqual(n.sources, { x: { skipped: 'no' } });
-    assert.deepEqual(n.settings, { autoRefresh: false, watchDownloads: true });
+    assert.deepEqual(n.settings, { autoRefresh: false, watchDownloads: true, agentsAtOnce: 3 });
     assert.deepEqual(n.found, []);
     assert.ok(!('extra' in n));
     assert.deepEqual(normalize(null), defaultState());
@@ -65,6 +65,18 @@ describe('store', () => {
     assert.equal(normalize({ settings: { agentExports: true, aiOn: false } }).settings.aiOn, false, 'turned off stays off');
   });
 
+  test('how many Claude works on at once: 3 from before there was a choice, and kept to 1 to 5', () => {
+    const atOnce = (v: unknown) => normalize({ settings: { agentsAtOnce: v } }).settings.agentsAtOnce;
+    assert.equal(normalize({ settings: { agentExports: true } }).settings.agentsAtOnce, 3);
+    assert.equal(atOnce(2), 2);
+    assert.equal(atOnce(5), 5);
+    assert.equal(atOnce(9), 5, 'edited by hand: the most it can be');
+    assert.equal(atOnce(0), 1);
+    assert.equal(atOnce(2.4), 2);
+    assert.equal(atOnce('4'), 3, 'not a number: as usual');
+    assert.equal(atOnce(null), 3);
+  });
+
   test('a service saved with the old account link loses it', () => {
     const n = normalize({ services: [{ id: 'svc_tumblr', slug: 'tumblr', name: 'Tumblr', folder: 'tumblr', domains: ['tumblr.com'],
       account: 'https://www.tumblr.com/account/delete', addedAt: '2026-10-09T19:36:00Z', from: 'found' }] });
@@ -79,7 +91,7 @@ describe('store', () => {
     s.update((st) => (st.settings.autoRefresh = false));
     s.update((st) => (st.settings.watchDownloads = false));
     await new Promise((r) => setTimeout(r, 300));
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).settings, { autoRefresh: false, watchDownloads: false });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).settings, { autoRefresh: false, watchDownloads: false, agentsAtOnce: 3 });
   });
 });
 

@@ -1,10 +1,11 @@
 // Ask for Everything: every export still to ask for, in one sheet, by who does it. Claude asks for the ones its browser
-// (Chrome, or the one picked in AI Settings) is signed in to, one after another, without you, and says what needs you
-// once, at the end. The ones it isn't signed in to, you sign in to first (your saved password or passkey fills it in;
-// the app never sees it), and Claude does them too. Then what's yours: a site Claude in Chrome isn't allowed on, a service's own page, and requests by email.
+// (Chrome, or the one picked in AI Settings) is signed in to, a few at once (as many as AI Settings says), without you,
+// and says what needs you once, at the end. The ones it isn't signed in to, you sign in to first (your saved password
+// or passkey fills it in; the app never sees it), and Claude does them too. Then what's yours: a site Claude in Chrome isn't allowed on, a service's own page, and requests by email.
 
 import { type ReactNode, useEffect, useState } from 'react';
 import { BY_ID } from '../shared/catalog.ts';
+import { agentsAtOnce } from '../shared/at_once.ts';
 import { requestPlan } from '../shared/request_all.ts';
 import type { Snapshot, SourceView } from '../shared/types.ts';
 import { api } from './api.ts';
@@ -42,6 +43,10 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
   const total = plan.claude.length + plan.signIn.length + plan.yourself.length + plan.email.length;
   // Sites Claude hasn't worked on yet: it opens them first, while you're there to allow each (main.ts visitSites).
   const fresh = [...plan.claude, ...plan.signIn].filter((v) => !v.siteOk).length;
+  // How many at once (AI Settings), each in a tab group of its own: all of them, if there's room.
+  const asked = plan.claude.length + plan.signIn.length;
+  const atOnce = Math.min(agentsAtOnce(snap.settings), asked);
+  const how = atOnce <= 1 ? 'one after another' : `${atOnce === asked ? (asked === 2 ? 'both' : 'all') : atOnce} at once, each in a tab group of its own`;
   if (optIn) return <AgentOptIn snap={snap} onClose={() => setOptIn(false)} onOn={() => { setOptIn(false); ask(); }} />;
   // Not yet with the AI picked, or Anthropic's data settings to check first (agent_gate.tsx).
   if (gate) return <AgentGateSheet snap={snap} gate={gate} onClose={() => (gate === 'not-yet' ? onClose() : setGate(null))} onOk={() => { setGate(null); ask(); }} />;
@@ -49,7 +54,7 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
     <Sheet onClose={onClose} testId="request-all" width={540}>
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 7 }}><AiMark size={16} />Ask for everything at once</h2>
       {!total ? <p>Every export is asked for already.</p> : (
-        <p>Claude asks for each one in your {B}, one after another, while you do something else. If it needs you to sign in or allow it on a site, it tells you right away; the rest comes in one notification at the end.</p>
+        <p data-testid="ra-how">Claude asks for each one in your {B}, {how}, while you do something else. If it needs you to sign in or allow it on a site, it tells you right away; the rest comes in one notification at the end.</p>
       )}
       {fresh > 0 && (
         <p data-testid="ra-fresh">First, Claude opens the {fresh === 1 ? 'site' : `${fresh} sites`} it hasn't worked on before, so {B} can ask you to allow Claude on {fresh === 1 ? 'it' : 'each'}: stay near it for a minute or two and choose Allow, then it goes on by itself.</p>

@@ -72,6 +72,37 @@ print(json.dumps(record_path('media/photo.jpg',library)==f))
 ''')
         self.assertTrue(out)
 
+    def test_thumbnails_follow_record_identity_and_image_changes(self):
+        out = self.run_case('''
+import base64
+from types import SimpleNamespace
+image = CORPUS/'media/photo.jpg'; image.parent.mkdir(); image.write_bytes(b'first image')
+db = CORPUS/'corpus.db'
+with sqlite3.connect(db) as records:
+    records.execute('create table records(source,id,meta)')
+    records.execute('insert into records values (?,?,?)', ('photos','original',json.dumps({'files':['Homecoming/media/photo.jpg']})))
+calls = []
+def convert(args, **kwargs):
+    calls.append(args)
+    pathlib.Path(args[-1]).write_bytes(pathlib.Path(args[-3]).read_bytes())
+    return SimpleNamespace(returncode=0)
+def thumb():
+    return base64.b64decode(e.thumbs([1])['1'].split(',',1)[1]).decode()
+with patch.object(e.subprocess, 'run', side_effect=convert):
+    first=thumb(); again=thumb(); reused=len(calls)==1
+    image.write_bytes(b'edited image')
+    edited=thumb()
+    # Model a legacy rebuild that assigned this row number to a different record, sharing the same original.
+    with sqlite3.connect(db) as records:
+        records.execute("update records set id='replacement'")
+    replacement=thumb(); identity_checked=len(calls)==3
+    with sqlite3.connect(db) as records:
+        records.execute('delete from records')
+    missing=e.thumbs([1])
+print(json.dumps([first,again,reused,edited,replacement,identity_checked,missing]))
+''')
+        self.assertEqual(out, ['first image', 'first image', True, 'edited image', 'edited image', True, {}])
+
     def test_old_references_survive_renaming_the_library(self):
         out = self.run_case('''from library_paths import record_path
 file=CORPUS/'media/photo.jpg'; file.parent.mkdir(); file.write_bytes(b'image')

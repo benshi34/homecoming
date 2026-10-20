@@ -29,8 +29,8 @@ const NAV: { id: Nav; label: string; glyph: string }[] = [
   { id: 'done', label: 'Collected', glyph: 'checkCircle' },
 ];
 
-export function MainWindow({ snap, onAssistant, onExport, nav, setNav, adding, setAdding, focus }: {
-  snap: Snapshot; onAssistant: () => void; onExport: () => void; nav: Nav; setNav: (n: Nav) => void;
+export function MainWindow({ snap, onAssistant, onExport, onWhatsNew, onUpdate, nav, setNav, adding, setAdding, focus }: {
+  snap: Snapshot; onAssistant: () => void; onExport: () => void; onWhatsNew: () => void; onUpdate: () => void; nav: Nav; setNav: (n: Nav) => void;
   adding: boolean; setAdding: (v: boolean) => void; focus?: { id: string; n: number } | null;
 }) {
   const [selected, setSelected] = useState<Partial<Record<Nav, string>>>({});
@@ -164,6 +164,7 @@ export function MainWindow({ snap, onAssistant, onExport, nav, setNav, adding, s
           <SideItem id="yoursetup" label="Your Setup" glyph="laptop" nav={nav} count={counts.yoursetup || undefined} onClick={() => go('yoursetup')} />
           <SideItem id="ai" label="AI Settings" glyph="sparkle" icon={<AiMark size={16} />} nav={nav} onClick={() => go('ai')} />
         </div>
+        <UpdateCard snap={snap} onClick={onUpdate} />
         <div className="sidebar-foot no-drag" data-testid="sidebar-progress">
           <Num value={prog.collected} /> of {prog.applicable} sources collected
           <div className="foot-bar"><ProgressBar value={prog.percent} small />{grew > 0 && <span className="foot-sweep" key={grew} aria-hidden />}</div>
@@ -183,7 +184,7 @@ export function MainWindow({ snap, onAssistant, onExport, nav, setNav, adding, s
       ) : nav === 'ask' ? (
         <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} />} onExplore={() => go('explore')} />
       ) : nav === 'general' ? (
-        <GeneralPage snap={snap} onAssistant={onAssistant} onExport={onExport} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
+        <GeneralPage snap={snap} onAssistant={onAssistant} onExport={onExport} onWhatsNew={onWhatsNew} onUpdate={onUpdate} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
       ) : nav === 'yoursetup' ? (
         <YourSetupPage snap={snap} onSource={jump} onAi={() => go('ai')} editing={selected.yoursetup === 'identity'} onEdited={() => setSelected((x) => ({ ...x, yoursetup: undefined }))}
           toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
@@ -437,3 +438,20 @@ function Overview({ snap, onJump, onAssistant }: { snap: Snapshot; onJump: (id: 
   );
 }
 
+
+// A newer Homecoming, quietly, at the bottom of the sidebar: it's out (its sheet has what's new, and Update), it's
+// updating, or it stopped. Nothing when this is the newest.
+function UpdateCard({ snap, onClick }: { snap: Snapshot; onClick: () => void }) {
+  const u = snap.update;
+  const run = u?.run?.state === 'running' || u?.run?.state === 'failed' ? u.run : null;
+  if (!run && !u?.available) return null;
+  return (
+    <button className="update-card no-drag" onClick={onClick} data-action="show-update" data-testid="update-card">
+      {run?.state === 'running' ? <Spinner size={13} /> : <Glyph name={run ? 'warning' : 'house'} size={15} />}
+      <span>
+        <b>{run?.state === 'running' ? 'Updating Homecoming…' : run ? 'Homecoming wasn\'t updated' : `Homecoming ${u!.available!.version} is out`}</b>
+        <small>{run ? 'Show where it is' : 'See what\'s new'}</small>
+      </span>
+    </button>
+  );
+}

@@ -632,10 +632,10 @@ function foundView(v: SourceView, src: Source, found: { files: string[]; actions
     detail: `${found.files.join('\n')}\n${why}`, actions: found.actions };
 }
 
-// The service Claude is working on now, by name (the others wait their turn).
+// The services Claude is working on now (a few at once, as AI Settings says), by name: the others wait their turn.
 function agentRunning(inp: StatusInput): string | null {
-  const id = Object.keys(inp.state.sources).find((k) => inp.state.sources[k]?.agent?.status === 'running');
-  return id ? BY_ID[id]?.name ?? null : null;
+  const ids = Object.keys(inp.state.sources).filter((k) => inp.state.sources[k]?.agent?.status === 'running' && BY_ID[k]);
+  return ids.length ? list(ids.map((id) => BY_ID[id].name)) : null;
 }
 
 function exportView(src: Source, inp: StatusInput): SourceView {

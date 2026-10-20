@@ -4,7 +4,7 @@ import { agentProfile, codexPermissions } from '../../src/main/ask.ts';
 import { resolvePaths } from '../../src/main/paths.ts';
 import { addEvent, agentNeed, type AgentState, answerOf, type AskTurn, DEFAULT_ASK, describeTool, explainError, followupPrompt, isLocalAddress, modelLabel,
   needText, PROVIDERS, RECHECK_DAYS, RETENTION, retentionOk, thoughtsOf, titleOf } from '../../src/shared/ask.ts';
-import { blocks, embedKey, embedOf, partialEmbed } from '../../src/shared/markdown.ts';
+import { blocks, type Embed, embedKey, embedOf, embedWords, partialEmbed } from '../../src/shared/markdown.ts';
 
 const turn = (question: string, answer: string): AskTurn => ({ question, answer, provider: 'anthropic', model: 'm', startedAt: '', events: [] });
 
@@ -191,6 +191,48 @@ test('conversations and photos an answer shows, on lines of their own', () => {
   assert.deepEqual(b[3].embed, { kind: 'photos', ids: [7, 8] });
   for (const s of ['[[', '[[ch', '[[chat:12', '[[chat:12-1', '[[photos:3,4]']) assert.ok(partialEmbed(s), s);
   for (const s of ['[[chat:12]] done', 'plain text', '[[chat:12]]x']) assert.ok(!partialEmbed(s), s);
+});
+
+test('the rest an answer shows: maps, days, charts, people, emails, songs, trips, calendars, what they know', () => {
+  const cases: [string, Embed | null, string | null][] = [
+    ['[[map:3, 4,3]]', { kind: 'map', ids: [3, 4], span: null }, 'map:3,4'],
+    ['[[map:2024-03-05..2024-03-01]]', { kind: 'map', ids: [], span: { from: '2024-03-01', to: '2024-03-05' } }, 'map:2024-03-01..2024-03-05'],
+    ['[[places:2024-03-01 to 2024-03-01]]', { kind: 'map', ids: [], span: { from: '2024-03-01', to: '2024-03-01' } }, 'map:2024-03-01'],
+    ['[[day:2025-06-01]]', { kind: 'day', date: '2025-06-01' }, 'day:2025-06-01'],
+    ['[[trend:Messages]]', { kind: 'trend', what: 'messages', filter: null, years: null }, 'trend:messages'],
+    ['[[trend:messages:Maya Chen:2024-2023]]', { kind: 'trend', what: 'messages', filter: 'Maya Chen', years: ['2023', '2024'] }, 'trend:messages:Maya Chen:2023-2024'],
+    ['[[chart:visits:https://reddit.com:2025]]', { kind: 'trend', what: 'visits', filter: 'https://reddit.com', years: ['2025', '2025'] }, 'trend:visits:https://reddit.com:2025'],
+    ['[[person: Grace   Hopper ]]', { kind: 'person', name: 'Grace Hopper' }, 'person:Grace Hopper'],
+    ['[[email:812]]', { kind: 'email', ids: [812] }, 'email:812'],
+    ['[[email:812,813]]', { kind: 'email', ids: [812] }, 'email:812'],
+    ['[[podcasts:5,6]]', { kind: 'songs', ids: [5, 6] }, 'songs:5,6'],
+    ['[[trip:2025-03-21]]', { kind: 'trip', date: '2025-03-21' }, 'trip:2025-03-21'],
+    ['[[agenda:2025-03-10..2025-03-14]]', { kind: 'agenda', ids: [], span: { from: '2025-03-10', to: '2025-03-14' } }, 'agenda:2025-03-10..2025-03-14'],
+    ['[[events:40,41]]', { kind: 'agenda', ids: [40, 41], span: null }, 'agenda:40,41'],
+    ['[[they-know:Facebook]]', { kind: 'they-know', service: 'Facebook' }, 'they-know:Facebook'],
+    ['[[they-know]]', { kind: 'they-know', service: null }, 'they-know:'],
+    // Not one: no such day, no rowids, an unknown kind, no spec, mid-sentence.
+    ['[[day:2025-02-30]]', null, null], ['[[day:yesterday]]', null, null], ['[[map:near home]]', null, null], ['[[email:]]', null, null],
+    ['[[trend:]]', null, null], ['[[trend:12]]', null, null], ['[[person:]]', null, null], ['[[weather:today]]', null, null],
+    ['see [[day:2025-06-01]] here', null, null],
+  ];
+  for (const [line, want, key] of cases) {
+    const e = embedOf(line);
+    assert.deepEqual(e, want, line);
+    if (key) assert.equal(embedKey(e!), key, line);
+  }
+  assert.equal((embedOf(`[[map:${Array.from({ length: 300 }, (_, i) => i + 1).join(',')}]]`) as { ids: number[] }).ids.length, 200, '200 at most on a map');
+  assert.equal((embedOf('[[songs:1,2,3,4,5,6,7,8,9,10,11,12]]') as { ids: number[] }).ids.length, 10, 'ten songs at most');
+  // Mid-sentence: a citation of its first record, or just words.
+  assert.deepEqual(embedWords(embedOf('[[email:9]]')!), { rowid: 9, words: 'the email' });
+  assert.deepEqual(embedWords(embedOf('[[songs:4]]')!), { rowid: 4, words: 'the song' });
+  assert.deepEqual(embedWords(embedOf('[[person:Grace Hopper]]')!), { rowid: null, words: 'Grace Hopper' });
+  assert.equal(embedWords(embedOf('[[day:2025-06-01]]')!).rowid, null);
+  // In a paragraph, each on its own line, as its own block; and nothing of one shows while it's still being written.
+  const b = blocks('Where you were:\n[[map:2025-03-19..2025-03-23]]\nAnd how often you texted her:\n[[trend:messages:Grace Hopper]]');
+  assert.deepEqual(b.map((x) => x.t), ['p', 'embed', 'p', 'embed']);
+  for (const s of ['[[ma', '[[map:2025-03', '[[trend:messages:Grace Hop', '[[they-know', '[[person:Grace Hopper]']) assert.ok(partialEmbed(s), s);
+  for (const s of ['[[day:2025-06-01]] and more', '[[person:Grace]]x']) assert.ok(!partialEmbed(s), s);
 });
 
 test('the agents are kept away from the corpus and the app data', () => {

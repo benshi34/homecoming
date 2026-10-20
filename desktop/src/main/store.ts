@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_ASK, LOCAL_SERVERS, PROVIDER, type AskSettings } from '../shared/ask.ts';
+import { AT_ONCE, agentsAtOnce } from '../shared/at_once.ts';
 import type { AppState, ServiceEntry, SourceState } from '../shared/types.ts';
 
 export function defaultState(): AppState {
@@ -13,7 +14,7 @@ export function defaultState(): AppState {
     found: [],
     ignoredFiles: [],
     importedFiles: [],
-    settings: { autoRefresh: true, watchDownloads: true },
+    settings: { autoRefresh: true, watchDownloads: true, agentsAtOnce: AT_ONCE.usual },
     onboarding: { done: false },
     identityDismissed: [],
     services: [],
@@ -26,10 +27,12 @@ export function fileKey(p: string, size: number): string {
 }
 
 // Fill in anything an older or hand-edited file is missing, and drop what doesn't belong.
-// Do It for Me, turned on before AI had its own switch, was agreeing to AI: it stays on.
+// Do It for Me, turned on before AI had its own switch, was agreeing to AI: it stays on. From before it could work on
+// several at once, or edited by hand: 3 at once, or the nearest it can be.
 function settingsFrom(d: AppState['settings'], r: unknown): AppState['settings'] {
   const s = { ...d, ...(r && typeof r === 'object' ? r : {}) } as AppState['settings'];
   if (s.agentExports && s.aiOn === undefined) Object.assign(s, { aiOn: true, aiAgreedAt: s.aiAgreedAt ?? new Date().toISOString() });
+  s.agentsAtOnce = agentsAtOnce(s);
   return s;
 }
 
@@ -59,6 +62,14 @@ export function normalize(raw: unknown): AppState {
     agentPausedAt: typeof r.agentPausedAt === 'string' ? r.agentPausedAt : undefined,
     readers: typeof r.readers === 'number' ? r.readers : undefined,
     fdaOnAt: typeof r.fdaOnAt === 'string' ? r.fdaOnAt : undefined,
+    lastVersion: typeof r.lastVersion === 'string' ? r.lastVersion : undefined,
+    update: r.update && typeof r.update === 'object' ? {
+      at: typeof r.update.at === 'string' ? r.update.at : undefined,
+      version: typeof r.update.version === 'string' ? r.update.version : undefined,
+      releases: Array.isArray(r.update.releases) ? r.update.releases.filter((x) => x && typeof x.version === 'string' && Array.isArray(x.bullets) && Array.isArray(x.text)) : undefined,
+      notified: typeof r.update.notified === 'string' ? r.update.notified : undefined,
+      tried: typeof r.update.tried === 'string' ? r.update.tried : undefined,
+    } : undefined,
   };
 }
 

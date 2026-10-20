@@ -115,9 +115,81 @@ class IndexTests(unittest.TestCase):
         out = self.index(c)
         self.assertNotIn("index: read again", out)
         con = sqlite3.connect(c / "corpus.db")
-        self.assertEqual(con.execute("pragma user_version").fetchone()[0], 1)
+        self.assertEqual(con.execute("pragma user_version").fetchone()[0], 2)
         self.assertIn("records_kind_source", [r[0] for r in con.execute("select name from sqlite_master where type = 'index'")])
         con.close()
+
+    def test_citations_survive_full_builds_and_deleted_numbers_are_never_reused(self):
+        c = self.corpus("citations")
+        original = {"id": "original", "source": "notes", "kind": "note", "text": "the harbour"}
+        self.write(c, "notes", [original])
+        self.index(c)
+        number = self.library(c)[2][("notes", "original")]
+
+        # A large, alphabetically earlier source forces a fresh build. It must not take the old citation's number.
+        self.write(c, "aaa", [{"id": "new", "source": "aaa", "kind": "note", "text": "a lighthouse " * 100}])
+        self.index(c)
+        self.assertEqual(self.library(c)[2][("notes", "original")], number)
+        self.index(c, UMP_FULL_INDEX="1")
+        self.assertEqual(self.library(c)[2][("notes", "original")], number)
+
+        (c / "normalized/notes.jsonl").unlink()
+        self.index(c, UMP_FULL_INDEX="1")
+        self.write(c, "notes", [{**original, "id": "replacement"}])
+        self.index(c, UMP_FULL_INDEX="1")
+        with sqlite3.connect(c / "corpus.db") as db:
+            self.assertIsNone(db.execute("select id from records where rowid = ?", (number,)).fetchone(),
+                              "a deleted citation is missing, not a different record")
+            reservation = db.execute("select key from record_ids where rowid = ?", (number,)).fetchone()[0]
+            self.assertRegex(reservation, r"^[0-9a-f]{64}$", "reservations don't retain deleted records' source or identifier")
+        self.write(c, "notes", [original])
+        self.index(c, UMP_FULL_INDEX="1")
+        self.assertEqual(self.library(c)[2][("notes", "original")], number, "a returning record keeps its number")
+
+    def test_reordering_and_editing_a_source_keeps_its_citations_during_incremental_updates(self):
+        c = self.corpus("citations-incremental")
+        self.write(c, "visits", [{"id": str(i), "source": "visits", "kind": "visit", "text": "a lighthouse"} for i in range(1200)])
+        notes = [{"id": str(i), "source": "notes", "kind": "note", "text": "the harbour"} for i in range(3)]
+        self.write(c, "notes", notes)
+        self.index(c)
+        numbers = self.library(c)[2]
+        self.write(c, "notes", [{**r, "text": "the harbour and kettle"} for r in reversed(notes)])
+        self.assertIn("index: read again notes", self.index(c))
+        self.assertEqual(self.library(c)[2], numbers)
+
+        self.write(c, "notes", [{**notes[0], "id": "new"}])
+        self.assertIn("index: read again notes", self.index(c))
+        self.assertGreater(self.library(c)[2][("notes", "new")], max(numbers.values()))
+        self.index(c, UMP_FULL_INDEX="1")
+        with sqlite3.connect(c / "corpus.db") as db:
+            for r in notes:
+                self.assertIsNone(db.execute("select id from records where rowid = ?", (numbers[("notes", r["id"])],)).fetchone())
+
+    def test_upgrade_adopts_existing_record_numbers(self):
+        c = self.corpus("citations-upgrade")
+        self.write(c, "notes", [{"id": "a", "source": "notes", "kind": "note", "text": "the harbour"}])
+        with sqlite3.connect(c / "corpus.db") as db:
+            db.execute("create table records (rowid integer primary key, source text, id text)")
+            db.execute("insert into records values (41, 'notes', 'a')")
+            db.execute("pragma user_version = 1")
+        self.index(c)
+        self.assertEqual(self.library(c)[2][("notes", "a")], 41)
+        self.write(c, "aaa", [{"id": "b", "source": "aaa", "kind": "note", "text": "a lighthouse"}])
+        self.index(c, UMP_FULL_INDEX="1")
+        self.assertEqual(self.library(c)[2], {("notes", "a"): 41, ("aaa", "b"): 42})
+
+    def test_mail_deduplication_reserves_the_missing_citation(self):
+        c = self.corpus("citations-mail")
+        self.write(c, "mail", [email(0, "mail")])
+        self.index(c)
+        number = self.library(c)[2][("mail", "<m0@example.test>")]
+        self.write(c, "gmail", [email(0, "gmail")])
+        self.index(c)
+        with sqlite3.connect(c / "corpus.db") as db:
+            self.assertIsNone(db.execute("select id from records where rowid = ?", (number,)).fetchone())
+        (c / "normalized/gmail.jsonl").unlink()
+        self.index(c)
+        self.assertEqual(self.library(c)[2][("mail", "<m0@example.test>")], number)
 
 
 class GooglePhotosTests(unittest.TestCase):

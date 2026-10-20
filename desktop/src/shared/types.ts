@@ -3,6 +3,7 @@
 import type { AskSettings, LocalStatus, SignIn } from './ask.ts';
 import type { Inbox } from './inbox.ts';
 import type { AgentReady, BrowserFound, PhoneInfo } from './setup.ts';
+import type { Release } from './version.ts';
 
 export type Access = 'ok' | 'blocked' | 'absent';
 
@@ -159,6 +160,8 @@ export interface Settings {
   agentDownloads?: boolean;
   // While an export is on its way, Claude opens Chrome every few hours to look for it (needs downloads on). On unless turned off.
   agentChecks?: boolean;
+  // How many services Claude works on at once, each in a tab group of its own: 1 to 5, 3 unless set (shared/at_once.ts).
+  agentsAtOnce?: number;
   // Closing the window leaves the app in the menu bar, reading and watching (the packaged app).
   background?: boolean;
   // Opening at login (the packaged app): follows background until the person sets it.
@@ -179,6 +182,7 @@ export interface Settings {
   notificationChecks?: boolean; // and in this Mac's notifications (on unless turned off)
   inboxesOff?: string[]; // addresses Claude doesn't look in for those emails
   iphoneDevice?: string; // the device whose backup is read (a backup's udid); unset: the one read before, else the newest iPhone's
+  updateChecks?: boolean; // look for a newer Homecoming once a day (main/updates.ts): on unless turned off
 }
 
 export interface AppState {
@@ -197,6 +201,29 @@ export interface AppState {
   agentPausedAt?: string; // Do It for Me's checks couldn't run (Claude Code signed out, say), and you were told then
   readers?: number; // the version of the exports' readers your exports were last read with (main.ts READERS)
   fdaOnAt?: string; // Full Disk Access was last seen on: losing it after an update is then said (status.ts fdaLost)
+  lastVersion?: string; // the newest Homecoming that has run and shown what's new in it (shared/version.ts)
+  // The last look for a newer Homecoming (main/updates.ts): when it last worked, the newer version it found and what's
+  // new in it, the version a notification was shown for, and when it was last tried (a failed look waits a day too).
+  update?: { at?: string; version?: string; releases?: Release[]; notified?: string; tried?: string };
+}
+
+// Which Homecoming this is (shared/version.ts): package.json's version, and the commit and day it was built.
+// modified: built with changes of its own; source: run from Terminal rather than the installed app; from: the folder
+// it was built from, which Update updates.
+export interface BuildInfo { version: string; commit: string | null; modified?: boolean; date: string | null; source?: boolean; from?: string | null }
+
+// A newer Homecoming (main/updates.ts). how: how this copy updates. app: Update, from the clone it was built from;
+// terminal: it's run from Terminal, so npm run update there; zip: downloaded as a ZIP, so download it again; other:
+// built from a clone of something else; gone: the folder it was built from isn't there; off: never looked for (the
+// demo, read-only mode, the tests). run: the update going, or how it ended.
+export interface UpdateView {
+  checks: boolean;
+  checkedAt?: string;
+  checking?: boolean;
+  available?: { version: string; releases: Release[] };
+  how: 'app' | 'terminal' | 'zip' | 'other' | 'gone' | 'off';
+  from?: string; // that folder, with ~ for your home folder
+  run?: { state: 'running' | 'failed' | 'done'; step?: string; message?: string; log: string[] };
 }
 
 // The Setup Assistant: whether it's finished, where it is, and which web accounts the person said they use.
@@ -345,6 +372,10 @@ export interface Snapshot {
   log: { time: string; line: string }[];
   ask: AskView;
   libraryExport: LibraryExportView | null; // Export Your Library: the one going, or the last one's result until it's put away
+  build?: BuildInfo;
+  update?: UpdateView;
+  // What's new since the version that last ran, shown once after an update (shared/version.ts); null once it's seen.
+  whatsNew?: Release[] | null;
 }
 
 // Export Your Library (main library_export.ts, py/export_library.py): the library in one .zip, saved where you choose.

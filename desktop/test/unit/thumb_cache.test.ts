@@ -33,3 +33,14 @@ test('what a grid on screen shows stays, however many; when it goes, so can they
   assert.equal(c.size, 2);
   assert.ok(c.has('7'));
 });
+
+test('a changed library forgets visible pictures and missing pictures, and invalidates pending requests', () => {
+  const c = new ThumbCache(2);
+  c.showing({}, ['240:1', '240:2']);
+  c.set('240:1', 'old image');
+  c.set('240:2', '');
+  const pendingGeneration = c.generation;
+  c.clear();
+  assert.ok(!c.has('240:1') && !c.has('240:2'));
+  assert.notEqual(c.generation, pendingGeneration, 'a reply from before the change must not repopulate the cache');
+});

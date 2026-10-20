@@ -1,6 +1,7 @@
 import type { AskConversation, AskEvent, AskProvider, AskSettings, AskSummary } from '../shared/ask.ts';
 import type { ExploreProgress } from '../shared/explore.ts';
 import type { AskView, DirectoryEntry, ExportPart, LibrarySizes, Onboarding, Settings, Snapshot } from '../shared/types.ts';
+import type { Release } from '../shared/version.ts';
 
 export interface Api {
   snapshot(): Promise<Snapshot>;
@@ -21,6 +22,11 @@ export interface Api {
   exploreFirst(key: string): Promise<void>; // the page you're on, next in line
   onExploreProgress(cb: (p: ExploreProgress) => void): () => void;
   libraryExport: LibraryExportApi;
+  // What's new (main.ts "whats-new"): this version's, for the menu's What's New; or the one shown once, seen now.
+  whatsNew(op: 'get' | 'seen'): Promise<Release[]>;
+  // A newer Homecoming (main.ts "update"): look now, update to it (error: why not, or how it updates instead), or put
+  // away how an update ended.
+  update(op: 'check' | 'start' | 'clear'): Promise<{ ok?: boolean; error?: string }>;
   onAsk(cb: (channel: 'ask-event' | 'ask-done', payload: AskPush) => void): () => void;
 }
 

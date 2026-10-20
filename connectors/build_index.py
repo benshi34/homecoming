@@ -17,14 +17,14 @@ import json
 import os
 import shutil
 import sqlite3
+from itertools import islice
 
 from common import CORPUS, FIELDS, MANIFEST, NORM, write_manifest
 
 DB = CORPUS / "corpus.db"
 COLS = [f for f in FIELDS]
-SCHEMA = 1  # pragma user_version of a database built this way: one from before is built from nothing
+SCHEMA = 2  # v2 reserves record numbers across incremental updates, full builds and deletions
 FTS_COLS = "title, text, author, thread_name, participants"
-INSERT = f"insert or ignore into records ({', '.join(COLS)}) values ({', '.join('?' * len(COLS))})"
 
 
 def note_same(same):
@@ -105,21 +105,54 @@ def files():
 def load(con, source, f, emails):
     """One source's file into the table, and noted in built_from. Returns its Rows."""
     rows = Rows(f[2], emails)
-    con.executemany(INSERT, rows)
+    # Stage a source in bulk, then join it to its permanent numbers. Assigning numbers as records are inserted
+    # would make a saved Ask citation point elsewhere after a source is re-read or the index is rebuilt.
+    con.execute(f"create temp table if not exists incoming as select {', '.join(COLS)} from records where 0")
+    records = iter(rows)
+    # Bound the staging space even for a multi-gigabyte mailbox or message history.
+    for batch in iter(lambda: list(islice(records, 512)), []):
+        con.execute("delete from incoming")
+        con.executemany(f"insert into incoming values ({', '.join('?' * len(COLS))})", batch)
+        con.execute("""insert into record_ids (key)
+                       select distinct record_key(source, id) from incoming i
+                       where not exists (select 1 from record_ids k where k.key = record_key(i.source, i.id))""")
+        con.execute(f"""insert or ignore into records (rowid, {', '.join(COLS)})
+                        select k.rowid, {', '.join('i.' + c for c in COLS)} from incoming i
+                        join record_ids k on k.key = record_key(i.source, i.id)""")
+    con.execute("delete from incoming")
     con.execute("insert into built_from values (?, ?, ?, ?, ?, ?)", (source, f[0], f[1], rows.hash.hexdigest(), rows.n, rows.same))
     return rows
+
+
+def record_key(source, rid):
+    # Deleted records leave only an opaque reservation, not their original source or identifier.
+    return hashlib.sha256(json.dumps([source, rid], ensure_ascii=False).encode()).hexdigest()
 
 
 def fresh(tmp, now):
     """A new database with every source in it: {source: (rows, Mail's left out)}."""
     con = sqlite3.connect(tmp)
+    con.create_function("record_key", 2, record_key, deterministic=True)
     con.execute("pragma journal_mode = off")  # a file of its own until it's done: nothing to roll back to
     con.executescript(f"""
         create table records (rowid integer primary key, {", ".join(f"{c} text" for c in COLS)}, unique(source, id));
+        create table record_ids (rowid integer primary key, key text not null unique);
         create virtual table fts using fts5({FTS_COLS},
             content='records', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
         create table built_from (source text primary key, size integer, mtime_ns integer, hash text, rows integer, same integer);
     """)
+    if DB.exists():
+        previous = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        try:
+            # Keep reservations for deleted records too: a missing citation must never open a new record. On the
+            # first v2 build, adopt the existing numbers so saved answers survive the upgrade.
+            if previous.execute("select 1 from sqlite_master where name = 'record_ids'").fetchone():
+                reserved = previous.execute("select rowid, key from record_ids")
+            else:
+                reserved = ((rowid, record_key(source, rid)) for rowid, source, rid in previous.execute("select rowid, source, id from records"))
+            con.executemany("insert into record_ids (rowid, key) values (?, ?)", reserved)
+        finally:
+            previous.close()
     totals, emails = {}, set()
     for source, f in now.items():
         r = load(con, source, f, emails)
@@ -185,6 +218,7 @@ def update(tmp, now, was):
         return None
     clone(DB, tmp)
     con = sqlite3.connect(tmp)
+    con.create_function("record_key", 2, record_key, deterministic=True)
     con.execute("pragma journal_mode = off")
     if con.execute("pragma freelist_count").fetchone()[0] * 4 > con.execute("pragma page_count").fetchone()[0]:
         con.close()

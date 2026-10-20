@@ -837,9 +837,15 @@ COLS = "rowid, source, id, kind, ts, ts_end, author, is_me, thread, thread_name,
 
 def month(name, con=None, progress=None):
     """Every event in a local month ('2026-09'), in order. Also how many records were read, and how many left out."""
-    con = con or connect()
     lo, hi = month_range(name)
-    # A day either side in UTC, for records in their own time zones; then only what falls in the month locally.
+    return {"month": name, **between(lo, hi, con, progress)}
+
+
+def between(lo, hi, con=None, progress=None):
+    """Every event from one local time to another (a month; a day, for Ask), in order, with how many records were
+    read and how many left out."""
+    con = con or connect()
+    # A day either side in UTC, for records in their own time zones; then only what falls in the span locally.
     rows = con.execute(f"select {COLS} from records where ts >= ? and ts < ? order by ts",
                        ((lo - timedelta(days=1)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
                         (hi + timedelta(days=1)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))).fetchall()
@@ -863,7 +869,7 @@ def month(name, con=None, progress=None):
     events = [e for e in events if not (e["kind"] == "app" and e.get("seconds") is not None and 0 < e["seconds"] < 120)]
     # In the order things happened, whatever zone each is written in (photos keep their own).
     events.sort(key=lambda e: (e.pop("_at"), e["kind"]))
-    return {"month": name, "records": len(recs), "left_out": left_out, "events": events}
+    return {"records": len(recs), "left_out": left_out, "events": events}
 
 
 def this_month():
