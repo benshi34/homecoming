@@ -17,6 +17,8 @@ export interface Api {
   icons(): Promise<Record<string, [string, string]>>; // brand logos: slug or source id -> [hex, svg path]
   ask: AskApi;
   explore<T = unknown>(op: string, args?: unknown[]): Promise<T | { error: string }>; // shared/explore.ts has the shapes
+  exploreStatus(): Promise<ExploreProgress[]>; // where each artifact being built stands (main explore.ts status)
+  exploreFirst(key: string): Promise<void>; // the page you're on, next in line
   onExploreProgress(cb: (p: ExploreProgress) => void): () => void;
   libraryExport: LibraryExportApi;
   onAsk(cb: (channel: 'ask-event' | 'ask-done', payload: AskPush) => void): () => void;

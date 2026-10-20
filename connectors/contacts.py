@@ -36,7 +36,7 @@ def norm_handle(s):
 
 def tail(s):
     """A number's last nine digits: matches a friend abroad saved without their country code, when the full number
-    doesn't."""
+    doesn't, and only one number in your contacts ends this way (Resolver.name)."""
     d = re.sub(r"\D", "", s or "")
     return d[-9:] if "@" not in (s or "") and len(d) >= 9 else None
 
@@ -288,10 +288,16 @@ class Resolver:
         if key and name:
             self.by_handle.setdefault(key, name)
             if tail(handle):
-                self.by_tail.setdefault(tail(handle), name)
+                self.by_tail.setdefault(tail(handle), {}).setdefault(key, name)  # each number that ends this way
 
     def name(self, handle):
-        return self.by_handle.get(norm_handle(handle)) or (self.by_tail.get(tail(handle)) if tail(handle) else None)
+        """The contact for a number or address: exactly, else by its last nine digits when only one number in your
+        contacts ends with them (a UK and a German number that end alike are no one's)."""
+        exact = self.by_handle.get(norm_handle(handle))
+        if exact or not tail(handle):
+            return exact
+        same = self.by_tail.get(tail(handle), {})
+        return next(iter(same.values())) if len(same) == 1 else None
 
     def label(self, handle):
         """Contact name if known, else the raw handle."""

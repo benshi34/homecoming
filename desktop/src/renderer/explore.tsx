@@ -14,7 +14,7 @@ import {
   type JourneyPlace, type Journeys, type Leg, type Listening, type Made, type MadeKind, type Movement, type OnThisDay, type OnThisDayYear, type People, type Person,
   type PersonDetail, type Places, type RecordBrief, type Rhythms, type Stream, type StreamEvent, clockOf, GROUP_OF, STREAM_GROUPS, streamDays,
   streamMatches, type Thread, type Trip, type Watching, WEEKDAYS, type World, type YearStory, type AdHow, type Advertiser, type Decided, kindName,
-  type TheyKnow, type Told,
+  type TheyKnow, type Told, type ExploreAt, type ThreadMessage,
 } from '../shared/explore.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
@@ -62,6 +62,14 @@ export function exploreOpen(id: ExplorePage) {
   for (const f of onHome) f();
 }
 export const explorePageTitle = (id: ExplorePage) => TITLES[id];
+
+// Explore on a person's page or a group chat's, with Back to Your People or Group Chats, then home (a conversation
+// opened from Ask).
+export function exploreOpenAt(at: ExploreAt) {
+  history = [entryOf({ id: 'home' }), entryOf({ id: at.page === 'person' ? 'people' : 'groups' }), entryOf({ id: at.page, key: at.key, name: at.name })];
+  returnTo = null;
+  for (const f of onHome) f();
+}
 
 // A page's choice, kept in its entry in Back's history under a name unique on the page: useState that comes back as
 // it was. No name: not kept.
@@ -252,7 +260,8 @@ function useArtifact<T>(op: string, args: string[] = []): { data: T | null; erro
 }
 
 // How far each artifact being built has got (main sends "explore-progress"), and when the library changes. Listened
-// to from the first time Explore opens: before that, nothing's here to go out of date.
+// to from the first time Explore opens: before that, nothing's here to go out of date. Explore can open while they're
+// being built (ahead, as the app starts), so it asks then where each one stands (main explore.ts status).
 const progress = new Map<string, ExploreProgress>();
 const listeners = new Set<() => void>();
 let listening = false;
@@ -265,10 +274,15 @@ function useProgress(k: string): ExploreProgress | undefined {
         // The library changed: what's here is built again (main has it built ahead, or builds it when asked).
         if (p.changed) {
           cache.clear();
+          progress.clear();
           return;
         }
-        const prev = progress.get(p.key);
-        progress.set(p.key, p.steps ? { key: p.key, steps: p.steps } : p.waiting ? { key: p.key, waiting: p.waiting } : { ...prev, ...p, waiting: undefined });
+        // Main says all of where it stands (in line, or building and how far); a quick look says only what's new.
+        progress.set(p.key, p.started || p.place ? p : { ...progress.get(p.key), ...p });
+        for (const l of listeners) l();
+      });
+      void api.exploreStatus().then((all) => {
+        for (const s of all) if (!progress.has(s.key)) progress.set(s.key, s); // what came since is newer
         for (const l of listeners) l();
       });
     }
@@ -314,6 +328,11 @@ function progressText(p: ExploreProgress | undefined): string {
   return p.total ? `${count(p.done)} of ${count(p.total)}` : p.done ? `${count(p.done)} so far` : '';
 }
 const fractionOf = (p: ExploreProgress | undefined) => (p?.total ? Math.min(1, (p.done ?? 0) / p.total) : undefined);
+// How far it is, all its steps together (0 to 1), or undefined when there's no telling yet.
+const overallOf = (p: ExploreProgress | undefined) => (p?.steps?.length && p.at !== undefined ? Math.min(1, (p.at + (fractionOf(p) ?? 0)) / p.steps.length) : undefined);
+const ordinal = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')}`;
+// Its place in line: "next", "3rd in line".
+const placeText = (p: ExploreProgress) => (!p.place || p.place === 1 ? 'next' : `${ordinal(p.place)} in line`);
 
 // While an artifact is built: a ring that fills as its steps finish, and the steps, ticked off, the current one with
 // how far it has got.
@@ -322,12 +341,18 @@ function Building({ k, what, error, name }: { k: string; what: ArtifactId; error
   const a = ART[what];
   const title = what === 'person' && name ? name : a.title;
   if (error) return <div className="empty"><h2>Couldn't build {title}</h2><span className="selectable">{error}</span></div>;
-  const overall = p?.steps && p.at !== undefined ? (p.at + (fractionOf(p) ?? 0)) / p.steps.length : undefined;
+  const waiting = !!p?.place;
+  const others = (p?.place ?? 1) - 1;
+  // The page you're on goes next, ahead of the rest of the line.
+  useEffect(() => {
+    if (waiting && (p?.place ?? 1) > 1) void api.exploreFirst(k);
+  }, [k, waiting]);
   return (
-    <div className="building appear-soft" data-testid="explore-building" style={tone(a.tone)}>
-      <Ring value={p?.waiting ? undefined : overall}><Glyph name={a.glyph} size={34} strokeWidth={1.6} /></Ring>
-      <h2>{p?.waiting ? `${title} is next` : `Putting together ${title}`}</h2>
-      <p>{p?.waiting ? `Right after ${OP_TITLE[p.waiting] ?? 'another one'}.` : 'Once, on this Mac. After that it opens straight away.'}</p>
+    <div className="building appear-soft" data-testid="explore-building" data-state={waiting ? 'waiting' : p?.started ? 'building' : 'loading'} style={tone(a.tone)}>
+      <Ring value={waiting ? 0 : overallOf(p)}><Glyph name={a.glyph} size={34} strokeWidth={1.6} /></Ring>
+      <h2>{waiting ? `${title} is ${placeText(p!)}` : `Putting together ${title}`}</h2>
+      <p>{waiting ? `Waiting its turn: after ${OP_TITLE[p!.waiting ?? ''] ?? 'the one being built'}${others ? ` and ${others === 1 ? 'one other' : `${others} others`}` : ''}.`
+        : 'Once, on this Mac. After that it opens straight away.'}</p>
       {p?.steps && (
         <ol className="build-steps" data-testid="build-steps">
           {p.steps.map((s, i) => {
@@ -848,14 +873,19 @@ function Tile({ id, i, a, onOpen, look, locked, children }: { id: HomeId; i: num
   );
 }
 
+// A tile while its artifact is on its way: waiting its turn (its place in line, a bar not yet started), being built
+// (the step it's on, and a bar for all its steps), or just being read (nothing to say yet).
 function TileProgress({ k }: { k: string }) {
   const p = useProgress(k);
+  const waiting = !!p?.place;
   const step = p?.steps && p.at !== undefined ? p.steps[p.at] : null;
+  const note = waiting ? `Waiting its turn · ${placeText(p!)}`
+    : p?.started ? [p.detail ?? step, progressText(p)].filter(Boolean).join(' · ') || 'Starting…' : 'Loading…';
   return (
-    <div className="tile-progress">
+    <div className="tile-progress" data-testid="tile-progress" data-state={waiting ? 'waiting' : p?.started ? 'building' : 'loading'}>
       <div className="shimmer" />
-      <div className="tile-note">{p?.waiting || !p ? 'Waiting its turn…' : [p.detail ?? step, progressText(p)].filter(Boolean).join(' · ') || 'Starting…'}</div>
-      <ProgressBar value={p?.waiting || !p ? undefined : fractionOf(p)} small />
+      <div className="tile-note">{note}</div>
+      <ProgressBar value={waiting ? 0 : overallOf(p)} small />
     </div>
   );
 }
@@ -1234,7 +1264,7 @@ function PersonRow({ p, max, onOpen }: { p: Person; max: number; onOpen: () => v
 function PersonView({ ctx, k }: { ctx: Ctx; k: string }) {
   const { data, error, k: building } = useArtifact<PersonDetail>('person', [k]);
   const people = useArtifact<People>('people').data;
-  const p = people?.people.find((x) => x.key === k);
+  const p = people?.people.find((x) => x.key === k || x.aliases?.includes(k)); // by any name Your People made them one by
   if (!data || !p) return <Building k={building} what="person" error={error} name={p?.name} />;
   const months = fillMonths(Object.keys(data.months));
   const series = months.map((m) => {
@@ -1333,12 +1363,12 @@ function PlacesView({ ctx }: { ctx: Ctx }) {
 }
 
 // A trip by its places: "Kyoto and Tokyo, Japan"; one across countries by its cities alone ("Paris and London"), or by
-// its countries when no city is known. (Home's country, the United States, goes unsaid.)
+// its countries when no city is known.
 function tripTitle(t: { places: string[]; countries: string[] }) {
   const cs = t.countries.filter(Boolean);
   if (!t.places[0]) return cs.length ? andList(cs.slice(0, 3)) : 'A trip';
   const where = andList(t.places.slice(0, 2));
-  return cs.length === 1 && cs[0] !== 'United States' ? `${where}, ${cs[0]}` : where;
+  return cs.length === 1 ? `${where}, ${cs[0]}` : where;
 }
 // "Mar 3 to 5, 2025", "Dec 30, 2024 to Jan 2, 2025"
 function shortRange(a: string, b: string) {
@@ -2554,7 +2584,12 @@ function usePersonOf(): (name: string) => Person | undefined {
   const people = useArtifact<People>('people').data;
   const by = useMemo(() => {
     const m = new Map<string, Person>();
-    for (const p of people?.people ?? []) for (const kk of [p.key, nameKey(p.name), ...(p.aliases ?? [])]) if (!m.has(kk)) m.set(kk, p);
+    for (const p of people?.people ?? []) for (const kk of [p.key, ...(p.aliases ?? [])]) if (!m.has(kk)) m.set(kk, p);
+    // By name too, unless more of your people than one have it (two Oren Halvorsens on Instagram; every "Instagram User"):
+    // then only the one known by it, if there is one (the Oren Halvorsen in your Contacts).
+    const named = new Map<string, Person[]>();
+    for (const p of people?.people ?? []) named.set(nameKey(p.name), [...(named.get(nameKey(p.name)) ?? []), p]);
+    for (const [n, ps] of named) if (!m.has(n) && ps.length === 1) m.set(n, ps[0]);
     return m;
   }, [people]);
   return (name) => (name === 'You' ? undefined : by.get(nameKey(name)));
@@ -2630,15 +2665,24 @@ function GroupView({ ctx, k }: { ctx: Ctx; k: string }) {
 
 // The conversation a message is in, the way Messages shows it: your messages on the right, theirs on the left, the
 // day's whole exchange and a little either side, with earlier and later a click away. The message you came from is
-// marked and scrolled to.
-export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number; onClose: () => void; onRecord: (n: number) => void }) {
+// marked and scrolled to. In a sheet of its own, or in the one an Ask citation opens (cited.tsx).
+export function ConversationSheet({ rowid, onClose, onRecord, onExplore }: { rowid: number; onClose: () => void; onRecord: (n: number) => void; onExplore?: (at: ExploreAt) => void }) {
+  return <Sheet onClose={onClose} testId="conversation" width={560}><Conversation rowid={rowid} onRecord={onRecord} onDone={onClose} onExplore={onExplore} /></Sheet>;
+}
+
+// A sheet's content: onRecord shows a message's details (and its picture), onExplore the page Explore has for the
+// conversation (when it has one), onDone closes. onNone: it isn't a message in a conversation, and the caller shows
+// something else in its place.
+export function Conversation({ rowid, onRecord, onDone, onExplore, onNone }: {
+  rowid: number; onRecord: (n: number) => void; onDone: () => void; onExplore?: (at: ExploreAt) => void; onNone?: () => void;
+}) {
   const [t, setT] = useState<Thread | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<'before' | 'after' | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const keep = useRef<number | null>(null); // scroll height before older messages went in on top
   useEffect(() => {
-    void api.explore<Thread>('thread', [String(rowid)]).then((r) => (isError(r) ? setErr(r.error) : setT(r)));
+    void api.explore<Thread>('thread', [String(rowid)]).then((r) => (!isError(r) ? setT(r) : onNone ? onNone() : setErr(r.error)));
   }, [rowid]);
   useLayoutEffect(() => {
     const el = box.current;
@@ -2665,8 +2709,9 @@ export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number;
     });
   };
   const images = useThumbs(t ? t.messages.filter((m) => m.image).map((m) => m.rowid) : []);
+  const explore = t?.explore && onExplore ? t.explore : null;
   return (
-    <Sheet onClose={onClose} testId="conversation" width={560}>
+    <>
       {!t ? (err ? <p>{err}</p> : <div className="empty"><Spinner /></div>) : (
         <>
           <div className="convo-head">
@@ -2675,7 +2720,7 @@ export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number;
             <div className="convo-sub">{t.app} · {t.group ? 'group conversation' : 'one on one'}{t.one_sided ? ` · ${t.app} keeps only your side` : ''}</div>
           </div>
           <div className="convo" ref={box} data-testid="convo">
-            {t.more_before && <div className="convo-more"><Button size="small" onClick={() => more('before')} disabled={!!busy}>{busy === 'before' ? 'Loading…' : 'Show Earlier'}</Button></div>}
+            {t.more_before && <div className="convo-more"><Button size="small" onClick={() => more('before')} disabled={!!busy} testAction="convo-earlier">{busy === 'before' ? 'Loading…' : 'Show Earlier'}</Button></div>}
             {t.messages.map((m, i) => {
               const prev = t.messages[i - 1];
               const d = new Date(m.ts ?? NaN); // no time that can be right: "No date", not a day in 1970
@@ -2683,39 +2728,72 @@ export function ConversationSheet({ rowid, onClose, onRecord }: { rowid: number;
               const newDay = !prev || new Date(prev.ts ?? NaN).toDateString() !== d.toDateString();
               const gap = prev && !newDay && d.getTime() - new Date(prev.ts ?? NaN).getTime() > 3600_000;
               const who = m.me ? 'You' : m.author ?? t.name;
-              const newSender = !prev || prev.me !== m.me || prev.author !== m.author || newDay || gap || prev.kind === 'reaction';
+              const newSender = !prev || prev.me !== m.me || prev.author !== m.author || newDay || gap || prev.kind === 'reaction' || !!prev.unsent;
+              const anchor = m.rowid === rowid ? 'anchor' : '';
               return (
                 <div key={m.rowid}>
                   {newDay && <div className="convo-day">{dated ? d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : 'No date'}</div>}
                   {(newDay || gap) && dated && <div className="convo-time">{d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</div>}
-                  {m.kind === 'reaction' ? (
-                    <div className={`convo-reaction ${m.rowid === rowid ? 'anchor' : ''}`} data-rowid={m.rowid}>{who} {lowerFirst(m.text)}</div>
+                  {m.kind === 'reaction' || m.unsent ? (
+                    <div className={`convo-reaction ${anchor}`} data-rowid={m.rowid}>{who} {m.unsent ? 'unsent a message' : lowerFirst(m.text)}</div>
                   ) : (
-                    <div className={`msg-row ${m.me ? 'me' : 'them'} ${newSender ? 'first' : ''} ${m.rowid === rowid ? 'anchor' : ''}`} data-rowid={m.rowid}
+                    <div className={`msg-row ${m.me ? 'me' : 'them'} ${newSender ? 'first' : ''} ${anchor}`} data-rowid={m.rowid}
                       title={dated ? d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'No date'}>
                       {t.group && !m.me && newSender && <div className="msg-author">{who}</div>}
-                      {m.image && (
-                        <button className="msg-image" onClick={() => onRecord(m.rowid)} title="Open this message">
-                          {images.get(m.rowid) ? <img src={images.get(m.rowid)} alt="" draggable={false} /> : <Glyph name="photo" size={20} />}
-                        </button>
-                      )}
-                      {(m.text || !m.image) && <div className={`bubble ${m.me ? 'me' : 'them'}`}>{m.text || (m.files ? 'Attachment' : '')}</div>}
+                      <MessageBody m={m} picture={images.has(m.rowid) ? images.get(m.rowid) ?? null : undefined} onRecord={onRecord} />
                     </div>
                   )}
                 </div>
               );
             })}
-            {t.more_after && <div className="convo-more"><Button size="small" onClick={() => more('after')} disabled={!!busy}>{busy === 'after' ? 'Loading…' : 'Show Later'}</Button></div>}
+            {t.more_after && <div className="convo-more"><Button size="small" onClick={() => more('after')} disabled={!!busy} testAction="convo-later">{busy === 'after' ? 'Loading…' : 'Show Later'}</Button></div>}
           </div>
         </>
       )}
       <div className="sheet-actions">
-        <Button onClick={() => onRecord(rowid)}>This Message's Details</Button>
-        <Button kind="primary" onClick={onClose}>Done</Button>
+        {t && <Button onClick={() => onRecord(rowid)} testAction="convo-details">This Message's Details</Button>}
+        {explore && <Button onClick={() => onExplore!(explore)} testAction="convo-explore" title={explore.page === 'person' ? `${explore.name}'s page in Explore` : `${explore.name} in Group Chats`}>Open in Explore</Button>}
+        <span className="spacer" />
+        <Button kind="primary" onClick={onDone}>Done</Button>
       </div>
-    </Sheet>
+    </>
   );
 }
+
+// One message's bubbles, as Messages draws them: its picture (picture: undefined while it comes, null when it isn't
+// on this Mac), anything else that came with it by name, its text (up to three emoji alone, large), the reactions
+// kept on it, and "Edited", which shows what it said before where that's kept. In a conversation, and in the few
+// messages an Ask answer shows (embeds.tsx).
+export function MessageBody({ m, picture, onRecord }: { m: ThreadMessage; picture: string | null | undefined; onRecord: (n: number) => void }) {
+  const [earlier, setEarlier] = useState(false);
+  const side = m.me ? 'me' : 'them';
+  const attached = m.attachments ?? [];
+  const reactions = m.reactions ?? [];
+  return (
+    <>
+      {earlier && m.before?.map((x, i) => <div key={i} className={`bubble ${side} earlier`} data-testid="msg-earlier">{x}</div>)}
+      {m.image && (picture === null
+        ? <div className={`bubble ${side} attachment`}><Glyph name="photo" size={13} />Photo</div>
+        : <button className="msg-image" onClick={() => onRecord(m.rowid)} title="Open this message">{picture ? <img src={picture} alt="" draggable={false} /> : <Glyph name="photo" size={20} />}</button>)}
+      {attached.map((a) => <div key={a} className={`bubble ${side} attachment`} data-testid="msg-attachment"><Glyph name={PICTURE.test(a) ? 'photo' : 'doc'} size={13} /><span className="truncate">{a}</span></div>)}
+      {(m.text || (!m.image && !attached.length)) && (emojiOnly(m.text) ? <div className="bubble-emoji">{m.text}</div>
+        : <div className={`bubble ${side} ${m.text ? '' : 'attachment'}`}>{m.text || <><Glyph name="doc" size={13} />Attachment</>}</div>)}
+      {reactions.length > 0 && (
+        <div className="msg-reactions" data-testid="msg-reactions" title={reactions.map((x) => `${x.who ?? 'Someone'}: ${x.reaction}`).join('\n')}>
+          {reactions.map((x, i) => <span key={i}>{x.reaction}</span>)}
+        </div>
+      )}
+      {m.edited && (m.before?.length
+        ? <button className="msg-edited" onClick={() => setEarlier(!earlier)} aria-expanded={earlier} data-testid="msg-edited">{earlier ? 'Hide Edits' : 'Edited'}</button>
+        : <div className="msg-edited" data-testid="msg-edited">Edited</div>)}
+    </>
+  );
+}
+
+const PICTURE = /\.(heic|heif|jpe?g|png|gif|webp|tiff?)$/i;
+// Up to three emoji and nothing else, which Messages draws large, without a bubble.
+const emojiOnly = (s: string) => /^(\p{Extended_Pictographic}|\p{Emoji_Component}|‍|️|\s)+$/u.test(s) && /\p{Extended_Pictographic}/u.test(s)
+  && [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s.trim())].filter((g) => g.segment.trim()).length <= 3;
 
 // "Loved “ok”" -> "loved “ok”", after a name.
 const lowerFirst = (s: string) => (s ? s[0].toLowerCase() + s.slice(1) : s);

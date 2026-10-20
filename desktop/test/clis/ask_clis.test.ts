@@ -1,5 +1,7 @@
 // The real Claude Code and Codex CLIs, signed in with an API key, against stand-in model servers on localhost: what
 // the API-key providers do short of a real model. Skipped when a CLI isn't on this Mac. npm run test:clis.
+// Live Codex (invented records, existing ChatGPT sign-in):
+// UMP_LIVE_CODEX=1 node --test --test-name-pattern='Codex live' test/clis/ask_clis.test.ts
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -43,16 +45,16 @@ after(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-async function answer(question: string) {
+async function answer(question: string, id: string | null = null) {
   sent = [];
-  const r = ask.ask(null, question);
+  const r = ask.ask(id, question);
   const end = Date.now() + 180_000;
   while (!sent.some((s) => s.ch === 'ask-done' && s.p.id === r.id)) {
     if (Date.now() > end) throw new Error('no answer');
     await new Promise((x) => setTimeout(x, 50));
   }
   const turn = sent.find((s) => s.ch === 'ask-done')!.p.conversation!.turns.at(-1)!;
-  return { turn, events: sent.filter((s) => s.ch === 'ask-event').map((s) => s.p.event!) };
+  return { id: r.id, turn, events: sent.filter((s) => s.ch === 'ask-event').map((s) => s.p.event!) };
 }
 
 test('Claude Code with an API key: bare, its own tools off, the corpus tools through the app, images, streaming', { skip: !findClaude() && 'Claude Code isn\'t on this Mac' }, async () => {
@@ -115,4 +117,41 @@ test('Codex with an API key: the key goes to the server, and a rejected key ends
     server.closeAllConnections();
     server.close();
   }
+});
+
+// Opt in: uses the existing ChatGPT sign-in, sending only the invented fixture library.
+test('Codex live: corpus lookups, citations, images and conversation follow-ups', { skip: process.env.UMP_LIVE_CODEX !== '1' }, async () => {
+  settings.provider = 'codex';
+  settings.models.codex = process.env.UMP_LIVE_CODEX_MODEL || 'default';
+  const a = await answer(`Who did I have dinner with and where? Search the messages for dinner and query the calendar using SQL. Cite the records you use.`);
+  assert.equal(a.turn.error, undefined, a.turn.errorDetail ?? 'live Codex answer failed');
+  assert.match(a.turn.answer, /Grace/i);
+  assert.match(a.turn.answer, /Tasca/i);
+  assert.match(a.turn.answer, /record:\d+|\[\[chat:/);
+  const names = a.events.filter((e) => e.t === 'tool').map((e) => e.name);
+  assert.ok(names.includes('search'), JSON.stringify(a.events));
+  assert.ok(names.includes('sql'), JSON.stringify(a.events));
+  const b = await answer(`What was the restaurant from my previous question? Then use the python corpus tool to count calendar records, and use view_image on photo record ${rowid.photos} to describe its actual pixels.`, a.id);
+  assert.equal(b.turn.error, undefined, b.turn.errorDetail ?? 'live Codex follow-up failed');
+  assert.match(b.turn.answer, /Tasca/i);
+  const calls = b.events.filter((e) => e.t === 'tool').map((e) => e.name);
+  assert.ok(calls.includes('python'), JSON.stringify(b.events));
+  assert.ok(calls.includes('view_image'), JSON.stringify(b.events));
+  assert.ok(b.events.some((e) => e.t === 'tool_result' && !!e.images && !e.error));
+  const c = await answer(`Use read_file on document record ${rowid.documents} and summarize the original document with a record citation.`, a.id);
+  assert.equal(c.turn.error, undefined, c.turn.errorDetail ?? 'live document read failed');
+  assert.ok(c.events.some((e) => e.t === 'tool' && e.name === 'read_file'));
+  for (const turn of [a, b, c]) {
+    assert.ok(!turn.events.some((e) => e.t === 'tool_result' && e.error), JSON.stringify(turn.events));
+  }
+  const mapping = await ask.complete('Return only a JSON object mapping these export field names to their meanings: created_at is the timestamp, body is text, username is author. Use keys timestamp, text, author and the field names as values.');
+  assert.deepEqual(JSON.parse(mapping.replace(/^```(?:json)?\s*|\s*```$/g, '')), { timestamp: 'created_at', text: 'body', author: 'username' });
+  sent = [];
+  const slow = ask.ask(null, 'Use your shell to run sleep 30 before answering.');
+  await new Promise((r) => setTimeout(r, 2000));
+  ask.stop(slow.id);
+  const end = Date.now() + 10_000;
+  while (ask.isRunning(slow.id) && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ask.isRunning(slow.id), false, 'cancellation finished promptly');
+  assert.equal(ask.get(slow.id)?.turns.at(-1)?.stopped, true);
 });

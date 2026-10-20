@@ -12,7 +12,7 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Ask } from '../../src/main/ask.ts';
 import { resolvePaths } from '../../src/main/paths.ts';
-import { type AskConversation, type AskEvent, type AskSettings, DEFAULT_ASK } from '../../src/shared/ask.ts';
+import { type AskConversation, type AskEvent, type AskSettings, DEFAULT_ASK, thoughtsOf } from '../../src/shared/ask.ts';
 import { fakeModelServer } from '../fakes/model_servers.ts';
 
 const DESKTOP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -69,6 +69,7 @@ async function answer(question: string, id: string | null = null) {
 
 const tools = (events: AskEvent[]) => events.filter((e): e is Extract<AskEvent, { t: 'tool' }> => e.t === 'tool');
 const results = (events: AskEvent[]) => events.filter((e): e is Extract<AskEvent, { t: 'tool_result' }> => e.t === 'tool_result');
+const thinking = (events: AskEvent[]) => events.filter((e): e is Extract<AskEvent, { t: 'thinking' }> => e.t === 'thinking');
 
 test('Claude Code with your account: tools through the app, and its sandbox keeps the corpus and app data out of reach', async () => {
   const allowed = path.join(root, 'readable.txt');
@@ -132,6 +133,50 @@ test('stopping an answer kills the agent and keeps what came', async () => {
   assert.equal(tools(t.events).length, 1);
 });
 
+test('Claude Code\'s thinking, asked for as a summary, streams in as it thinks, apart from the answer, and isn\'t sent back', async () => {
+  settings.provider = 'claude-code';
+  settings.models = {};
+  plan('claude-plan.json', { answer: 'Two events.', notes: false, steps: [
+    { think: 'I should count the calendar events in the library first.' },
+    { tool: 'sql', input: { query: "select count(*) from records where source = 'calendar'" } },
+    { think: 'Two rows.' }, { think: 'So two events.' },
+  ] });
+  const a = await answer('How many events?');
+  assert.equal(a.turn.error, undefined);
+  assert.ok(claudeLog().args.includes('--thinking-display=summarized'), 'the API leaves it out unless asked');
+  assert.ok(thinking(a.events).length >= 5, 'in pieces, as it thinks');
+  assert.deepEqual(a.turn.events.map((e) => e.t), ['thinking', 'tool', 'tool_result', 'thinking', 'text']);
+  assert.equal(thinking(a.turn.events)[0].text, 'I should count the calendar events in the library first.', 'once: not again from the whole block');
+  assert.equal(thinking(a.turn.events)[1].text, 'Two rows.\n\nSo two events.', 'two stretches in a row: two paragraphs');
+  assert.ok(thinking(a.turn.events).every((e) => typeof e.seconds === 'number' && e.seconds >= 0));
+  assert.equal(a.turn.answer, 'Two events.');
+  await answer('And next month?', a.id);
+  assert.doesNotMatch(claudeLog().prompt, /count the calendar|Two rows/);
+  assert.match(claudeLog().prompt, /### Your answer\nTwo events\./);
+});
+
+test('a Claude Code from before its thinking could be asked for answers anyway, without it, and isn\'t asked again', async () => {
+  settings.provider = 'claude-code';
+  settings.models = {};
+  // A copy of its own, so the others here still ask.
+  const old = path.join(root, 'old_claude.py');
+  fs.symlinkSync(path.join(DESKTOP, 'test/fakes/fake_claude.py'), old);
+  process.env.UMP_CLAUDE_CMD = old;
+  try {
+    plan('claude-plan.json', { old: true, answer: 'Two events.', notes: false, steps: [{ think: 'Counting.' }, { tool: 'sql', input: { query: 'select 1' } }] });
+    const a = await answer('How many events?');
+    assert.equal(a.turn.error, undefined);
+    assert.equal(a.turn.answer, 'Two events.');
+    assert.ok(!claudeLog().args.some((x: string) => x.startsWith('--thinking-display')), 'asked again without it');
+    assert.deepEqual(thoughtsOf(a.turn.events).parts, [], 'its thinking left out: nothing to show');
+    plan('claude-plan.json', { answer: 'Three.', notes: false, steps: [] });
+    await answer('And now?', a.id);
+    assert.ok(!claudeLog().args.some((x: string) => x.startsWith('--thinking-display')), 'remembered');
+  } finally {
+    process.env.UMP_CLAUDE_CMD = path.join(DESKTOP, 'test/fakes/fake_claude.py');
+  }
+});
+
 test('Codex with your account: lookups through ./ask, its own shell commands shown, its permission profile', async () => {
   plan('codex-plan.json', { answer: 'Found it.', steps: [{ tool: 'search', input: { query: 'Tasca' } }, { tool: 'view_image', input: { rowid: rowid.photos } }, { shell: 'echo hi' }] });
   settings.provider = 'codex';
@@ -150,6 +195,22 @@ test('Codex with your account: lookups through ./ask, its own shell commands sho
   assert.equal(ran.codex_home, null, 'your own Codex settings and sign-in');
   assert.deepEqual(ran.env, []);
   assert.ok(!fs.existsSync(ran.cwd), 'the run folder is removed afterwards');
+});
+
+test('Codex\'s reasoning comes as its thinking, a stretch at a time, apart from the answer, and isn\'t sent back', async () => {
+  settings.provider = 'codex';
+  settings.models = {};
+  plan('codex-plan.json', { answer: 'Found it.', notes: false, steps: [
+    { think: '**Searching your texts**\n\nFor the dinner.' }, { tool: 'search', input: { query: 'Tasca' } }, { think: '**Reading what came back**' },
+  ] });
+  const a = await answer('Where was dinner?');
+  assert.equal(a.turn.error, undefined);
+  assert.equal(a.turn.answer, 'Found it.');
+  assert.deepEqual(thoughtsOf(a.turn.events).parts, [
+    { kind: 'thought', text: '**Searching your texts**\n\nFor the dinner.' }, { kind: 'looked', n: 1 }, { kind: 'thought', text: '**Reading what came back**' }]);
+  assert.ok(thinking(a.turn.events).every((e) => typeof e.seconds === 'number' && e.seconds >= 0), 'how long each took');
+  await answer('And who with?', a.id);
+  assert.doesNotMatch(codexLog().prompt, /Searching your texts|Reading what came back/);
 });
 
 test('Codex with an API key, and with a local model: a settings folder of its own, and what the sign-in needs', async () => {
@@ -273,7 +334,7 @@ test('making sense of a download: text in, text out, with the agent and sign-in 
   assert.equal(await ask.complete('Write a mapping'), '{"service": "Wattpad", "items": []}');
   let ran = claudeLog();
   assert.equal(ran.prompt, 'Write a mapping');
-  for (const f of ['--mcp-config', '--append-system-prompt', '--bare']) assert.ok(!ran.args.includes(f), `no ${f}`);
+  for (const f of ['--mcp-config', '--append-system-prompt', '--bare', '--thinking-display=summarized']) assert.ok(!ran.args.includes(f), `no ${f}`);
   assert.equal(ran.args[ran.args.indexOf('--tools') + 1], '');
   assert.ok(ran.args.includes('--no-session-persistence'));
 

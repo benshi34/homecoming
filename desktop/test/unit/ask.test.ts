@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { agentProfile, codexPermissions } from '../../src/main/ask.ts';
 import { resolvePaths } from '../../src/main/paths.ts';
 import { addEvent, agentNeed, type AgentState, answerOf, type AskTurn, DEFAULT_ASK, describeTool, explainError, followupPrompt, isLocalAddress, modelLabel,
-  needText, PROVIDERS, RECHECK_DAYS, RETENTION, retentionOk, titleOf } from '../../src/shared/ask.ts';
+  needText, PROVIDERS, RECHECK_DAYS, RETENTION, retentionOk, thoughtsOf, titleOf } from '../../src/shared/ask.ts';
 import { blocks, embedKey, embedOf, partialEmbed } from '../../src/shared/markdown.ts';
 
 const turn = (question: string, answer: string): AskTurn => ({ question, answer, provider: 'anthropic', model: 'm', startedAt: '', events: [] });
@@ -119,6 +119,35 @@ test('streamed text (Claude Code) joins up; whole messages (Codex) stay apart; t
   addEvent(c, { t: 'text', text: 'Two.' });
   assert.equal(c.events.length, 2);
   assert.equal(answerOf(c.events), 'One.\n\nTwo.');
+});
+
+test('thinking joins up as it streams, keeps its time, and is never the answer nor sent back', () => {
+  const t: AskTurn = { ...turn('How many events?', ''), events: [] };
+  addEvent(t, { t: 'thinking', text: '', seconds: 0.5 }); // its start, before any words
+  addEvent(t, { t: 'thinking', text: 'Counting the ', seconds: 1 });
+  addEvent(t, { t: 'thinking', text: 'events.', seconds: 2.5 });
+  addEvent(t, { t: 'tool', id: '1', name: 'sql', input: {} });
+  addEvent(t, { t: 'tool_result', id: '1', text: '2', error: false });
+  addEvent(t, { t: 'tool', id: '2', name: 'search', input: {} });
+  addEvent(t, { t: 'tool_result', id: '2', text: 'x', error: false });
+  addEvent(t, { t: 'thinking', text: 'Two of them.', seconds: 1 });
+  addEvent(t, { t: 'text', text: 'Two events.' });
+  assert.deepEqual(t.events.map((e) => e.t), ['thinking', 'tool', 'tool_result', 'tool', 'tool_result', 'thinking', 'text']);
+  assert.deepEqual(t.events[0], { t: 'thinking', text: 'Counting the events.', seconds: 2.5 });
+  assert.equal(answerOf(t.events), 'Two events.');
+  assert.deepEqual(thoughtsOf(t.events), { seconds: 3.5, parts: [
+    { kind: 'thought', text: 'Counting the events.' }, { kind: 'looked', n: 2 }, { kind: 'thought', text: 'Two of them.' }] });
+  t.answer = 'Two events.';
+  assert.doesNotMatch(followupPrompt('And next week?', [t]), /Counting|Two of them/);
+
+  // Codex's come whole, and stay apart; with nothing looked up between them, they read as one.
+  const c: Pick<AskTurn, 'provider' | 'events'> = { provider: 'codex', events: [] };
+  addEvent(c, { t: 'thinking', text: '**Planning**\n\nLooking at texts.' });
+  addEvent(c, { t: 'thinking', text: '**Counting**' });
+  assert.equal(c.events.length, 2);
+  assert.deepEqual(thoughtsOf(c.events).parts, [{ kind: 'thought', text: '**Planning**\n\nLooking at texts.\n\n**Counting**' }]);
+  // Left out (Claude's thinking, unless asked for): nothing to show.
+  assert.deepEqual(thoughtsOf([{ t: 'thinking', text: '' }, { t: 'tool', id: '1', name: 'sql', input: {} }, { t: 'thinking', text: '\n\n' }]).parts, []);
 });
 
 test('names and one-line descriptions', () => {

@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { addEvent, answerOf, explainError, followupPrompt, isLocalAddress, PROVIDER, titleOf, type AskConversation, type AskEvent, type AskProvider,
+import { addEvent, answerOf, explainError, followupPrompt, isLocalAddress, PROVIDER, streams, titleOf, type AskConversation, type AskEvent, type AskProvider,
   type AskSettings, type AskSummary, type AskTurn, type LocalStatus, type SignIn } from '../shared/ask.ts';
 import { lineSplitter } from './bridge.ts';
 import { NO_HOOKS, runDir, runRoot } from './run_dirs.ts';
@@ -317,7 +317,16 @@ export class Ask {
     limit.unref(); // it doesn't keep anything running by itself
     const index = conv.turns.length - 1;
     const started = new Map<string, number>();
+    // Thoughts take from the event before them (or the question) to their last piece.
+    let lastAt = Date.now();
+    let thinkingSince = lastAt;
     const emit = (e: AskEvent) => {
+      const now = Date.now();
+      if (e.t === 'thinking') {
+        if (turn.events.at(-1)?.t !== 'thinking' || !streams(turn.provider)) thinkingSince = lastAt;
+        e = { ...e, seconds: (now - thinkingSince) / 1000 };
+      }
+      lastAt = now;
       if (e.t === 'tool') started.set(e.id, Date.now());
       if (e.t === 'tool_result') {
         // Codex's own shell commands come with no time: it's the time between the call and its result.
@@ -670,51 +679,70 @@ export class Ask {
     let failed: string | null = null;
     await this.withRunDir(run, async (dir, box) => {
       const mcp = { command: this.host.paths.python, args: [this.toolsPath, 'mcp', '--box', box] };
-      const args = [...(withKey ? ['--bare'] : []), '-p', '--model', run.model, '--output-format', 'stream-json', '--verbose',
+      // think: its thinking, summarized, to show as it works (the API leaves it out unless asked).
+      const args = (think: boolean) => [...(withKey ? ['--bare'] : []), '-p', '--model', run.model, '--output-format', 'stream-json', '--verbose',
         '--include-partial-messages', '--no-session-persistence', '--strict-mcp-config', ...(instructions !== null ? ['--max-turns', '40'] : []),
         ...(instructions !== null ? ['--mcp-config', JSON.stringify({ mcpServers: { corpus: mcp } })] : []),
-        '--setting-sources', 'project', '--tools', '', '--permission-mode', 'dontAsk',
+        '--setting-sources', 'project', '--tools', '', '--permission-mode', 'dontAsk', ...(think ? ['--thinking-display=summarized'] : []),
         '--settings', JSON.stringify({ ...NO_HOOKS, ...(instructions !== null ? { permissions: { allow: ['mcp__corpus'] } } : {}) }),
         ...(instructions !== null ? ['--append-system-prompt', instructions] : [])];
       let streamed = false;
-      // Its own tools are off and the sandbox makes sure: the data is reachable only through the corpus tools.
-      const going = this.agent('Claude Code', '/usr/bin/sandbox-exec', ['-p', agentProfile(this.host.paths, this.host.dir, dir), bin, ...args],
-        followupPrompt(run.question, run.history), run, (ev) => {
-          if (ev.type === 'stream_event') {
-            // The answer as it's written. A new block of text after earlier text starts a new paragraph.
-            const e = (ev.event ?? {}) as { type?: string; delta?: { type?: string; text?: string }; content_block?: { type?: string } };
-            if (e.type === 'content_block_start' && e.content_block?.type === 'text' && run.turn.events.at(-1)?.t === 'text') run.emit({ t: 'text', text: '\n\n' });
-            if (e.type === 'content_block_delta' && e.delta?.type === 'text_delta' && e.delta.text) {
-              streamed = true;
-              run.emit({ t: 'text', text: e.delta.text });
-            }
-          } else if (ev.type === 'assistant' && !streamed) {
-            for (const c of ((ev.message as { content?: Record<string, unknown>[] })?.content ?? [])) {
-              if (c.type === 'text' && String(c.text ?? '').trim()) run.emit({ t: 'text', text: String(c.text) });
-            }
-          } else if (ev.type === 'system' && ev.subtype === 'init' && instructions !== null) {
-            // Its lookups are the app's tools, and nothing else: if they didn't start, it would answer without your data.
-            const corpus = ((ev.mcp_servers ?? []) as { name: string; status: string }[]).find((x) => x.name === 'corpus');
-            if (corpus?.status !== 'connected' && corpus?.status !== 'pending') {
-              failed = `The app's lookup tools didn't start for Claude Code (${corpus?.status ?? 'missing'}), so it stopped rather than answer without your data. Try again; if it keeps happening, Setup Checks shows whether Python is ready.`;
-              return 'stop';
-            }
-          } else if (ev.type === 'result') {
-            // Its reason, wherever it put it: the result, its errors, the API's status.
-            const why = [ev.result, ...(Array.isArray(ev.errors) ? ev.errors : []), ev.api_error_status ? `API status ${ev.api_error_status}` : '']
-              .filter((x) => typeof x === 'string' && x.trim()).join('\n');
-            if (ev.is_error) failed = why || (ev.subtype === 'error_max_turns' ? 'It took more steps than an answer gets (40), so it stopped.' : String(ev.subtype || 'Claude Code stopped'));
-            else if (typeof ev.result === 'string') run.turn.answer = ev.result;
+      let thought = false;
+      const onLine = (ev: Record<string, unknown>): void | 'stop' => {
+        if (ev.type === 'stream_event') {
+          // The answer as it's written. A new block of text after earlier text starts a new paragraph. Its thinking
+          // the same way, said from the moment it starts.
+          const e = (ev.event ?? {}) as { type?: string; delta?: { type?: string; text?: string; thinking?: string }; content_block?: { type?: string } };
+          if (e.type === 'content_block_start' && e.content_block?.type === 'text' && run.turn.events.at(-1)?.t === 'text') run.emit({ t: 'text', text: '\n\n' });
+          if (e.type === 'content_block_start' && e.content_block?.type === 'thinking') run.emit({ t: 'thinking', text: run.turn.events.at(-1)?.t === 'thinking' ? '\n\n' : '' });
+          if (e.type === 'content_block_delta' && e.delta?.type === 'text_delta' && e.delta.text) {
+            streamed = true;
+            run.emit({ t: 'text', text: e.delta.text });
           }
-        }, dir, env);
+          if (e.type === 'content_block_delta' && e.delta?.type === 'thinking_delta' && e.delta.thinking) {
+            thought = true;
+            run.emit({ t: 'thinking', text: e.delta.thinking });
+          }
+        } else if (ev.type === 'assistant') {
+          // Whole blocks, for what wasn't streamed.
+          for (const c of ((ev.message as { content?: Record<string, unknown>[] })?.content ?? [])) {
+            if (c.type === 'text' && !streamed && String(c.text ?? '').trim()) run.emit({ t: 'text', text: String(c.text) });
+            if (c.type === 'thinking' && !thought && String(c.thinking ?? '').trim()) run.emit({ t: 'thinking', text: String(c.thinking) });
+          }
+        } else if (ev.type === 'system' && ev.subtype === 'init' && instructions !== null) {
+          // Its lookups are the app's tools, and nothing else: if they didn't start, it would answer without your data.
+          const corpus = ((ev.mcp_servers ?? []) as { name: string; status: string }[]).find((x) => x.name === 'corpus');
+          if (corpus?.status !== 'connected' && corpus?.status !== 'pending') {
+            failed = `The app's lookup tools didn't start for Claude Code (${corpus?.status ?? 'missing'}), so it stopped rather than answer without your data. Try again; if it keeps happening, Setup Checks shows whether Python is ready.`;
+            return 'stop';
+          }
+        } else if (ev.type === 'result') {
+          // Its reason, wherever it put it: the result, its errors, the API's status.
+          const why = [ev.result, ...(Array.isArray(ev.errors) ? ev.errors : []), ev.api_error_status ? `API status ${ev.api_error_status}` : '']
+            .filter((x) => typeof x === 'string' && x.trim()).join('\n');
+          if (ev.is_error) failed = why || (ev.subtype === 'error_max_turns' ? 'It took more steps than an answer gets (40), so it stopped.' : String(ev.subtype || 'Claude Code stopped'));
+          else if (typeof ev.result === 'string') run.turn.answer = ev.result;
+        }
+      };
+      // Its own tools are off and the sandbox makes sure: the data is reachable only through the corpus tools.
+      const go = (think: boolean) => this.agent('Claude Code', '/usr/bin/sandbox-exec', ['-p', agentProfile(this.host.paths, this.host.dir, dir), bin, ...args(think)],
+        followupPrompt(run.question, run.history), run, onLine, dir, env);
+      // Its thinking is shown in Ask only. A Claude Code from before it could be asked for says so at once: asked again without.
+      const think = instructions !== null && !this.thinkless.has(bin);
       try {
-        await going;
+        await go(think).catch((e: Error) => {
+          if (!think || run.turn.events.length || !/unknown option '--thinking-display/.test(e.message)) throw e;
+          this.thinkless.add(bin);
+          return go(false);
+        });
       } catch (e) {
         throw new Error([failed, (e as Error).message].filter(Boolean).join('\n'));
       }
     }, true);
     if (failed) throw new Error(failed);
   }
+
+  private thinkless = new Set<string>(); // Claude Codes too old to be asked for their thinking
 
   // Codex: signed in with your ChatGPT account, with an OpenAI API key, or on a local model server (--oss). With a key
   // or a local model it gets a settings folder of its own, so your ChatGPT sign-in is neither used nor changed.
@@ -787,6 +815,9 @@ export class Ask {
         } else if (ev.type === 'item.completed' && item.type === 'agent_message') {
           answer.push(String(item.text ?? ''));
           run.emit({ t: 'text', text: String(item.text ?? '') });
+        } else if (ev.type === 'item.completed' && item.type === 'reasoning' && String(item.text ?? '').trim()) {
+          // A summary of its reasoning, a stretch at a time.
+          run.emit({ t: 'thinking', text: String(item.text) });
         } else if (ev.type === 'turn.failed') {
           failed = ((ev.error ?? {}) as { message?: string }).message || 'Codex stopped';
         } else if (ev.type === 'error') {

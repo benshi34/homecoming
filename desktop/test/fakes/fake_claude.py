@@ -2,9 +2,11 @@
 """A stand-in for `claude -p --output-format stream-json`: starts the MCP server from --mcp-config, makes the tool
 calls in its plan through it, and prints Claude Code's stream-json events. The plan is JSON {"steps": [...], "answer"}
 from the file $FAKE_CLAUDE_PLAN (or $FAKE_CLAUDE_SCRIPT and $FAKE_CLAUDE_ANSWER). A step is {"tool", "input"}, {"probe":
-path} (read a file directly, which the sandbox should stop, and say what happened) or {"sleep": seconds}. With no
---mcp-config (text in, text out) there are no tools. {"error": text, "exit": n} fails as Claude Code does when it isn't
-signed in (the error as its last message and as an error result); {"crash": true} dies with a traceback.
+path} (read a file directly, which the sandbox should stop, and say what happened), {"think": text} (a stretch of
+thinking, streamed as Claude Code does: its words only when asked for with --thinking-display=summarized, as the API
+leaves them out otherwise) or {"sleep": seconds}. With no --mcp-config (text in, text out) there are no tools.
+{"error": text, "exit": n} fails as Claude Code does when it isn't signed in (the error as its last message and as an
+error result); {"crash": true} dies with a traceback; {"old": true} is a Claude Code from before --thinking-display.
 $FAKE_CLAUDE_LOG gets the arguments, the prompt, and which sign-in variables it was given (never their values)."""
 
 import json
@@ -54,6 +56,11 @@ log = os.environ.get("FAKE_CLAUDE_LOG")
 if log:
     with open(log, "w") as f:
         json.dump({"args": args, "prompt": prompt, "env": sorted(k for k in os.environ if k.startswith(("ANTHROPIC", "CLAUDE", "CODEX", "OPENAI")))}, f)
+# An older Claude Code stops at an option it doesn't know, before anything else.
+if plan.get("old") and any(a.startswith("--thinking-display") for a in args):
+    print(f"error: unknown option '{next(a for a in args if a.startswith('--thinking-display'))}'", file=sys.stderr)
+    sys.exit(1)
+summarized = "--thinking-display=summarized" in args
 mcp = None
 if "--mcp-config" in args:
     cfg = json.loads(args[args.index("--mcp-config") + 1])["mcpServers"]["corpus"]
@@ -71,6 +78,19 @@ def out(o):
     print(json.dumps(o), flush=True)
 
 
+def think(text):
+    """A stretch of thinking as Claude Code streams it (a few words at a time), then as a whole block."""
+    shown = text if summarized else ""
+    out({"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}})
+    words = shown.split(" ") if shown else []
+    for i in range(0, len(words), 3):
+        piece = " ".join(words[i:i + 3]) + (" " if i + 3 < len(words) else "")
+        out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": piece}}})
+    out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "c2ln"}}})
+    out({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}})
+    out({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": shown, "signature": "c2ln"}]}})
+
+
 if plan.get("crash"):
     raise RuntimeError("the fake Claude Code crashed")
 if mcp:
@@ -86,6 +106,9 @@ notes = []
 for n, step in enumerate(plan.get("steps", [])):
     if "sleep" in step:
         time.sleep(step["sleep"])
+        continue
+    if "think" in step:
+        think(step["think"])
         continue
     if "probe" in step:
         try:

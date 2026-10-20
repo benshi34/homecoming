@@ -11,7 +11,7 @@ from identity import ME, is_me_email, is_me_name
 
 AVENUE = ("Local: find .git dirs under ~/Documents, ~/Desktop, iCloud Drive and code folders (~/Developer, ~/Code, "
           "~/Projects, ~/src...); `git log --all`. Every commit is kept; "
-          "is_me from corpus/identity.json (emails, names, usernames as substrings). A repository whose history is "
+          "is_me from corpus/identity.json (emails, names, exact usernames/email local parts). A repository whose history is "
           "only in iCloud (Optimize Mac Storage) is skipped rather than downloaded; what an earlier run read of it stays.")
 
 # Code folders outside iCloud are where repos belong (an iCloud-synced repo gets conflict copies inside .git).
@@ -23,14 +23,18 @@ SEP = "\x1f"
 
 
 def mine(name, email):
-    s = f"{name} {email}".lower()
-    return is_me_email(email) or is_me_name(name) or any(u in s for u in ME["usernames_l"])
+    # A username counts whole: the address's name part, or the one in GitHub's private address (<id>+<username>@users
+    # .noreply.github.com). As a substring it was anyone's: "ann" in "joanne".
+    local, _, domain = email.partition("@")
+    if domain.casefold() == "users.noreply.github.com":
+        local = local.split("+", 1)[-1]
+    return is_me_email(email) or is_me_name(name) or local.casefold() in ME["usernames_l"]
 
 
 def repos():
     for root in ROOTS:
         for dp, dns, fns in os.walk(root):
-            if ".git" in dns:
+            if ".git" in dns or ".git" in fns:
                 yield Path(dp)
             dns[:] = [d for d in dns if d not in SKIP and not d.startswith(".") and len(Path(dp, d).relative_to(root).parts) <= 4]
 

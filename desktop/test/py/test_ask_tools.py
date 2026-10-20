@@ -139,7 +139,7 @@ class AskTools(unittest.TestCase):
             corpus = Path(make_fixtures.edge_corpus(Path(t) / "corpus", "messy"))
             inv = {r["source"]: r for r in json.loads(subprocess.run([sys.executable, str(TOOLS), "inventory"], capture_output=True, text=True,
                                                                       env={**self.env, "CORPUS_DIR": str(corpus)}, timeout=60).stdout)}
-            self.assertEqual((inv["imessage"]["first"], inv["git_commits"]["first"]), ("1990-01-15", "1990-01-15"), "not 1970, nor 1985")
+            self.assertEqual((inv["imessage"]["first"], inv["git_commits"]["first"]), ("1990-01-15", "1990-01-15"), "not 1970, nor 1900 or 1601")
             self.assertLess(inv["imessage"]["last"], "2100", "not 2099, nor 9999")
 
     def test_search_filters_context_and_secrets(self):

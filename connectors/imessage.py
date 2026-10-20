@@ -94,7 +94,7 @@ def attachment_file(path, copy):
         return None
     if copy == "iphone" and "Library/SMS/" in path:  # ~/Library/SMS/..., or /var/mobile/Library/SMS/... in older ones
         f = phone("MediaDomain", path[path.index("Library/SMS/"):])
-        return str(f.relative_to(CORPUS.parent)) if f.exists() else None
+        return str(f.relative_to(CORPUS)) if f.exists() else None
     if copy == "mac":
         f = Path(path).expanduser()
         return str(f) if f.exists() else None

@@ -3573,7 +3573,7 @@ def save_media(e, dest, ts):
     if ts:
         t = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
         os.utime(dest, (t, t))
-    return str(dest.relative_to(CORPUS.parent))
+    return str(dest.relative_to(CORPUS))
 
 
 def google_chat(es, W, used):
@@ -3856,7 +3856,7 @@ def leftover_time(v):
     if re.fullmatch(r"\d{13}", v):
         return from_unix(int(v), "ms")
     m = re.match(r"(\d{4}-\d{2}-\d{2})([T ]\d{2}:\d{2}(:\d{2})?)?", v)
-    if m and 1990 <= int(v[:4]) <= 2100:
+    if m and 1900 <= int(v[:4]) <= 2100:
         try:
             return datetime.fromisoformat(v.replace("Z", "+00:00").replace(" UTC", "+00:00")).astimezone(timezone.utc).isoformat().replace("+00:00", "Z") \
                 if m.group(2) else m.group(1) + "T00:00:00"

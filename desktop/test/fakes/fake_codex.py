@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A stand-in for `codex exec --json`: runs the lookups in its plan with the ./ask command in its working folder (as
 Codex's shell would) and prints Codex's JSON events. The plan is JSON {"steps": [...], "answer"} from the file
-$FAKE_CODEX_PLAN (or $FAKE_CODEX_SCRIPT and $FAKE_CODEX_ANSWER). A step is {"tool", "input"}, {"shell": command} or
-{"sleep": seconds}. {"fail": message, "reconnects": n} fails as Codex does when its sign-in has expired (reconnecting
+$FAKE_CODEX_PLAN (or $FAKE_CODEX_SCRIPT and $FAKE_CODEX_ANSWER). A step is {"tool", "input"}, {"shell": command},
+{"think": text} (a summary of its reasoning, as a whole item) or {"sleep": seconds}. {"fail": message, "reconnects": n} fails as Codex does when its sign-in has expired (reconnecting
 first, then a failed turn). Its own permission profile isn't applied here. $FAKE_CODEX_LOG gets the arguments, the prompt, the
 working folder and which sign-in variables it was given (never their values)."""
 
@@ -55,6 +55,9 @@ lines = []
 for n, step in enumerate(plan.get("steps", [])):
     if "sleep" in step:
         time.sleep(step["sleep"])
+        continue
+    if "think" in step:
+        out({"type": "item.completed", "item": {"id": f"item_{n + 1}", "type": "reasoning", "text": step["think"]}})
         continue
     cmd = step.get("shell") or f"./ask {step['tool']} <<'EOF'\n{json.dumps(step['input'])}\nEOF"
     item = {"id": f"item_{n + 1}", "type": "command_execution", "command": f"/bin/zsh -lc {json.dumps(cmd)}", "aggregated_output": "", "exit_code": None, "status": "in_progress"}

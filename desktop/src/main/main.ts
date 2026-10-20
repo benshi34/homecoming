@@ -2885,6 +2885,9 @@ function wireIpc() {
   explore = exploreRunner(P, app.getAppPath(), path.join(app.getPath('userData'), 'explore-cache'),
     (key, data) => win?.webContents.send('explore-progress', { key, ...data }));
   maybeWarmExplore();
+  // Where everything Explore is building stands, for a window that opens it while they're under way.
+  ipcMain.handle('explore-status', () => explore?.status() ?? []);
+  ipcMain.handle('explore-first', (_e, key: string) => explore?.first(String(key)));
   ipcMain.handle('explore', (_e, a: { op: string; args?: unknown[] }) => {
     // The stream's files (corpus/stream/): show one in Finder, or write them now.
     if (a.op === 'reveal-stream') {

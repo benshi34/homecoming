@@ -1,4 +1,4 @@
-// The Ask page, driven like a person would: pick who does the work, ask, read the lookups, open a cited record, confirm
+// The Ask page, driven like a person would: pick who does the work, ask, read the lookups, open a cited message, confirm
 // a cloud provider's data settings first, stop an answer, and find the conversation again after a restart. What the
 // agent still needs (a key, a local model's server) is said by the box, and sending waits for it; an agent's errors
 // come in plain words with Try Again. Claude Code and Codex are stand-ins (test/fakes) scripted per question; their
@@ -123,7 +123,11 @@ test('Codex on a local model answers with no confirmation, shows its lookups, an
   assert.match(await p.locator('.turn-meta').innerText(), /Codex harness \(local model\) · qwen-test/);
   await look('ask-answer');
 
+  // A cited message opens in its conversation, marked; its details are a click away.
   await p.locator('[data-testid=ask-cite]').click();
+  await p.locator('[data-testid=conversation] .msg-row.anchor', { hasText: 'Are we still on for dinner at Tasca on Friday?' }).waitFor();
+  assert.match(await p.locator('[data-testid=convo]').innerText(), /I booked a table/);
+  await p.locator('[data-testid=conversation] button[data-action=convo-details]').click();
   await p.locator('[data-testid=ask-record] h2').waitFor();
   const rec = await p.locator('[data-testid=ask-record]').innerText();
   assert.match(rec, /Are we still on for dinner at Tasca on Friday\?/);
@@ -132,6 +136,7 @@ test('Codex on a local model answers with no confirmation, shows its lookups, an
   assert.match(rec, /By\s+Grace Hopper/);
   await shot(p, 'ask-record');
   await p.locator('[data-testid=ask-record] button', { hasText: 'Done' }).click();
+  await p.locator('[data-testid=conversation] button', { hasText: 'Done' }).click();
   assert.equal(await p.locator('[data-testid=ask-row]').count(), 1);
 });
 
@@ -391,6 +396,66 @@ test('a question asked while scrolled up is shown; leaving Ask and coming back o
   await p.locator('[data-testid=nav-ask]').click();
   await p.locator('[data-testid=ask-turn]', { hasText: 'And briefly?' }).waitFor();
   assert.equal(await p.locator('[data-testid=ask-row].selected .n').innerText(), 'Who did I text most?');
+});
+
+test('its thinking shows as it thinks, folds into a line once the answer starts, and opens again; the lookups keep their place', async () => {
+  const p = run.page;
+  plan('claude', { notes: false, answer: 'You have 2 calendar events.', steps: [
+    { think: 'Counting the calendar events first.' },
+    { tool: 'sql', input: { query: "select count(*) from records where source = 'calendar'" } },
+    { think: 'Two rows came back, so two events.' }, { sleep: 3 },
+  ] });
+  await p.locator('[data-testid=ask-input]').fill('How many events, thought through?');
+  await p.locator('[data-testid=ask-input]').press('Enter');
+  const turn = p.locator('[data-testid=ask-turn]').last();
+  const thinking = turn.locator('[data-testid=ask-thinking]');
+  const head = thinking.locator('[data-testid=ask-thinking-head]');
+  const thoughts = thinking.locator('[data-testid=ask-thoughts]');
+  // While it thinks: open, its words as they come, with the lookup it made in between where it came.
+  await thoughts.locator('p', { hasText: 'Two rows came back, so two events.' }).waitFor({ timeout: 30_000 });
+  assert.equal(await head.innerText(), 'Thinking…');
+  assert.equal(await head.getAttribute('aria-expanded'), 'true');
+  assert.match(await thoughts.innerText(), /^Counting the calendar events first\.\s+Looked up 1 thing\s+Two rows came back, so two events\.$/);
+  assert.equal(await turn.locator('.thinking').count(), 0, 'said once, by the block');
+  assert.ok((await thinking.boundingBox())!.y < (await turn.locator('[data-testid=ask-lookups]').boundingBox())!.y, 'above the lookups');
+  await look('ask-thinking-live');
+
+  // The answer: the thinking folds into one line, out of its way.
+  await turn.locator('[data-testid=ask-answer]', { hasText: 'You have 2 calendar events.' }).waitFor({ timeout: 30_000 });
+  await p.locator('[data-testid=ask-send]').waitFor(); // done, not just shown
+  assert.match(await head.innerText(), /^Thought for (a moment|\d+ s)$/);
+  assert.equal(await head.getAttribute('aria-expanded'), 'false');
+  await thoughts.waitFor({ state: 'hidden' });
+  assert.doesNotMatch(await turn.locator('[data-testid=ask-answer]').innerText(), /Counting|Two rows/, 'the thinking isn\'t the answer');
+  assert.match(await turn.locator('[data-testid=ask-lookups]').innerText(), /Looked up 1 thing/);
+  await look('ask-thinking-folded');
+  // Opened again, it's all there; and it folds back.
+  await head.click();
+  // (Its words, not just the box: with Reduce Motion in a window off screen, they show a moment after it.)
+  await thoughts.locator('p', { hasText: 'Two rows came back' }).waitFor({ state: 'visible' });
+  assert.match(await thoughts.innerText(), /Counting the calendar events first\.\s+Looked up 1 thing\s+Two rows came back/);
+  await look('ask-thinking-open');
+  await head.click();
+  await thoughts.waitFor({ state: 'hidden' });
+
+  // Codex's reasoning, a summary at a time, the same way. Closed and opened again while it works, it stays open.
+  await askApi({ op: 'settings', patch: { provider: 'codex' } });
+  plan('codex', { notes: false, answer: 'Mostly Grace.', steps: [
+    { think: '**Looking through your texts**\n\nCounting who wrote the most.' }, { tool: 'search', input: { query: 'Grace' } }, { sleep: 4 }] });
+  await p.locator('[data-testid=ask-input]').fill('Who wrote the most?');
+  await p.locator('[data-testid=ask-input]').press('Enter');
+  const codex = p.locator('[data-testid=ask-turn]').last();
+  const codexHead = codex.locator('[data-testid=ask-thinking-head]');
+  await codex.locator('[data-testid=ask-thinking].open').waitFor({ timeout: 30_000 });
+  await codexHead.click();
+  await codex.locator('[data-testid=ask-thinking]:not(.open)').waitFor();
+  await codexHead.click();
+  await codex.locator('[data-testid=ask-answer]', { hasText: 'Mostly Grace.' }).waitFor({ timeout: 30_000 });
+  await p.locator('[data-testid=ask-send]').waitFor();
+  assert.equal(await codexHead.getAttribute('aria-expanded'), 'true', 'as you left it');
+  await codex.locator('[data-testid=ask-thoughts] strong', { hasText: 'Looking through your texts' }).waitFor({ state: 'visible' });
+  assert.match(await codex.locator('[data-testid=ask-thoughts]').innerText(), /Counting who wrote the most\./);
+  await askApi({ op: 'settings', patch: { provider: 'claude-code' } });
 });
 
 test('conversations are there after a restart', async () => {

@@ -311,7 +311,7 @@ def mirror_path(virtual):
     for domain, rel in candidates:
         f = IPHONE / domain / rel
         if f.exists():
-            return str(f.relative_to(CORPUS.parent))
+            return str(f.relative_to(CORPUS))
     return None
 
 

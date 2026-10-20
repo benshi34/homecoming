@@ -181,7 +181,7 @@ export function MainWindow({ snap, onAssistant, onExport, nav, setNav, adding, s
           <div className="scroll"><AskAiGate snap={snap} onSettings={() => go('ai')} /></div>
         </div>
       ) : nav === 'ask' ? (
-        <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
+        <AskPage snap={snap} toolbar={<ToolbarButtons onAssistant={onAssistant} />} onExplore={() => go('explore')} />
       ) : nav === 'general' ? (
         <GeneralPage snap={snap} onAssistant={onAssistant} onExport={onExport} toolbar={<ToolbarButtons onAssistant={onAssistant} />} />
       ) : nav === 'yoursetup' ? (

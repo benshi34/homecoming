@@ -4,10 +4,12 @@ CORPUS_DIR pointed at a made-up corpus, make_fixtures.explore_corpus) in UTC."""
 import json
 import re
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 DESKTOP = Path(__file__).resolve().parents[2]
@@ -150,6 +152,27 @@ class Explore(unittest.TestCase):
         earlier = self.run_explore("thread", str(day["rowid"]), "before", first["at"])
         self.assertTrue(all(m["at"] < first["at"] for m in earlier["messages"]))
         self.assertIn("error", self.run_explore("thread", str(self.run_explore("places")["points"][0]["rowid"])), "a photo isn't a conversation")
+
+    def test_the_page_explore_has_for_a_conversation(self):
+        """A one-on-one opens its person's page in Your People, by the name Your People shows them under ("Grace H" in
+        Messages is Grace Hopper's); a group chat its page in Group Chats; a server channel only your side is kept of,
+        neither. Asked for again (earlier or later), it isn't worked out again."""
+        day = next(d for d in self.run_explore("person", "gracehopper")["busiest_days"] if d["date"] == "2025-03-12")
+        t = self.run_explore("thread", str(day["rowid"]))
+        self.assertEqual(t["explore"], {"page": "person", "key": "graceh", "name": "Grace H"})
+        merged = self.run_explore("person", "graceh")
+        self.assertEqual((merged["key"], merged["name"]), ("gracehopper", "Grace Hopper"), "one person, by either name")
+        self.assertEqual(merged["months"], self.run_explore("person", "gracehopper")["months"])
+        for g in self.run_explore("groups")["groups"]:
+            self.assertEqual(self.run_explore("thread", str(g["first"]["rowid"]))["explore"], {"page": "group", "key": g["key"], "name": g["name"]})
+        earlier = self.run_explore("thread", str(day["rowid"]), "before", t["messages"][0]["at"])
+        self.assertNotIn("explore", earlier)
+        with closing(sqlite3.connect(self.corpus / "corpus.db")) as con:
+            channel, dm = (con.execute("select rowid from records where thread = ? limit 1", (th,)).fetchone()[0] for th in ("chan1", "dm1"))
+        self.assertIsNone(self.run_explore("thread", str(channel))["explore"], "not a group you can see the others in")
+        # A handle alone, and no one in your Contacts by it: Discord's lin, kept as Your People keeps them.
+        self.assertEqual(self.run_explore("thread", str(dm))["explore"], {"page": "person", "key": "discord:lin", "name": "lin"})
+        self.assertIn("discord:lin", [p["key"] for p in self.run_explore("people")["people"]], "a page that's there")
 
     def test_what_an_answer_shows(self):
         """A few messages around one, an exchange from one message to another, and photos with where and when."""
@@ -421,6 +444,69 @@ class TheyKnow(unittest.TestCase):
         self.assertEqual((svc["Facebook"]["advertisers"], svc["Facebook"]["told"], svc["X"]["advertisers"]), (2, 2, 1))
 
 
+class ExploreCited(unittest.TestCase):
+    """A conversation opened from what an Ask answer cites (make_fixtures.cited_corpus): each message as the app it's
+    from shows it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name).resolve()
+        cls.corpus = Path(make_fixtures.cited_corpus(root / "corpus"))
+        cls.env = {k: v for k, v in os.environ.items() if k != "CORPUS_DIR"}
+        cls.env.update(CORPUS_DIR=str(cls.corpus), UMP_REPO=str(REPO), UMP_TZ="UTC", UMP_EXPLORE_CACHE=str(root / "cache"),
+                       PYTHONDONTWRITEBYTECODE="1")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    run_explore = Explore.run_explore
+
+    def rowid(self, like):
+        with closing(sqlite3.connect(self.corpus / "corpus.db")) as con:
+            return con.execute("select rowid from records where text like ?", (like,)).fetchone()[0]
+
+    def test_a_message_as_its_app_shows_it(self):
+        """A picture on this Mac is drawn; a file is named (not left as an empty bubble); an edit says so, with what it
+        said before; a tapback is a line of its own; and the whole day is there, with the days before and after."""
+        t = self.run_explore("thread", str(self.rowid("Are we still%")))
+        self.assertEqual((t["name"], t["app"], t["group"]), ("Grace Hopper", "Messages", False))
+        self.assertEqual(t["explore"], {"page": "person", "key": "gracehopper", "name": "Grace Hopper"})
+        by = {m["text"]: m for m in t["messages"]}
+        self.assertTrue(by["Did you see the eclipse?"] and by["That was so much fun"], "the days either side")
+        picture = next(m for m in t["messages"] if m["image"])
+        self.assertEqual((picture["text"], picture["attachments"]), ("", []), "drawn, not named too")
+        menu = next(m for m in t["messages"] if m["attachments"])
+        self.assertEqual((menu["text"], menu["attachments"], menu["me"]), ("", ["Tasca menu.pdf"], True))
+        wine = by["Should I bring the wine?"]
+        self.assertEqual((wine["edited"], wine["before"]), (True, ["Should I bring wine"]))
+        self.assertFalse(by["Yes! 7:30, I booked a table."]["edited"])
+        self.assertEqual(by["Loved “Yes! 7:30, I booked a table.”"]["kind"], "reaction")
+        self.assertIsNone(t["messages"][0]["ts"], "the one whose time was lost: no made-up time")
+
+    def test_reactions_kept_on_a_message_and_a_group(self):
+        t = self.run_explore("thread", str(self.rowid("Chapter 7%")))
+        self.assertEqual((t["name"], t["app"], t["group"]), ("Book club", "Instagram", True))
+        [m] = [m for m in t["messages"] if m["reactions"]]
+        self.assertEqual(m["reactions"], [{"who": "Dorothy Vaughan", "reaction": "❤"}, {"who": "You", "reaction": "😂"}], "yours, as you")
+        [g] = self.run_explore("groups")["groups"]
+        self.assertEqual(t["explore"], {"page": "group", "key": g["key"], "name": "Book club"})
+
+    def test_earlier_and_later(self):
+        t = self.run_explore("thread", str(self.rowid("That was so much fun")))
+        self.assertTrue(t["more_before"])
+        self.assertFalse(t["more_after"])
+        earlier = self.run_explore("thread", str(self.rowid("That was so much fun")), "before", t["messages"][0]["at"])
+        self.assertEqual([m["text"] for m in earlier["messages"]], ["an old message whose time was lost", "Can you send me the slides?", "Sure, give me a minute"])
+        self.assertFalse(earlier["more_before"])
+
+    def test_not_a_message(self):
+        with closing(sqlite3.connect(self.corpus / "corpus.db")) as con:
+            for (rowid,) in con.execute("select rowid from records where source in ('calendar', 'apple_notes')"):
+                self.assertIn("error", self.run_explore("thread", str(rowid)))
+
+
 class ExploreEdges(unittest.TestCase):
     """Explore on make_fixtures.edge_corpus("messy"), in Los Angeles time: 37 years with records whose times are
     missing or can't be right, offsets and clock changes, odd text and names. Nothing crashes, and no time that can't
@@ -440,7 +526,7 @@ class ExploreEdges(unittest.TestCase):
         cls.tmp.cleanup()
 
     run_explore = Explore.run_explore
-    WRONG = ("1970", "1985", "2099", "9999", "never")  # the bad times' years, and the project only they are in
+    WRONG = ("1970", "1601", "2099", "9999", "never")  # the bad times' years, and the project only they are in
 
     def test_no_time_that_cant_be_right_shows(self):
         for op in ("people", "places", "rhythms", "firsts", "made", "groups", "journeys", "listening", "movement", "curiosity", "watching", "year", "summary"):
@@ -473,7 +559,7 @@ class ExploreEdges(unittest.TestCase):
         self.assertIsNone(day("11-03"))
 
     def test_odd_arguments_say_so(self):
-        for args in (("on-this-day", "13-40"), ("on-this-day", "xx"), ("year", "1970"), ("year", "9999"), ("thread", "abc"), ("person",)):
+        for args in (("on-this-day", "13-40"), ("on-this-day", "xx"), ("year", "1899"), ("year", "9999"), ("thread", "abc"), ("person",)):
             self.assertIn("error", self.run_explore(*args), args)
         self.assertEqual(self.run_explore("stream", "2025-13")["month"], self.run_explore("stream")["month"], "a month that doesn't exist: the latest")
         self.assertEqual(sorted(r["rowid"] for r in self.run_explore("records", "1,2,abc,999999999")), [1, 2], "the ones there are")

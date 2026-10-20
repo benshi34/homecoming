@@ -7,7 +7,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { type ChatEmbed, type EmbedData, isError, type PhotosEmbed } from '../shared/explore.ts';
 import { type Embed, embedKey } from '../shared/markdown.ts';
 import { api } from './api.ts';
-import { Avatar } from './explore.tsx';
+import { Avatar, MessageBody } from './explore.tsx';
 import { Glyph } from './icons.tsx';
 
 // Where embeds come from: the corpus, or made-up data (the welcome tour).
@@ -61,9 +61,6 @@ const dayOf = (ts: string | null) => (dated(ts) ? new Date(ts!).toLocaleDateStri
 const timeOf = (ts: string | null) => (dated(ts) ? new Date(ts!).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '');
 const whenOf = (ts: string | null) => (dated(ts) ? `${dayOf(ts)}, ${timeOf(ts)}` : 'No date');
 const lowerFirst = (s: string) => (s ? s[0].toLowerCase() + s.slice(1) : s);
-// Up to three emoji and nothing else, which Messages draws large, without a bubble.
-const emojiOnly = (s: string) => /^(\p{Extended_Pictographic}|\p{Emoji_Component}|\u200d|\ufe0f|\s)+$/u.test(s) && /\p{Extended_Pictographic}/u.test(s)
-  && [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s.trim())].filter((g) => g.segment.trim()).length <= 3;
 // "September 9 to 20, 2026", "September 28 to October 3, 2026", or across years in full.
 function dayRange(a: string, b: string): string {
   const x = new Date(a), y = new Date(b);
@@ -90,23 +87,16 @@ function ChatCard({ d, onRecord, onConversation }: { d: ChatEmbed; onRecord: (n:
         {d.messages.map((m, i) => {
           const prev = d.messages[i - 1];
           const newDay = !!prev && dayOf(prev.ts) !== dayOf(m.ts);
-          const newSender = !prev || prev.me !== m.me || prev.author !== m.author || newDay || prev.kind === 'reaction';
+          const newSender = !prev || prev.me !== m.me || prev.author !== m.author || newDay || prev.kind === 'reaction' || !!prev.unsent;
           const who = m.me ? 'You' : m.author ?? d.name;
           return (
             <div key={m.rowid} className={`embed-msg ${m.me ? 'me' : 'them'}`} style={{ animationDelay: `${150 + i * 110}ms` }}>
               {newDay && <div className="convo-time">{dayOf(m.ts)}</div>}
-              {m.kind === 'reaction' ? <div className="convo-reaction">{who} {lowerFirst(m.text)}</div> : (
+              {m.kind === 'reaction' || m.unsent ? <div className="convo-reaction">{who} {m.unsent ? 'unsent a message' : lowerFirst(m.text)}</div> : (
                 <div className={`msg-row ${m.me ? 'me' : 'them'} ${newSender ? 'first' : ''}`} data-rowid={m.rowid} title={whenOf(m.ts)}>
                   {d.group && !m.me && newSender && <div className="msg-author">{who}</div>}
-                  {m.image && m.thumb && (
-                    <button className="msg-image" onClick={() => onRecord(m.rowid)} title="Open this message">
-                      <img src={m.thumb} alt="" draggable={false} />
-                    </button>
-                  )}
                   {/* A picture that isn't on this Mac (only in iCloud, or gone) is named, not drawn as an empty box. */}
-                  {m.image && !m.thumb && !m.text && <div className={`bubble ${m.me ? 'me' : 'them'} attachment`}><Glyph name="photo" size={13} />Photo</div>}
-                  {(m.text || !m.image) && (emojiOnly(m.text) ? <div className="bubble-emoji">{m.text}</div>
-                    : <div className={`bubble ${m.me ? 'me' : 'them'} ${m.text ? '' : 'attachment'}`}>{m.text || <><Glyph name="doc" size={13} />Attachment</>}</div>)}
+                  <MessageBody m={m} picture={m.thumb ?? null} onRecord={onRecord} />
                 </div>
               )}
             </div>

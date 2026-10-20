@@ -9,6 +9,7 @@ import gzip
 import json
 import os
 import plistlib
+import shutil
 import sqlite3
 import struct
 import subprocess
@@ -538,6 +539,42 @@ def photos_library(home, asset="ZASSET", faces=("ZASSETFORFACE", "ZPERSONFORFACE
 
 
 class PhotosTests(Home):
+    def test_renamed_library_is_read(self):
+        lib = photos_library(self.home)
+        lib.rename(lib.with_name("Family Archive.photoslibrary"))
+        self.assertEqual(sorted(self.run_photos()), ["1", "4", "5", "6"])
+
+    def test_external_system_library_is_read(self):
+        lib = photos_library(self.home)
+        external = self.home / "External Drive/Archive.photoslibrary"
+        external.parent.mkdir()
+        lib.rename(external)
+        prefs = self.home / "Library/Containers/com.apple.photolibraryd/Data/Library/Preferences/com.apple.photolibraryd.plist"
+        prefs.parent.mkdir(parents=True, exist_ok=True)
+        prefs.write_bytes(plistlib.dumps({"SystemLibraryPath": str(external)}))
+        self.assertEqual(sorted(self.run_photos()), ["1", "4", "5", "6"])
+
+    def test_memories_from_every_library_and_kept_while_a_drive_is_away(self):
+        # Two libraries, each with a Memory, and one they share (a library copied from the other): all three, once each.
+        def memories(lib, rows):
+            con = sqlite3.connect(lib / "database/Photos.sqlite")
+            con.execute("create table ZMEMORY (Z_PK integer primary key, ZUUID text, ZTITLE text, ZSUBTITLE text, ZSTARTDATE real, ZENDDATE real)")
+            con.executemany("insert into ZMEMORY (ZUUID, ZTITLE, ZSTARTDATE, ZENDDATE) values (?, ?, 700000000, 700086400)", rows)
+            con.commit()
+            con.close()
+        first = photos_library(self.home)
+        first = first.rename(first.with_name("Family Archive.photoslibrary"))
+        memories(first, [("M1", "Lisbon"), ("SAME", "Summer")])
+        second = photos_library(self.home)
+        memories(second, [("M2", "Tokyo"), ("SAME", "Summer")])
+        self.run_photos()
+        self.assertEqual(sorted(r["title"] for r in self.records("photos_memories").values()), ["Lisbon", "Summer", "Tokyo"])
+        # The libraries go (an external drive unplugged): what was read of them stays.
+        shutil.rmtree(first)
+        shutil.rmtree(second)
+        self.run_photos()
+        self.assertEqual(len(self.records("photos_memories")), 3)
+
     def run_photos(self):
         self.run_module("photos")
         return {k[-1]: v for k, v in self.records("photos").items()}

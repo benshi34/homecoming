@@ -49,6 +49,7 @@ CONNECTORS = REPO / "connectors"
 sys.path.insert(0, str(CONNECTORS))
 for extra in filter(None, os.environ.get("UMP_EXTRA_PYPATH", "").split(os.pathsep)):
     sys.path.insert(0, extra)
+from library_paths import photos_libraries
 import common  # noqa: E402 - connectors/common.py: how zips are read, as imports.py reads them
 
 HOME = Path.home()
@@ -76,7 +77,7 @@ MAC_PATHS = {
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
     "books": [LIB / "Containers/com.apple.iBooksX/Data/Documents/BKLibrary", LIB / "Containers/com.apple.iBooksX/Data/Documents/AEAnnotation"],
-    "photos": [HOME / "Pictures/Photos Library.photoslibrary/database/Photos.sqlite"],
+    "photos": [p / "database/Photos.sqlite" for p in photos_libraries(HOME)],
     "apple_maps": [LIB / "Containers/com.apple.Maps/Data/Maps/MapsSync_0.0.1"],
     "voice_memos": [LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"],
     "notion_local": [LIB / "Application Support/Notion/notion.db"],

@@ -11,6 +11,7 @@ import os
 import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 # Records that are a whole day, not a moment: no hour to put them at.
 DAY_KINDS = {"health_day", "app_usage_day", "sleep"}
@@ -69,8 +70,24 @@ def _streak(days):
     return best
 
 
+def _whole_day(ts, meta):
+    """Health's own date when its time is zoned; otherwise the written date, as for all-day calendars."""
+    if not ts:
+        return None
+    try:
+        m = json.loads(meta) if meta else {}
+        zone = m.get("timezone") or m.get("tz")
+        t = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if zone and t.tzinfo:
+            return t.astimezone(ZoneInfo(zone)).date().isoformat()
+        return t.date().isoformat()
+    except (ValueError, TypeError, KeyError):
+        return ts[:10]
+
+
 def glance(db_path, sources):
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10)
+    con.create_function("whole_day", 2, _whole_day)
     q = ",".join("?" * len(sources))
     where = f"source in ({q}) and ts is not null and kind not in ({','.join('?' * len(NOT_ACTIVITY))})"
     args = [*sources, *sorted(NOT_ACTIVITY)]
@@ -78,16 +95,19 @@ def glance(db_path, sources):
     if not total:
         return {"total": 0}
     kinds = dict(con.execute(f"select kind, count(*) from records where {where} group by kind order by 2 desc", args).fetchall())
-    months = dict(con.execute(f"select strftime('%Y-%m', ts, 'localtime') m, count(*) from records where {where} and m is not null group by m", args).fetchall())
-    timed = f"{where} and kind not in ({','.join('?' * len(DAY_KINDS))}) and length(ts) > 10"
-    targs = [*args, *sorted(DAY_KINDS)]
+    # Dates from Takeout and local midnight totals from Health are whole days, not UTC instants.
+    dated = f"kind in ({','.join(repr(k) for k in sorted(DAY_KINDS))}) or length(ts) = 10 or (kind = 'event' and json_extract(meta, '$.all_day') = 1)"
+    day = f"case when {dated} then whole_day(ts, meta) else date(ts, 'localtime') end"
+    months = dict(con.execute(f"select substr({day}, 1, 7) m, count(*) from records where {where} and m is not null group by m", args).fetchall())
+    timed = f"{where} and not coalesce(({dated}), 0)"
+    targs = args
     hours = [0] * 24
     for h, n in con.execute(f"select cast(strftime('%H', ts, 'localtime') as integer) h, count(*) from records where {timed} and h is not null group by h", targs):
         hours[h] = n
     weekdays = [0] * 7  # Sunday first, as strftime('%w') has it
     for w, n in con.execute(f"select cast(strftime('%w', ts, 'localtime') as integer) w, count(*) from records where {timed} and w is not null group by w", targs):
         weekdays[w] = n
-    days = dict(con.execute(f"select date(ts, 'localtime') d, count(*) from records where {where} and d is not null group by d", args).fetchall())
+    days = dict(con.execute(f"select {day} d, count(*) from records where {where} and d is not null group by d", args).fetchall())
     today = dt.date.today()
     year_ago = (today - dt.timedelta(days=371)).isoformat()
     recent = {d: n for d, n in days.items() if d >= year_ago}

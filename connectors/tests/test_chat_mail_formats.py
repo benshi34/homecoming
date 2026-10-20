@@ -385,7 +385,7 @@ class WhatsAppTests(Base):
         self.run_import()
         jo = self.thread("whatsapp_export", "Jo")
         self.assertEqual(len(jo[0].get("meta", {}).get("files") or []), 1, jo[0])
-        self.assertTrue((self.corpus.parent / jo[0]["meta"]["files"][0]).read_bytes().startswith(b"\xff\xd8"))
+        self.assertTrue((self.corpus / jo[0]["meta"]["files"][0]).read_bytes().startswith(b"\xff\xd8"))
         self.assertEqual(len(jo[3].get("meta", {}).get("files") or []), 1, jo[3])
         kit = self.thread("whatsapp_export", "Kit")
         self.assertIn("Look at this", kit[0]["text"])

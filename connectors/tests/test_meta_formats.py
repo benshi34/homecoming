@@ -201,7 +201,7 @@ class MessageTests(Base):
         self.assertEqual(got, {iso(T): ("[photo]", ["1.jpg"]), iso(T + 1): ("[video]", ["2.mp4"]), iso(T + 2): ("[audio_file]", ["3.m4a"]),
                                iso(T + 3): ("the slides\n[file]", ["4.pdf"]), iso(T + 4): ("[gif]", ["5.gif"]), iso(T + 5): ("[sticker]", ["6.png"])})
         f = next(r for r in self.of("messenger") if r["ts"] == iso(T))["meta"]["files"][0]
-        self.assertEqual((self.corpus.parent / f).read_bytes(), b"jpg")
+        self.assertEqual((self.corpus / f).read_bytes(), b"jpg")
 
     def test_two_messages_alike_in_one_file_are_both_kept(self):
         # Two photos sent in the same moment are two messages; the same chat in an older export is still read once.

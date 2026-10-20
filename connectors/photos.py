@@ -15,11 +15,13 @@ import sqlite3
 import uuid
 
 from common import HOME, Writer, connect, from_apple
+from library_paths import photos_libraries
 
-LIBRARY = HOME / "Pictures/Photos Library.photoslibrary"
+LIBRARY = photos_libraries(HOME)[0]
 DB = LIBRARY / "database"
 AVENUE = ("Local SQLite, read in place (Photos.sqlite is multi-GB, so no snapshot): "
-          "~/Pictures/Photos Library.photoslibrary/database/Photos.sqlite for dates, GPS, named faces "
+          "Photos libraries in ~/Pictures and the configured system library (UMP_PHOTOS_LIBRARY to select one): "
+          "database/Photos.sqlite for dates, GPS, named faces "
           "(ZDETECTEDFACE -> ZPERSON), moments, captions, albums; database/search/psi.sqlite for Apple's "
           "on-device labels (groups.category codes: 1-14 place hierarchy, 1500s scenes, 1700 businesses, "
           "1203 OCR text, 1600/1800 events and concerts, 2300 camera model; ga maps group -> asset; asset "
@@ -195,16 +197,37 @@ def highlights(con):
 
 
 def main():
+    # Every library there is (renamed ones, one on an external drive). What Photos made of them (Memories, titled days)
+    # is written once for all of them, and only when one was read: a drive that isn't plugged in loses nothing.
+    global LIBRARY, DB
+    made = None
+    for LIBRARY in photos_libraries(HOME):
+        DB = LIBRARY / "database"
+        got = read_library()
+        if got is not None:
+            made = (made or []) + got
+    if made is None:
+        return
+    # As Photos has them now: one you turned down, or that Photos dropped, isn't kept from an earlier read. A library
+    # copied from another has the same ones: once each.
+    with Writer("photos_memories", AVENUE, parser="connectors/photos.py:memories", accumulate=False) as wm:
+        for m in made:
+            if not wm.has(m["id"]):
+                wm.add(**m)
+
+
+def read_library():
+    """One library's photos into the library; its Memories and titled days back to main (None when it can't be read)."""
     if not (DB / "Photos.sqlite").exists():
         print("[photos] no Photos library here")
-        return
+        return None
     con = connect(DB / "Photos.sqlite")
     have = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
     # The assets table: ZASSET since macOS 11, ZGENERICASSET on 10.15 (osxphotos' _DB_TABLE_NAMES).
     asset = "ZASSET" if "ZASSET" in have else "ZGENERICASSET" if "ZGENERICASSET" in have else None
     if not asset:  # made, never written to
         print("[photos] the library has no photos yet")
-        return
+        return []
     images, edited_images = previews(), renders()
     moments = {r["Z_PK"]: ", ".join(x for x in (r["ZTITLE"], r["ZSUBTITLE"]) if x)
                for r in con.execute("select Z_PK, ZTITLE, ZSUBTITLE from ZMOMENT" if "ZMOMENT" in have else "select 1 where 0")}
@@ -322,11 +345,8 @@ def main():
                 participants=who or None, title=place[0] if place else meta["filename"], text="\n".join(lines),
                 meta={k: v for k, v in meta.items() if v is not None})
     # What Photos made of them: Memories, and the days and trips it titled. Their own source, so nothing counts them as
-    # photos you took, and left out of the stream: they're Photos' summaries, not something that happened. As Photos has
-    # them now: one you turned down, or that Photos dropped, isn't kept from an earlier read.
-    with Writer("photos_memories", AVENUE, parser="connectors/photos.py:memories", accumulate=False) as wm:
-        for m in [*memories(con), *highlights(con)]:
-            wm.add(**m)
+    # photos you took, and left out of the stream: they're Photos' summaries, not something that happened.
+    return [*memories(con), *highlights(con)]
 
 
 if __name__ == "__main__":

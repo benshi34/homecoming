@@ -263,6 +263,9 @@ export function explainError(provider: AskProvider, raw: string, opts: { localUr
 // What happens in one answer, as it streams and as it's saved.
 export type AskEvent =
   | { t: 'text'; text: string } // a piece of the answer (or a whole block, from the command-line agents)
+  // What the agent thought on the way, as it sends it (a summary of its thinking): pieces as they come from Claude Code,
+  // a whole block from Codex. seconds: how long these thoughts had taken so far. Shown, never sent back to it.
+  | { t: 'thinking'; text: string; seconds?: number }
   | { t: 'tool'; id: string; name: string; input: unknown }
   | { t: 'tool_result'; id: string; text: string; error: boolean; seconds?: number; images?: number }
   | { t: 'notice'; text: string }
@@ -305,11 +308,34 @@ export function followupPrompt(question: string, turns: AskTurn[], maxChars = 30
 // Claude Code streams text in pieces; Codex sends whole messages.
 export const streams = (p: AskProvider) => PROVIDER[p]?.harness === 'claude-code';
 
-// Adds an event to a turn as it arrives: a streamed piece of text joins the text before it.
+// Adds an event to a turn as it arrives: a streamed piece of text joins the text before it, and of thinking the thinking.
 export function addEvent(turn: Pick<AskTurn, 'provider' | 'events'>, e: AskEvent) {
   const last = turn.events[turn.events.length - 1];
   if (e.t === 'text' && last?.t === 'text' && streams(turn.provider)) turn.events[turn.events.length - 1] = { t: 'text', text: last.text + e.text };
-  else turn.events.push(e);
+  else if (e.t === 'thinking' && last?.t === 'thinking' && streams(turn.provider)) {
+    turn.events[turn.events.length - 1] = { ...last, text: last.text + e.text, ...(e.seconds !== undefined ? { seconds: e.seconds } : {}) };
+  } else turn.events.push(e);
+}
+
+// The agent's thinking in a turn, in order: each stretch of it, and how many lookups it made before the next.
+export interface Thoughts { parts: ({ kind: 'thought'; text: string } | { kind: 'looked'; n: number })[]; seconds: number }
+export function thoughtsOf(events: AskEvent[]): Thoughts {
+  const parts: Thoughts['parts'] = [];
+  let seconds = 0;
+  let looked = 0;
+  for (const e of events) {
+    if (e.t === 'tool') looked++;
+    if (e.t !== 'thinking') continue;
+    seconds += e.seconds ?? 0;
+    const text = e.text.trim();
+    if (!text) continue; // its thinking left out (Claude's, unless asked for): nothing to show
+    const prev = parts[parts.length - 1];
+    if (looked && prev) parts.push({ kind: 'looked', n: looked });
+    if (prev?.kind === 'thought' && !looked) prev.text += `\n\n${text}`;
+    else parts.push({ kind: 'thought', text });
+    looked = 0;
+  }
+  return { parts, seconds };
 }
 
 // The answer's text: the text after the last tool call (what came before it was the assistant thinking aloud).

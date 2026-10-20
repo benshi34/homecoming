@@ -421,6 +421,22 @@ html[data-nav=move]::view-transition-new(page) { animation: none; }
 .notice.error { color: var(--red); }
 .a .banner { margin-top: 8px; }
 .turn-meta { font-size: 11px; color: var(--tertiary); margin-top: 8px; }
+.thoughts { margin-bottom: 4px; }
+.thoughts-head { font: inherit; font-size: 12px; color: var(--secondary); background: transparent; border: none; padding: 2px 4px 2px 0; display: inline-flex; align-items: center; gap: 6px; border-radius: 5px; }
+.thoughts-head:hover { color: var(--label); }
+.thoughts-head .disclose { transition: transform 0.18s var(--ease); }
+.thoughts.open .thoughts-head .disclose { transform: rotate(90deg); }
+/* Opens and folds the way a disclosure does on the Mac: its height, smoothly; hidden (and out of the way) when folded. */
+.thoughts-body { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; transition: grid-template-rows 0.3s var(--ease), opacity 0.2s ease, visibility 0s 0.3s; }
+.thoughts.open .thoughts-body { grid-template-rows: 1fr; opacity: 1; visibility: visible; transition: grid-template-rows 0.3s var(--ease), opacity 0.2s ease; }
+.thoughts-clip { min-height: 0; overflow: hidden; }
+.thoughts-clip * { transition-property: none; } /* shown and hidden with the box, at once (Reduce Motion gives everything a transition) */
+.thoughts-text { margin: 4px 0 6px 5px; padding: 0 6px 0 12px; border-left: 1.5px solid var(--separator); font-size: 12.5px; line-height: 1.5; color: var(--secondary); overflow-wrap: anywhere; }
+.thoughts.live .thoughts-text { max-height: 132px; overflow-y: auto; }
+.thoughts-text.clipped { mask-image: linear-gradient(to bottom, transparent, #000 30px); }
+.thoughts-text p + p { margin-top: 6px; }
+.thoughts-text code { background: var(--fill); border-radius: 4px; padding: 0 4px; }
+.thought-looked { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--tertiary); margin: 7px 0; }
 .lookups { margin-bottom: 8px; }
 .lookups-head { font: inherit; font-size: 12px; color: var(--secondary); background: transparent; border: none; padding: 2px 4px 2px 0; display: inline-flex; align-items: center; gap: 6px; border-radius: 5px; }
 .lookups-head:hover { color: var(--label); }
@@ -673,6 +689,10 @@ html[data-nav=zoom]::view-transition-new(explore-page) { animation: 0.5s var(--e
 .mini-cal { display: grid; grid-template-rows: repeat(7, 1fr); grid-auto-flow: column; gap: 2.5px; width: 52%; max-width: 360px; flex: none; }
 .mini-cal i { border-radius: 3px; }
 .tile-progress { position: relative; z-index: 2; flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; }
+/* A tile's bar in its own colors, on light tiles and dark ones alike: the track from its text, the fill its tone. */
+.tile-progress .bar { background: color-mix(in srgb, currentColor 16%, transparent); }
+.tile-progress .bar > div { background: var(--tone, var(--accent)); }
+.explore-tile.mesh .tile-progress .bar > div, .explore-tile.night .tile-progress .bar > div, .explore-tile.photo .tile-progress .bar > div { background: rgba(255, 255, 255, 0.85); }
 .shimmer { flex: 1; min-height: 18px; max-height: 140px; border-radius: 12px; background: linear-gradient(100deg, var(--fill) 30%, var(--fill-strong) 50%, var(--fill) 70%);
   background-size: 300% 100%; animation: shimmer 1.8s ease-in-out infinite; }
 .explore-foot { margin: 26px 2px 0; font-size: 11.5px; color: var(--tertiary); display: flex; align-items: center; justify-content: center; gap: 5px; }
@@ -998,7 +1018,28 @@ button.hbar:hover { background: var(--fill); }
   align-items: center; justify-content: center; color: var(--tertiary); cursor: default; }
 .msg-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .msg-row.anchor .bubble, .msg-row.anchor .msg-image { box-shadow: 0 0 0 2.5px var(--group-box), 0 0 0 4.5px var(--orange); }
+.msg-row.anchor .bubble-emoji { border-radius: 12px; box-shadow: 0 0 0 2.5px var(--group-box), 0 0 0 4.5px var(--orange); }
 .convo-reaction.anchor { color: var(--orange); }
+/* What came with a message, by name; the reactions kept on it, tucked under its bubble; "Edited", and what it said before. */
+.bubble.attachment { display: inline-flex; align-items: center; gap: 6px; max-width: 74%; margin-bottom: 2px; }
+.bubble.them.attachment { color: var(--secondary); }
+.msg-reactions { position: relative; z-index: 1; margin: -5px 8px 0; padding: 1px 6px; border-radius: 10px; font-size: 12px; line-height: 18px;
+  background: var(--group-box); box-shadow: 0 0 0 0.5px var(--separator), 0 1px 3px rgba(0, 0, 0, 0.08); cursor: default; }
+.msg-reactions span + span { margin-left: 2px; }
+.msg-edited { font: inherit; font-size: 10.5px; color: var(--secondary); margin: 1px 10px 0; padding: 0; background: none; border: none; }
+button.msg-edited { color: var(--accent); cursor: pointer; }
+.bubble.earlier { opacity: 0.5; margin-bottom: 2px; animation: fade-in 0.25s var(--ease); }
+.sheet .sheet-actions .spacer { flex: 1; }
+
+/* A calendar event by itself (cited.tsx), as Calendar shows one. */
+.sheet h2.event-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 4px; }
+.event-where { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--secondary); }
+.event-when { margin-top: 8px; font-size: 13px; line-height: 1.45; }
+.event-when div + div { color: var(--secondary); }
+.event-label { font-size: 11px; font-weight: 600; color: var(--secondary); margin: 14px 0 5px 12px; }
+.event-person { display: flex; align-items: center; gap: 8px; }
+.event-people .kv span { color: var(--label); }
+.event-people .kv { padding: 6px 12px; }
 
 /* What an Ask answer shows in place (embeds.tsx): a few messages as Messages draws them, and photos. The bubbles come
    in one after another; the photos settle in. */
@@ -1018,8 +1059,6 @@ button.hbar:hover { background: var(--fill); }
 .embed-msg.me { transform-origin: 100% 100%; }
 .embed-msg.them { transform-origin: 0 100%; }
 @keyframes bubble-in { from { opacity: 0; transform: translateY(8px) scale(0.9); } }
-.embed-chat-body .bubble.attachment { display: inline-flex; align-items: center; gap: 6px; }
-.embed-chat-body .bubble.them.attachment { color: var(--secondary); }
 .bubble-emoji { font-size: 34px; line-height: 1.15; padding: 0 2px; }
 .agent-reply { padding: 0 14px 4px 42px; }
 /* AI: its mark, and the primary button in its gradient (as Gemini marks what's generated). */

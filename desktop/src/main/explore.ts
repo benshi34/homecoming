@@ -12,6 +12,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ExploreProgress } from '../shared/explore.ts';
 import { childEnv, type Paths } from './paths.ts';
 
 const OPS = new Set(['summary', 'on-this-day', 'people', 'person', 'places', 'rhythms', 'firsts', 'made', 'groups', 'journeys', 'year',
@@ -38,6 +39,20 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
   let world: unknown = null;
   let running: string | null = null;
   const waiting: Job[] = [];
+  // Where each artifact is, for the window: in line (its place, behind which), or being built (its steps, how far).
+  // Sent as it changes, and whole when Explore opens (status()): it may open while they're under way.
+  const status = new Map<string, Omit<ExploreProgress, 'key'>>();
+  const say = (key: string, s: Omit<ExploreProgress, 'key'>) => {
+    status.set(key, s);
+    onProgress(key, { ...s });
+  };
+  // The line, in the order it's built in (what was asked for, then what's built ahead): each one's place, when it moved.
+  const tellLine = () => {
+    [...waiting.filter((j) => !j.ahead), ...waiting.filter((j) => j.ahead)].forEach((j, i) => {
+      const was = status.get(j.key);
+      if (was?.place !== i + 1 || was?.waiting !== (running ?? undefined)) say(j.key, { waiting: running ?? undefined, place: i + 1 });
+    });
+  };
   const jobs = new Map<string, Job>(); // waiting or being built, by key
   // What's been built, while the database is as it was then; and what couldn't be (an error, out of time), which
   // isn't built ahead again until the database changes (asked for, it's tried again).
@@ -65,7 +80,10 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
   };
 
   const run = (op: string, args: string[], key: string) => new Promise<unknown>((resolve) => {
-    if (!QUICK.has(op)) running = op;
+    if (!QUICK.has(op)) {
+      running = op;
+      say(key, { started: true });
+    }
     const child = spawn(p.python, ['-u', path.join(path.dirname(p.bridge), 'explore.py'), op, ...args], {
       cwd: p.repo, env: { ...childEnv(p, process.env), UMP_EXPLORE_CACHE: cacheDir }, stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -84,7 +102,9 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
           continue;
         }
         try {
-          onProgress(key, JSON.parse(line.slice(10)));
+          const d = JSON.parse(line.slice(10));
+          if (QUICK.has(op)) onProgress(key, d);
+          else say(key, d.steps ? { started: true, steps: d.steps } : { ...status.get(key), ...d, waiting: undefined, place: undefined });
         } catch {
           /* a cut-off line: the next one says the same */
         }
@@ -93,11 +113,13 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
     child.on('error', (e) => {
       clearTimeout(timer);
       if (!QUICK.has(op)) running = null;
+      status.delete(key);
       resolve({ error: e.message });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
       if (!QUICK.has(op)) running = null;
+      status.delete(key);
       try {
         resolve(JSON.parse(out));
       } catch {
@@ -113,7 +135,9 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
     const job = i >= 0 ? waiting.splice(i, 1)[0] : waiting.shift();
     if (!job) return;
     const at = fresh();
-    void run(job.op, job.args, job.key).then((r) => {
+    const r0 = run(job.op, job.args, job.key);
+    tellLine(); // the rest move up, behind this one
+    void r0.then((r) => {
       jobs.delete(job.key);
       // Kept if the database didn't change while it was built; the stream's files, once written, change what it says.
       if (job.op === 'stream-build') {
@@ -137,20 +161,20 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
     if (ahead && failed.has(key)) return Promise.resolve(failed.get(key));
     const had = jobs.get(key);
     if (had) {
-      // Asked for now: no longer behind what's built ahead, only the one being built (it's told which).
+      // Asked for now: no longer behind what's built ahead, only behind what's asked for.
       if (!ahead && waiting.includes(had)) {
         had.ahead = false;
-        if (running) onProgress(key, { waiting: running });
+        tellLine();
       }
       return had.done;
     }
-    if (running && !ahead) onProgress(key, { waiting: running });
     let resolve: (r: unknown) => void = () => {};
     const done = new Promise<unknown>((r) => (resolve = r));
     const job = { op, args: strs, key, ahead, done, resolve };
     jobs.set(key, job);
     waiting.push(job);
     next();
+    tellLine();
     return done;
   };
 
@@ -170,5 +194,15 @@ export function exploreRunner(p: Paths, appPath: string, cacheDir: string, onPro
     if (!fresh()) return;
     for (const [op, args] of homeOps(today())) void request(op, args, true);
   };
-  return Object.assign(explore, { warm });
+  // The page you're looking at, while it waits: next in line, right after the one being built now.
+  const first = (key: string) => {
+    const job = jobs.get(key);
+    const i = job ? waiting.indexOf(job) : -1;
+    if (i < 0) return;
+    waiting.splice(i, 1);
+    job!.ahead = false;
+    waiting.unshift(job!);
+    tellLine();
+  };
+  return Object.assign(explore, { warm, first, status: (): ExploreProgress[] => [...status].map(([key, s]) => ({ key, ...s })) });
 }

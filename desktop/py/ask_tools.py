@@ -45,6 +45,7 @@ HOME = Path.home()
 CAP = 20_000  # characters of one tool result
 SECONDS = 30  # one sql or search call, at most: the tools answer one call at a time, so a runaway query is stopped
 LONGEST = 100_000  # characters of a query
+from library_paths import record_path  # noqa: E402
 from redact import redact  # noqa: E402
 
 TOOLS = [
@@ -448,7 +449,7 @@ def _record_file(a, prefer=None):
         return None, f"Record #{r['rowid']} doesn't point to a file."
     path = Path(p).expanduser()
     if not path.is_absolute():  # one of the library's own files: never one a ../ takes out of it
-        logical = (CORPUS.parent / path) if str(p).startswith("corpus/") else (CORPUS / path)
+        logical = record_path(p, CORPUS)
         path = logical.resolve()
         # The app deliberately links raw/iphone to its local decrypted mirror, outside an iCloud-synced corpus.
         # A record under that link may reach the mirror, but a link inside it mustn't reach anything beyond it.
@@ -599,12 +600,12 @@ def record_view(rowid):
 
 
 def inventory():
-    """Records per source, and their first and last dates: of the times that can be right (from 1990 to tomorrow, and
+    """Records per source, and their first and last dates: of the times that can be right (from 1900 to tomorrow, and
     not Apple's first second, which is a missing time read as 0), as Explore counts them."""
     con = connect()
     tomorrow = (datetime.now(timezone.utc).date().toordinal() + 1)
     end = datetime.fromordinal(tomorrow).strftime("%Y-%m-%dT99")
-    ok = f"case when ts >= '1990' and ts < '{end}' and ts not like '2001-01-01T00:00:00%' then ts end"
+    ok = f"case when ts >= '1900' and ts < '{end}' and ts not like '1900-01-01T00:00:00%' and ts not like '1970-01-01T00:00:00%' and ts not like '2001-01-01T00:00:00%' and ts not in ('1900-01-01', '1970-01-01', '2001-01-01') then ts end"
     rows = con.execute(f"select source, count(*), min({ok}), max({ok}) from records group by source order by count(*) desc").fetchall()
     return [{"source": s, "count": n, "first": (a or "")[:10], "last": (b or "")[:10]} for s, n, a, b in rows]
 

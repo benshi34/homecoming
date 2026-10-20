@@ -126,7 +126,7 @@ class GooglePhotosTests(unittest.TestCase):
         self.addCleanup(t.cleanup)
         self.root = Path(t.name)
         self.imports, self.media = self.root / "corpus/imports", self.root / "corpus/media"
-        for name, value in (("IMPORTS", self.imports), ("MEDIA", self.media)):
+        for name, value in (("IMPORTS", self.imports), ("MEDIA", self.media), ("CORPUS", self.imports.parent)):
             p = patch.object(imports, name, value)
             p.start()
             self.addCleanup(p.stop)

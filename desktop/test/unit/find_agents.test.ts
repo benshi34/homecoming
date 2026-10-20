@@ -45,6 +45,9 @@ test('the Claude app\'s own copy, newest version first, with the files the app k
     fs.writeFileSync(path.join(root, '2.1.295/.DS_Store'), '');
     if (!['/opt/homebrew/bin/claude', '/usr/local/bin/claude'].some((p) => fs.existsSync(p))) {
       assert.equal(findClaude(home), path.join(root, '2.1.295/9d6405/claude.app/Contents/MacOS/claude'));
+      fs.rmSync(path.join(root, '2.1.295'), { recursive: true });
+      fs.rmSync(path.join(root, '2.1.293'), { recursive: true });
+      assert.equal(findClaude(home), null, 'updater metadata alone is not an installed agent');
     }
   } finally {
     Object.assign(process.env, saved);

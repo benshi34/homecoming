@@ -6,6 +6,7 @@ the Mac connectors read, so the real parsers run on them.
     make_fixtures.py home <dir>       a fake $HOME: Claude Code sessions, a git repo, Mail, Messages, settings
     make_fixtures.py backup <home>    a fake encrypted Finder backup under <home>/Library/.../MobileSync/Backup
     make_fixtures.py ask-corpus <dir> a small indexed corpus (corpus.db) for the Ask assistant
+    make_fixtures.py cited-corpus <dir> one for opening what an answer cites (conversations, events)
 """
 
 import collections
@@ -261,6 +262,76 @@ def ask_corpus(corpus):
     return str(corpus)
 
 
+def cited_corpus(corpus):
+    """A corpus for opening what an Ask answer cites. A conversation with Grace in Messages over four days: one
+    message whose time was lost (read as 0, so 1970), a picture, a tapback, an edit with what it said before, a menu
+    sent as a file. A book club on Instagram (a group, with reactions kept on its messages). Calendar events with a
+    place, invitees and notes, and an all-day one. A note. Times are UTC; everyone in it is made up."""
+    corpus = Path(corpus)
+    norm = corpus / "normalized"
+    norm.mkdir(parents=True, exist_ok=True)
+    (corpus / "identity.json").write_text(json.dumps(ME))
+    png = corpus / "files" / "IMG_0002.png"
+    png.parent.mkdir(exist_ok=True)
+    png.write_bytes(bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000008000000080802000000"
+        "4b6d29dc0000001549444154789c63fccfc0f09f8101cc5880510106"
+        "0d00a3d01fe1ba4a0b3d0000000049454e44ae426082"))
+    grace = []
+
+    def g(ts, text, me=False, **f):
+        grace.append({"id": f"im-{len(grace)}", "source": "imessage", "kind": f.pop("kind", "message"), "ts": ts, "author": "me" if me else "Grace Hopper",
+                      "is_me": me, "thread": "chat-grace", "thread_name": "Grace Hopper", "text": text,
+                      "meta": {"service": "iMessage", "group": False, **f.pop("meta", {})}, **f})
+
+    g("1970-01-01T00:00:00Z", "an old message whose time was lost")
+    for i, t in enumerate(["Can you send me the slides?", "Sure, give me a minute", "Got them, thanks!", "Good luck tomorrow"]):
+        g(f"2026-02-20T15:{10 + i:02d}:00Z", t, me=i % 2 == 1)
+    g("2026-03-01T10:00:00Z", "Did you see the eclipse?")
+    g("2026-03-01T10:01:00Z", "Not yet! send a picture", me=True)
+    g("2026-03-01T10:02:00Z", "[attachment: IMG_0002.png (image/png)]", meta={"files": [str(png)]})
+    g("2026-03-01T10:03:00Z", "wow")
+    g("2026-03-02T18:04:00Z", "Are we still on for dinner at Tasca on Friday?")
+    g("2026-03-02T18:06:00Z", "Yes! 7:30, I booked a table.", me=True)
+    g("2026-03-02T18:07:00Z", "Loved “Yes! 7:30, I booked a table.”", kind="reaction", meta={"reaction": "loved"})
+    g("2026-03-02T18:09:00Z", "Should I bring the wine?", me=True,
+      meta={"edited": "2026-03-02T18:10:00Z", "edits": [{"at": "2026-03-02T18:09:00Z", "text": "Should I bring wine"}]})
+    g("2026-03-02T18:11:00Z", "🍷🍷")
+    g("2026-03-02T18:12:00Z", "[attachment: Tasca menu.pdf (application/pdf)]", me=True)
+    g("2026-03-07T09:00:00Z", "That was so much fun")
+    g("2026-03-07T09:05:00Z", "Same time next month?", me=True)
+    club = []
+    who = ["Katherine Johnson", "Dorothy Vaughan", "me"]
+    for i in range(24):
+        d = 10 + i // 8
+        a = who[i % 3]
+        club.append({"id": f"ig-{i}", "source": "instagram", "kind": "message", "ts": f"2026-03-{d:02d}T20:{i % 8 * 5:02d}:00Z",
+                     "author": a, "is_me": a == "me", "thread": "ig-book-club", "thread_name": "Book club",
+                     "participants": ["Katherine Johnson", "Dorothy Vaughan", "Ada Lovelace"],
+                     "text": "Chapter 7 is the best one" if i == 9 else f"book club message {i}",
+                     "meta": {"reactions": [{"who": "Dorothy Vaughan", "reaction": "❤"}, {"who": "Ada Lovelace", "reaction": "😂"}]} if i == 9 else {}})
+    sets = {
+        "imessage": grace,
+        "instagram": club,
+        "calendar": [
+            {"id": "cal-1", "source": "calendar", "kind": "event", "ts": "2026-03-06T19:30:00Z", "ts_end": "2026-03-06T21:30:00Z",
+             "title": "Dinner with Grace", "thread": "Personal", "thread_name": "iCloud / Personal", "participants": ["Grace Hopper", "Alan Turing"],
+             "text": "Dinner with Grace\nLocation: Tasca, Lisbon\nOrganized by Grace Hopper\nAttendees: Grace Hopper, Alan Turing\nYou accepted\nBring the good wine.",
+             "meta": {"location": "Tasca, Lisbon", "organizer": "Grace Hopper", "my_reply": "accepted"}},
+            {"id": "cal-2", "source": "calendar", "kind": "event", "ts": "2026-03-22T00:00:00Z", "ts_end": "2026-03-23T00:00:00Z",
+             "title": "Grace's birthday", "thread": "Birthdays", "thread_name": "Birthdays", "text": "Grace's birthday", "meta": {"all_day": True}},
+        ],
+        "apple_notes": [{"id": "note-1", "source": "apple_notes", "kind": "note", "ts": "2026-03-03T08:00:00Z", "is_me": True,
+                         "title": "Dinner ideas", "text": "Dinner ideas\nTasca on Friday\nthe wine bar after"}],
+    }
+    for source, rows in sets.items():
+        with (norm / f"{source}.jsonl").open("w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    subprocess.run([sys.executable, str(REPO / "connectors" / "build_index.py")], check=True, env={**os.environ, "CORPUS_DIR": str(corpus)}, capture_output=True)
+    return str(corpus)
+
+
 def explore_corpus(corpus):
     """A corpus for the Explore page's tests: a close friend across two apps under two names, a Discord friend (whose
     side the export doesn't keep), group chats (one in an app nothing here knows), calls, photos at home in Princeton
@@ -508,7 +579,7 @@ def ads_corpus(corpus):
 def edge_corpus(corpus, case):
     """Libraries at the edges, for Explore and Ask. "empty": an index with nothing in it. "one-day": everything on
     one day. "messy": 1990 to 2026, with what goes wrong in real libraries: records with no time, times a clock or a
-    conversion got wrong (1970, Apple's first second, 1985, 2099, 9999, not a date), times with offsets instead of Z
+    conversion got wrong (1970, Apple's first second, a spreadsheet's 1900, Windows' 1601, 2099, 9999, not a date), times with offsets instead of Z
     and across a clock change; text that's empty, a megabyte long, right to left, emoji, NUL, HTML and SQL; two
     people with one name, one of them "me", and you in your own chats; meta that isn't an object; numbers that
     aren't. Times are UTC; tests run with UMP_TZ set. Everyone is made up."""
@@ -575,7 +646,7 @@ def edge_corpus(corpus, case):
             for d in ("06-20", "06-21", "06-22"):
                 photo(f"{y}-{d}T03:00:00Z", *tokyo, timezone="Asia/Tokyo")
         # Times that can't be right, and none at all: none of them a day, a year, a first or a trip.
-        for ts in (None, "1970-01-01T00:00:00Z", "2001-01-01T00:00:00Z", "1985-05-05T10:00:00Z", "2099-12-31T23:59:59Z", "9999-12-31T23:59:59Z",
+        for ts in (None, "1970-01-01T00:00:00Z", "2001-01-01T00:00:00Z", "1900-01-01T00:00:00Z", "1601-01-01T00:00:00Z", "2099-12-31T23:59:59Z", "9999-12-31T23:59:59Z",
                    "not a time", "2024-13-45T99:99:99Z"):
             for i in range(25):
                 msg(ts, "Grace Hopper", i % 2 == 0, "g1", text="sent at a bad time")
@@ -625,6 +696,8 @@ if __name__ == "__main__":
         print(json.dumps({"backup": backup(target)}))
     elif cmd == "ask-corpus":
         print(json.dumps({"corpus": ask_corpus(target)}))
+    elif cmd == "cited-corpus":
+        print(json.dumps({"corpus": cited_corpus(target)}))
     elif cmd == "media-corpus":
         print(media_corpus(target))
     elif cmd == "explore-corpus":

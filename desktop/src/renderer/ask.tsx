@@ -10,7 +10,7 @@ import { type AgentReady, agentProvider, notYetTitle } from '../shared/setup.ts'
 import {
   addEvent, type AgentNeed, agentNeed, answerOf, type AskConversation, type AskEvent, type AskProvider, type AskSummary, type AskTurn,
   describeTool, explainError, hostOf, isLocalAddress, LINKS, LOCAL_SERVERS, type LocalServer, modelLabel, needText, PROVIDER, providerLabel, PROVIDERS, RETENTION,
-  retentionOk, TOOL_LABEL,
+  retentionOk, type Thoughts, thoughtsOf, TOOL_LABEL,
 } from '../shared/ask.ts';
 import { CATALOG } from '../shared/catalog.ts';
 import { ago } from '../shared/format.ts';
@@ -19,8 +19,9 @@ import { PHONE_SOURCES } from '../shared/phone.ts';
 import type { Snapshot } from '../shared/types.ts';
 import { api, type AskRecord } from './api.ts';
 import { EmbedBlock } from './embeds.tsx';
-import { kindName, recordTitle } from '../shared/explore.ts';
-import { ConversationSheet } from './explore.tsx';
+import { Cite, CitedSheet, CiteContext, EventDetails } from './cited.tsx';
+import { type ExploreAt, isCalendarEvent, kindName, recordTitle } from '../shared/explore.ts';
+import { ConversationSheet, exploreOpenAt } from './explore.tsx';
 import { Glyph } from './icons.tsx';
 import { Banner, Button, GroupRow, Sheet, Spinner } from './ui.tsx';
 
@@ -36,7 +37,8 @@ let lastOpen: string | null = null;
 
 type AskSheet = null | 'provider' | { retention: AskProvider; then?: { q: string; retry?: boolean }; back?: 'provider' };
 
-export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode }) {
+// onExplore: shows Explore, on the page a cited conversation's "Open in Explore" put it on.
+export function AskPage({ snap, toolbar, onExplore }: { snap: Snapshot; toolbar: ReactNode; onExplore?: () => void }) {
   const [list, setList] = useState<AskSummary[]>([]);
   const [sel, setSel] = useState<string | null>(lastOpen); // null: a new conversation
   const [conv, setConv] = useState<AskConversation | null>(null);
@@ -44,6 +46,11 @@ export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode 
   const [sheet, setSheet] = useState<AskSheet>(null);
   const [record, setRecord] = useState<number | null>(null);
   const [conversation, setConversation] = useState<number | null>(null);
+  const [cited, setCited] = useState<number | null>(null); // a citation opened
+  const toExplore = onExplore && ((at: ExploreAt) => {
+    exploreOpenAt(at);
+    onExplore();
+  });
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -183,8 +190,10 @@ export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode 
           {sel && <button className="icon-btn no-drag" onClick={() => setDeleting(sel)} title="Delete Conversation" aria-label="Delete Conversation" data-testid="ask-delete"><Glyph name="trash" size={16} /></button>}
           {toolbar}
         </div>
-        <Chat conv={conv} running={running} onRecord={setRecord} onConversation={setConversation} onExample={(q) => void send(q)} onRetry={retry}
-          onSettings={() => setSheet('provider')} />
+        <CiteContext.Provider value={setCited}>
+          <Chat conv={conv} running={running} onRecord={setRecord} onConversation={setConversation} onExample={(q) => void send(q)} onRetry={retry}
+            onSettings={() => setSheet('provider')} />
+        </CiteContext.Provider>
         {error && <div className="ask-error"><Banner kind="error">{error}</Banner></div>}
         <Composer text={draft} setText={setDraft} running={running} onSend={(q) => send(q)} onStop={() => sel && void api.ask({ op: 'stop', id: sel })} snap={snap}
           need={need} onRetention={() => setSheet({ retention: s.provider })} onChoose={() => setSheet('provider')} />
@@ -203,7 +212,8 @@ export function AskPage({ snap, toolbar }: { snap: Snapshot; toolbar: ReactNode 
           {running && doomed.id === sel ? 'It\'s still answering: deleting the conversation stops the answer. ' : ''}It's deleted from this Mac, and can't be brought back.
         </ConfirmSheet>
       )}
-      {conversation !== null && <ConversationSheet rowid={conversation} onClose={() => setConversation(null)} onRecord={setRecord} />}
+      {conversation !== null && <ConversationSheet rowid={conversation} onClose={() => setConversation(null)} onRecord={setRecord} onExplore={toExplore} />}
+      {cited !== null && <CitedSheet key={cited} rowid={cited} onClose={() => setCited(null)} onExplore={toExplore} />}
       {record !== null && <RecordSheet rowid={record} onClose={() => setRecord(null)} />}
     </>
   );
@@ -218,7 +228,8 @@ function Chat({ conv, running, onRecord, onConversation, onExample, onRetry, onS
   const end = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const last = conv?.turns[conv.turns.length - 1];
-  const size = last ? last.events.length + (last.events.at(-1)?.t === 'text' ? (last.events.at(-1) as { text: string }).text.length : 0) : 0;
+  const tail = last?.events.at(-1);
+  const size = last ? last.events.length + (tail?.t === 'text' || tail?.t === 'thinking' ? tail.text.length : 0) : 0;
   const turns = conv?.turns.length ?? 0;
   // Follow the answer as it streams, unless you've scrolled up to read.
   useEffect(() => {
@@ -266,13 +277,17 @@ export function Turn({ turn, live, onRecord, onConversation, onRetry, onSettings
   const secs = turn.endedAt ? Math.max(0, (Date.parse(turn.endedAt) - Date.parse(turn.startedAt)) / 1000) : null;
   // What it reports on the way (reconnecting...), while it lasts.
   const notice = live ? turn.events.filter((e): e is Extract<AskEvent, { t: 'notice' }> => e.t === 'notice').at(-1) : undefined;
+  const thoughts = useMemo(() => thoughtsOf(turn.events), [turn.events]);
+  // Thinking now, with words to show: its block says so, in place of the line under it.
+  const thinkingNow = live && turn.events.at(-1)?.t === 'thinking' && thoughts.parts.length > 0;
   return (
     <div className="turn" data-testid="ask-turn">
       <div className="q-row"><div className="q selectable">{turn.question}</div></div>
       <div className="a">
+        <Thinking thoughts={thoughts} live={live} now={thinkingNow} answering={!!answer} onRecord={onRecord} />
         <Lookups events={turn.events} live={live} />
         {answer && <div className="answer selectable" data-testid="ask-answer"><Markdown text={answer} live={live} onRecord={onRecord} onConversation={onConversation} /></div>}
-        {live && !answer && <div className="thinking"><Spinner size={13} /> {notice?.text ?? (turn.events.some((e) => e.t === 'tool') ? 'Looking things up…' : 'Thinking…')}</div>}
+        {live && !answer && (notice || !thinkingNow) && <div className="thinking"><Spinner size={13} /> {notice?.text ?? (turn.events.some((e) => e.t === 'tool') ? 'Looking things up…' : 'Thinking…')}</div>}
         {failed && <TurnError turn={turn} onRetry={onRetry} onSettings={onSettings} />}
         {turn.stopped && !failed && (
           <div className="notice">Stopped.{onRetry && <> <button className="link" onClick={onRetry} data-action="ask-retry">Try Again</button></>}</div>
@@ -280,7 +295,7 @@ export function Turn({ turn, live, onRecord, onConversation, onRetry, onSettings
         {!live && (
           <div className="turn-meta">
             {PROVIDER[turn.provider] ? `${PROVIDER[turn.provider].name} (${PROVIDER[turn.provider].short})` : turn.provider}{turn.model && turn.model !== 'default' ? ` · ${modelLabel(turn.model)}` : ''}
-            {secs !== null ? ` · ${secs < 60 ? `${secs.toFixed(0)} s` : `${Math.floor(secs / 60)} min ${Math.round(secs % 60)} s`}` : ''}
+            {secs !== null ? ` · ${lasted(secs)}` : ''}
           </div>
         )}
       </div>
@@ -318,6 +333,46 @@ function TurnError({ turn, onRetry, onSettings }: { turn: AskTurn; onRetry?: () 
 }
 
 const openLink = (url: string) => void api.ask({ op: 'open-link', url });
+
+const lasted = (s: number) => (s < 60 ? `${s.toFixed(0)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
+
+// What the agent thought on its way to the answer, as it thinks: open while it works, folded into one line once the
+// answer starts, unless you've opened or closed it yourself. The lookups it made in between are said where they came.
+// now: thinking at this moment.
+function Thinking({ thoughts, live, now, answering, onRecord }: { thoughts: Thoughts; live: boolean; now: boolean; answering: boolean; onRecord: (n: number) => void }) {
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const [clipped, setClipped] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const open = chosen ?? (live && !answering);
+  const size = thoughts.parts.reduce((n, p) => n + (p.kind === 'thought' ? p.text.length : 1), 0);
+  // While it streams, its newest words stay in view, and the oldest fade out at the top.
+  useEffect(() => {
+    const b = box.current;
+    if (!b || !live) return;
+    b.scrollTop = b.scrollHeight;
+    setClipped(b.scrollHeight > b.clientHeight + 1);
+  }, [size, live, open]);
+  if (!thoughts.parts.length) return null;
+  const label = now ? 'Thinking…' : thoughts.seconds >= 1 ? `Thought for ${lasted(thoughts.seconds)}` : 'Thought for a moment';
+  return (
+    <div className={`thoughts ${open ? 'open' : ''} ${live ? 'live' : ''}`} data-testid="ask-thinking">
+      <button className="thoughts-head" onClick={() => setChosen(!open)} aria-expanded={open} data-testid="ask-thinking-head">
+        <Glyph name="chevronRight" size={10} strokeWidth={2.4} className="disclose" />
+        {now ? <Spinner size={12} /> : <Glyph name="lightbulb" size={13} />}
+        <span>{label}</span>
+      </button>
+      <div className="thoughts-body" aria-hidden={!open}>
+        <div className="thoughts-clip">
+          <div className={`thoughts-text selectable ${live && clipped ? 'clipped' : ''}`} ref={box} data-testid="ask-thoughts">
+            {thoughts.parts.map((p, i) => p.kind === 'looked'
+              ? <div key={i} className="thought-looked"><Glyph name="search" size={11} />{p.n === 1 ? 'Looked up 1 thing' : `Looked up ${p.n} things`}</div>
+              : <Fragment key={i}>{p.text.split(/\n{2,}/).map((para, j) => <p key={j}>{para.split('\n').map((l, k) => <span key={k}>{k > 0 && <br />}{inline(l, onRecord)}</span>)}</p>)}</Fragment>)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // What the assistant looked up, folded into one line: open it to see each lookup and its result.
 function Lookups({ events, live }: { events: AskEvent[]; live: boolean }) {
@@ -506,16 +561,16 @@ export function inline(s: string, onRecord: (n: number) => void): ReactNode[] {
       const e = embedOf(m[5]);
       const first = e && (e.kind === 'chat' ? e.from : e.ids[0]);
       out.push(first
-        ? <button key={k++} className="cite" onClick={() => onRecord(first)} data-testid="ask-cite">{e.kind === 'chat' ? 'the conversation' : 'the photos'}</button>
+        ? <Cite key={k++} rowid={first} onRecord={onRecord}>{e.kind === 'chat' ? 'the conversation' : 'the photos'}</Cite>
         : m[5]);
     } else if (m[6] !== undefined) {
       const rec = /^record:(\d+)$/.exec(m[7]);
       out.push(rec
-        ? <button key={k++} className="cite" onClick={() => onRecord(Number(rec[1]))} data-testid="ask-cite">{inline(m[6], onRecord)}</button>
+        ? <Cite key={k++} rowid={Number(rec[1])} onRecord={onRecord}>{inline(m[6], onRecord)}</Cite>
         : <span key={k++} className="md-link" title={m[7]}>{inline(m[6], onRecord)}</span>);
     } else if (m[8] === 'record:') {
       const n = Number(m[9]);
-      out.push(<button key={k++} className="cite" onClick={() => onRecord(n)} data-testid="ask-cite">#{m[9]}</button>);
+      out.push(<Cite key={k++} rowid={n} onRecord={onRecord}>#{m[9]}</Cite>);
     } else out.push(m[0]); // "#1234" in prose stays text
     at = m.index + m[0].length;
   }
@@ -853,8 +908,13 @@ function sourceLabel(source: string): string {
 }
 
 // A record by itself, in plain words: what it is, where it's from, when, who; a photo (or a message's picture) shows
-// the picture.
+// the picture, and a calendar event is laid out as Calendar lays one out (cited.tsx).
 export function RecordSheet({ rowid, onClose }: { rowid: number; onClose: () => void }) {
+  return <Sheet onClose={onClose} testId="ask-record" width={560}><RecordDetails rowid={rowid} onDone={onClose} /></Sheet>;
+}
+
+// A sheet's content: the record, and Done.
+export function RecordDetails({ rowid, onDone }: { rowid: number; onDone: () => void }) {
   const [r, setR] = useState<AskRecord | null | undefined>(undefined);
   const [pic, setPic] = useState<string | null | undefined>(undefined); // undefined: on its way; null: no picture
   useEffect(() => void api.ask({ op: 'record', rowid }).then(setR), [rowid]);
@@ -875,8 +935,13 @@ export function RecordSheet({ rowid, onClose }: { rowid: number; onClose: () => 
   const group = !!r && (r.meta?.group === true || String(r.participants ?? '').split(',').length > 2);
   const withWhom = !!r && !group && ['message', 'call', 'reaction'].includes(r.kind);
   return (
-    <Sheet onClose={onClose} testId="ask-record" width={560}>
-      {r === undefined ? <div className="empty"><Spinner /></div> : r === null ? <p>This record isn't in your data any more.</p> : (
+    <>
+      {r === undefined ? <div className="empty"><Spinner /></div> : r === null ? <p>This record isn't in your data any more.</p> : isCalendarEvent(r) ? (
+        <>
+          <h2 className="event-title">{r.title || 'Event'}</h2>
+          <EventDetails r={r} from={sourceLabel(r.source)} />
+        </>
+      ) : (
         <>
           {picture && pic !== null && <div className="record-photo" data-testid="record-photo">{pic ? <img src={pic} alt="" draggable={false} /> : <Spinner />}</div>}
           <h2>{recordTitle(r) ?? (r.thread_name ? `${what} ${withWhom ? 'with' : 'in'} ${r.thread_name}` : `${what} from ${sourceLabel(r.source)}`)}</h2>
@@ -892,8 +957,8 @@ export function RecordSheet({ rowid, onClose }: { rowid: number; onClose: () => 
           {r.files.length > 0 && <div className="group-footer">Files: {r.files.map((f) => f.split('/').pop()).join(', ')}</div>}
         </>
       )}
-      <div className="sheet-actions"><Button kind="primary" onClick={onClose}>Done</Button></div>
-    </Sheet>
+      <div className="sheet-actions"><Button kind="primary" onClick={onDone}>Done</Button></div>
+    </>
   );
 }
 

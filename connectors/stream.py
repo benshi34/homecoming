@@ -36,8 +36,9 @@ from zoneinfo import ZoneInfo
 CORPUS = Path(os.environ.get("CORPUS_DIR") or Path(__file__).resolve().parent.parent / "corpus")
 DB = CORPUS / "corpus.db"
 OUT = CORPUS / "stream"
-VERSION = 3  # bump when events change shape or rules change, so every month is rebuilt (2: whole days on their own date;
-# 3: what services showed or decided about you left out everywhere, YouTube's comments and playlists, bookmarks)
+VERSION = 5  # bump when events change shape or rules change, so every month is rebuilt (2: whole days on their own date;
+# 3: what services showed or decided about you left out everywhere, YouTube's comments and playlists, bookmarks;
+# 4: date-only calendar events and Discord DM fallback names; 5: records from 1900 on, a clock's first second left out)
 
 # ---------------------------------------------------------------- time
 
@@ -245,6 +246,8 @@ class Rec:
             self.meta = {}
         self.fields = self.meta.get("fields") if isinstance(self.meta.get("fields"), dict) else {}
         tz = self.meta.get("timezone") or self.meta.get("tz")
+        if self.kind == "event" and isinstance(ts, str) and len(ts) == 10:
+            self.meta["all_day"] = True
         if self.kind == "health_day" or self.meta.get("all_day") is True:
             # A whole day is a date, not an instant: on its own day (and in its own month), wherever this Mac is.
             self.t, self.end = whole_day(ts, tz), whole_day(ts_end, tz)
@@ -274,9 +277,13 @@ def chat_partner(r, mine):
     if r.source == "imessage":
         return None if r.meta.get("group") else r.thread_name
     if r.source == "discord":
-        if not (r.thread_name or "").startswith("Direct Message with"):
+        name = r.thread_name or ""
+        channel_type = r.meta.get("channel_type")
+        if channel_type in ("GROUP_DM", 3, "3"):
             return None
-        return r.participants or r.thread_name.removeprefix("Direct Message with").strip(" .")
+        if channel_type not in ("DM", 1, "1") and not name.startswith(("Direct Message with", "DM with ")):
+            return None
+        return r.participants or name.removeprefix("Direct Message with").removeprefix("DM with ").strip(" .")
     if r.source == "phone_wechat":
         return r.fields.get("Chat Partner Name") or r.fields.get("Chat Partner") or r.thread_name
     others = [p.strip() for p in (r.participants or "").split(",") if p.strip() and norm(p).replace(" ", "") not in mine]
@@ -867,7 +874,8 @@ def months(con=None):
     """Months with records, newest first, up to this one (a record dated later is a bad date, or a plan), and how
     many records each has (by UTC month, a close guide)."""
     con = con or connect()
-    rows = con.execute("select substr(ts, 1, 7), count(*) from records where ts >= '1990' and ts < '2100' "
+    rows = con.execute("select substr(ts, 1, 7), count(*) from records where ts >= '1900' and ts < '2100' "
+                       "and ts not like '1900-01-01T00:00:00%' and ts not like '1970-01-01T00:00:00%' and ts not like '2001-01-01T00:00:00%' and ts not in ('1900-01-01', '1970-01-01', '2001-01-01') "
                        "group by 1 order by 1 desc").fetchall()
     now = this_month()
     return [{"month": m, "records": n} for m, n in rows if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", m or "") and m <= now]

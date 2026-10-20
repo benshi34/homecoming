@@ -10,6 +10,8 @@ Record schema (keys with None values are dropped):
                   visit | search | app_usage | app_usage_day | media | document | ai_turn |
                   email | photo | voice_memo | commit | post | place | place_visit | activity |
                   (phone, via ileapp.py) transaction | trip | interaction | app | record | health_sample
+    meta.person_id optional: who the conversation is with, when a connector knows for certain; Explore joins records
+                  with the same one as one person (meta.person_name: the name to show them by)
     meta.tier     optional: "device" (phone internals), "spam" / "deleted" / "unsent" (mail folders), "superseded" (an
                   earlier version: an edited X post's, a ChatGPT answer regenerated or prompt edited), so searches
                   can leave low-signal records out without the corpus dropping them

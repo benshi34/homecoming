@@ -12,7 +12,9 @@ export interface ExploreProgress {
   detail?: string;
   done?: number;
   total?: number | null;
-  waiting?: string;
+  waiting?: string; // in line: the artifact being built now (its op)
+  place?: number; // in line: 1 is next
+  started?: boolean; // being built, before its first step is said
   changed?: boolean; // key "*": the library changed, so what was built before is out of date
 }
 export const isError = (x: unknown): x is ExploreError => !!x && typeof x === 'object' && 'error' in x;
@@ -267,9 +269,17 @@ export interface YearStory {
 }
 
 // A conversation around a message (explore.py thread): both sides, oldest first. `at` is the stored time, for
-// asking for more before or after it.
-export interface ThreadMessage { rowid: number; ts: string | null; at: string | null; me: boolean; author: string | null; kind: 'message' | 'reaction'; text: string; files: number; image: boolean }
-export interface Thread { rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: ThreadMessage[]; more_before: boolean; more_after: boolean }
+// asking for more before or after it. Each message as a chat app shows it (_messages): image, a picture of it is on
+// this Mac; attachments, what else came with it, by name; before, what it said before it was edited, where that's
+// kept; reactions, the ones an app keeps on the message itself (Messages keeps each as a message of its own, kind
+// "reaction").
+export interface ThreadMessage {
+  rowid: number; ts: string | null; at: string | null; me: boolean; author: string | null; kind: 'message' | 'reaction'; text: string; files: number; image: boolean;
+  attachments?: string[]; edited?: boolean; before?: string[]; unsent?: boolean; reactions?: { who: string | null; reaction: string }[];
+}
+// The page Explore has for a conversation: the person's in Your People, or the group chat's.
+export interface ExploreAt { page: 'person' | 'group'; key: string; name: string }
+export interface Thread { rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: ThreadMessage[]; more_before: boolean; more_after: boolean; explore?: ExploreAt | null }
 // What an Ask answer shows rather than cites (py/explore.py embed): a stretch of a conversation, or a few photos.
 export interface ChatEmbed { kind: 'chat'; rowid: number; app: string; name: string; group: boolean; one_sided: boolean; messages: (ThreadMessage & { thumb?: string })[]; anchors: number[] }
 export interface PhotosEmbed { kind: 'photos'; photos: { rowid: number; ts: string | null; place: string | null; thumb: string }[] }
@@ -309,6 +319,35 @@ export function recordTitle(r: { kind: string; source: string; title?: string | 
   if (day) return `${what}: ${new Date(`${day[1]}T12:00:00`).toLocaleDateString(undefined, { dateStyle: 'medium' })}`;
   if (!t || /^[\w\- .()]+\.(heic|heif|jpe?g|png|gif|webp|tiff?|dng|mov|mp4|m4v)$/i.test(t)) return null;
   return t;
+}
+
+// An event from a calendar (Calendar, Google Calendar, the iPhone's, an .ics file), not one a chat app writes itself.
+export const isCalendarEvent = (r: { kind: string; source: string }) => r.kind === 'event' && /calendar/.test(r.source);
+
+// When a calendar event is, as dates here: an all-day one by its date alone, ending on its last day (a calendar
+// keeps the start of the day after). oneDay: it starts and ends on one day. Null when it has no time that can be right.
+export function eventSpan(r: { ts?: string | null; ts_end?: string | null; meta?: Record<string, unknown> }): { start: Date; end: Date | null; allDay: boolean; oneDay: boolean } | null {
+  const allDay = r.meta?.all_day === true;
+  const at = (ts?: string | null) => {
+    const d = !ts ? null : allDay ? new Date(`${ts.slice(0, 10)}T12:00:00`) : new Date(ts);
+    return d && !Number.isNaN(d.getTime()) ? d : null;
+  };
+  const start = at(r.ts);
+  if (!start) return null;
+  let end = at(r.ts_end);
+  if (end && allDay) end = new Date(Math.max(start.getTime(), end.getTime() - 86_400_000));
+  if (end && end < start) end = null;
+  return { start, end, allDay, oneDay: !end || end.toDateString() === start.toDateString() };
+}
+
+// A calendar event's notes: its text without the lines that say what's laid out already (its title, place,
+// organizer, invitees, your reply, how often it repeats), as connectors/calendar_events.py and an .ics file's reader
+// write them.
+export function eventNotes(r: { title?: string | null; text?: string | null; meta?: Record<string, unknown> }): string {
+  const where = typeof r.meta?.location === 'string' ? r.meta.location : null;
+  const said = new Set([r.title, where && `Location: ${where}`, where && r.title && `${r.title} at ${where}`].filter(Boolean));
+  return (r.text ?? '').split('\n').map((l) => l.trim())
+    .filter((l) => l && !said.has(l) && !/^(Organized by |Attendees: |You (accepted|declined)$|Your reply: |Repeats )/.test(l)).join('\n');
 }
 
 // "imessage" -> "Messages": the apps a person's messages came from, in plain words.

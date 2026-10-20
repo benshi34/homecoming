@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('api', {
   onboarding: (patch: unknown) => ipcRenderer.invoke('onboarding', patch),
   ask: (op: unknown) => ipcRenderer.invoke('ask', op),
   explore: (op: string, args?: unknown[]) => ipcRenderer.invoke('explore', { op, args }),
+  exploreStatus: () => ipcRenderer.invoke('explore-status'),
+  exploreFirst: (key: string) => ipcRenderer.invoke('explore-first', key),
   libraryExport: (op: string, parts?: string[]) => ipcRenderer.invoke('library-export', { op, parts }),
   // How far an Explore artifact has got while it's built (main explore.ts).
   onExploreProgress: (cb: (p: unknown) => void) => {

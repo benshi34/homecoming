@@ -52,16 +52,18 @@ from zoneinfo import ZoneInfo
 
 REPO = Path(os.environ.get("UMP_REPO") or Path(__file__).resolve().parents[2])
 CORPUS = Path(os.environ.get("CORPUS_DIR") or REPO / "corpus")
+sys.path.insert(0, str(REPO / "connectors"))
+from library_paths import photos_libraries, record_path  # noqa: E402
 DB = CORPUS / "corpus.db"
 CACHE = Path(os.environ.get("UMP_EXPLORE_CACHE") or Path(tempfile.gettempdir()) / "ump-explore")
-VERSION = 2  # bump when an artifact's shape changes, so old cached results aren't served
+VERSION = 4  # bump when an artifact's shape changes, so old cached results aren't served
 
-CHATS = ("imessage", "instagram", "messenger", "discord", "phone_whatsapp", "whatsapp")
+CHATS = ("imessage", "instagram", "messenger", "discord", "phone_whatsapp", "whatsapp", "whatsapp_export")
 ONE_SIDED = {"discord"}  # exports that keep only your own messages
 SEARCHES = (("google_activity", "search"), ("browser_history", "search"), ("chrome_synced", "search"))
 VISITS = (("browser_history", "visit"), ("chrome_synced", "visit"), ("google_activity", "visit"))
 APP_NAMES = {"imessage": "Messages", "instagram": "Instagram", "messenger": "Messenger", "discord": "Discord",
-             "phone_whatsapp": "WhatsApp", "whatsapp": "WhatsApp", "calls": "Calls", "gmail": "Gmail", "hotmail": "Outlook",
+             "phone_whatsapp": "WhatsApp", "whatsapp": "WhatsApp", "whatsapp_export": "WhatsApp", "calls": "Calls", "gmail": "Gmail", "hotmail": "Outlook",
              "mail": "Mail", "x": "X", "reddit": "Reddit", "linkedin": "LinkedIn", "tiktok": "TikTok", "spotify": "Spotify", "chatgpt": "ChatGPT",
              "claude_ai": "Claude", "google_chat": "Google Chat", "notion": "Notion", "photos": "Photos",
              "git_commits": "Git", "phone_venmo": "Venmo", "phone_splitwise": "Splitwise", "phone_uberclient": "Uber",
@@ -100,12 +102,16 @@ def zone_of(tz):
         return None
 
 
-# A time before 1990 or after tomorrow, or the very first second of Apple's clock, is a clock or a conversion gone
-# wrong (a missing time read as 0: 1970, 2001; a date years ahead), not when something happened: it counts as no
-# time at all, as it does for the years Your Year offers and the days On This Day looks at.
-FIRST_YEAR = 1990
+# A time before 1900 or after tomorrow, or a clock's first second (a missing time read as 0: Unix's 1970, Apple's 2001,
+# and 1900, a spreadsheet's), is a clock or a conversion gone wrong, not when something happened: it counts as no time
+# at all, as it does for the years Your Year offers and the days On This Day looks at. Before 1990 is real (a scanned
+# photo from 1985).
+FIRST_YEAR = 1900
 LATEST = datetime.now(timezone.utc) + timedelta(days=1)
 APPLE_ZERO = datetime(2001, 1, 1, tzinfo=timezone.utc)
+ZEROS = (datetime(1900, 1, 1, tzinfo=timezone.utc), datetime(1970, 1, 1, tzinfo=timezone.utc), APPLE_ZERO)
+# The same, in SQL: a record's ts that can be right (as an ISO string: a first second's starts with it, or is that day).
+SANE_TS = "ts >= '1900' and ts not like '1900-01-01T00:00:00%' and ts not like '1970-01-01T00:00:00%' and ts not like '2001-01-01T00:00:00%' and ts not in ('1900-01-01', '1970-01-01', '2001-01-01')"
 
 
 def parse(ts, tz=None):
@@ -119,7 +125,7 @@ def parse(ts, tz=None):
         return None
     if t.tzinfo is None:
         t = t.replace(tzinfo=timezone.utc)
-    if t.year < FIRST_YEAR or t > LATEST or t == APPLE_ZERO:
+    if t.year < FIRST_YEAR or t > LATEST or t in ZEROS:
         return None
     try:
         return t.astimezone(zone_of(tz) or TZ)
@@ -145,6 +151,8 @@ def steps_of(meta):
 
 def local_date(ts):
     """The day a record's time was here (this Mac's time zone), or None."""
+    if isinstance(ts, str) and len(ts) == 10:
+        return day_of(ts)
     t = parse(ts)
     return t.date() if t else None
 
@@ -156,7 +164,11 @@ def day_of(ts):
         d = date.fromisoformat(str(ts)[:10])
     except (TypeError, ValueError):
         return None
-    return d if FIRST_YEAR <= d.year and d <= LATEST.date() and d != APPLE_ZERO.date() else None
+    return d if FIRST_YEAR <= d.year and d <= LATEST.date() and d not in {z.date() for z in ZEROS} else None
+
+
+# Tests: a pause before each step, so an artifact takes long enough to watch it being built and the rest wait.
+STEP_PAUSE = float(os.environ.get("UMP_EXPLORE_STEP_MS") or 0) / 1000
 
 
 class Progress:
@@ -174,6 +186,8 @@ class Progress:
 
     def step(self, i, total=None):
         self.at, self.done, self.total = i, 0, total
+        if STEP_PAUSE and not self.outer:
+            time.sleep(STEP_PAUSE)  # tests: long enough to see it going
         if self.outer:
             self.outer.detail(self.steps[i], 0, total)
         else:
@@ -351,9 +365,13 @@ def chat_partner(source, thread_name, participants, meta, mine):
     if source == "imessage":
         return None if meta.get("group") else thread_name
     if source == "discord":
-        if not (thread_name or "").startswith("Direct Message with"):
+        name = thread_name or ""
+        channel_type = meta.get("channel_type")
+        if channel_type in ("GROUP_DM", 3, "3"):
             return None
-        return participants or thread_name.removeprefix("Direct Message with").strip(" .")
+        if channel_type not in ("DM", 1, "1") and not name.startswith(("Direct Message with", "DM with ")):
+            return None
+        return participants or name.removeprefix("Direct Message with").removeprefix("DM with ").strip(" .")
     others = [p.strip() for p in (participants or "").split(",") if p.strip() and key(p) not in mine]
     if participants:
         return others[0] if len(others) == 1 else None
@@ -362,23 +380,66 @@ def chat_partner(source, thread_name, participants, meta, mine):
 
 MESSAGES = f"kind = 'message' and source in ({','.join(repr(s) for s in CHATS)}) and ts is not null"
 
+# Who's one person. Messages, calls and WhatsApp name people as your Contacts do, so a name there is one card, its
+# numbers and addresses together, and the same person in any of them. The other apps (Instagram, Messenger, Discord)
+# name people as they named themselves: there, two conversations with one name are two people. Otherwise a full name
+# joins the same name elsewhere, and a first name alone ("Alex") joins only the one in your Contacts by exactly that
+# name, or stays with its own app (Instagram's Alex and Messenger's needn't be one). A connector that knows
+# (meta.person_id) joins whatever it says.
+CONTACT_NAMED = ("imessage", "phone_whatsapp", "whatsapp", "whatsapp_export", "calls")
 
-def message_rows(con, mine, pg=None):
+
+def person_meta(meta):
+    """A record's person_id and person_name, if it has them: its meta read only when it might (most messages don't)."""
+    return meta_of(meta) if meta and '"person_id"' in str(meta) else {}
+
+
+def identities(con, mine):
+    """ident(source, thread, name, meta) -> the person's key (None for no one): from one look at every one-on-one
+    conversation outside the Contacts-named apps, to know which names more than one of them has."""
+    threads = collections.defaultdict(set)
+    q = (f"select source, thread, thread_name, participants, meta from records where {MESSAGES} "
+         f"and source not in ({','.join(repr(s) for s in CONTACT_NAMED)}) group by source, thread")
+    for source, thread, thread_name, participants, meta in con.execute(q):
+        who = chat_partner(source, thread_name, participants, meta_of(meta) if source == "discord" else {}, mine)
+        if who and key(who) not in mine:
+            threads[(source, key(who))].add(thread)
+    # The names your Contacts give: a first name alone from another app can be one of these.
+    contacts = {key(n) for (n,) in con.execute(f"select distinct thread_name from records where source = 'calls' or ({MESSAGES} "
+                                               f"and source in ({','.join(repr(s) for s in CONTACT_NAMED)}))")}
+
+    def ident(source, thread, name, meta=None):
+        if meta and meta.get("person_id"):
+            return f"id:{meta['person_id']}"
+        k = key(name)
+        if not k or source in CONTACT_NAMED:
+            return k or None
+        if len(threads.get((source, k), ())) > 1:
+            return f"{source}:{thread}"  # one of several with this name in this app: this conversation's person
+        if len(str(name).split()) < 2 and k not in contacts:
+            return f"{source}:{k}"  # a first name or a handle alone, no one's in your Contacts: this app's
+        return k
+    return ident
+
+
+def message_rows(con, mine, pg=None, ident=None):
     """(person key, display name, source, local time, is_me, rowid, thread) for every one-on-one message, oldest
     first (in the database's order: a library's times are UTC, so it's the order they happened, and nothing has to
     hold every message to sort them)."""
+    ident = ident or identities(con, mine)
     q = f"select rowid, source, ts, is_me, thread, thread_name, participants, meta from records where {MESSAGES} order by ts"
     for i, (rowid, source, ts, is_me, thread, thread_name, participants, meta) in enumerate(con.execute(q)):
         if pg:
             pg.tick(i)
-        m = meta_of(meta) if source == "imessage" else {}
+        m = meta_of(meta) if source in ("imessage", "discord") else {}
         who = chat_partner(source, thread_name, participants, m, mine)
-        k = key(who)
-        if not k or k in mine:
+        if not key(who) or key(who) in mine:
             continue
+        pm = person_meta(meta)
+        k = ident(source, thread, who, pm)
         t = parse(ts)
-        if t:
-            yield k, who, source, t, str(is_me) == "1", rowid, thread
+        if k and t:
+            yield k, pm.get("person_name") or who, source, t, str(is_me) == "1", rowid, thread
 
 
 def people(con=None):
@@ -401,8 +462,9 @@ def _people(con, mine, pg):
         p["names"][name] += 1
         return p
 
+    ident = identities(con, mine)
     pg.step(0, count_where(con, MESSAGES))
-    for k, name, source, t, is_me, rowid, thread in message_rows(con, mine, pg):
+    for k, name, source, t, is_me, rowid, thread in message_rows(con, mine, pg, ident):
         p = person(k, name)
         p["messages"] += 1
         p["sent"] += is_me
@@ -419,12 +481,13 @@ def _people(con, mine, pg):
                 p["starts_me" if is_me else "starts_them"] += 1
             p["_last"][thread] = t
     pg.step(1, count_where(con, "source = 'calls'"))
-    for i, (rowid, ts, thread_name, meta) in enumerate(con.execute("select rowid, ts, thread_name, meta from records where source = 'calls' and ts is not null")):
+    for i, (rowid, ts, thread, thread_name, meta) in enumerate(con.execute("select rowid, ts, thread, thread_name, meta from records where source = 'calls' and ts is not null")):
         pg.tick(i)
-        k = key(thread_name)
-        if not k or k in mine:
+        pm = person_meta(meta)
+        k = ident("calls", thread, thread_name, pm)
+        if not k or key(thread_name) in mine:
             continue
-        p = person(k, thread_name)
+        p = person(k, pm.get("person_name") or thread_name)
         p["calls"] += 1
         p["call_minutes"] += num(meta_of(meta).get("seconds")) / 60
     alias = merge_initials(P)
@@ -495,7 +558,9 @@ def merge_initials(P):
 def person(k):
     con = connect()
     mine = me_names()
-    entry = next((p for p in cached("people", people)["people"] if p["key"] == k), None)
+    # By any of their names: "Grace H" in Messages is Grace Hopper's page, when Your People made them one.
+    entry = next((p for p in cached("people", people)["people"] if k == p["key"] or k in p.get("aliases", [])), None)
+    k = entry["key"] if entry else k
     keys = {k, *(entry.get("aliases", []) if entry else [])}
     photo_keys = keys | set(entry.get("photo_keys", []) if entry else [])
     with Progress(["Reading your messages", "Calls and photos together"]) as pg:
@@ -507,8 +572,9 @@ def _person(con, mine, k, entry, keys, photo_keys, pg):
     hours = [0] * 24
     sample = []
     name = entry["name"] if entry else None
+    ident = identities(con, mine)
     pg.step(0, count_where(con, MESSAGES))
-    for pk, who, source, t, is_me, rowid, _ in message_rows(con, mine, pg):
+    for pk, who, source, t, is_me, rowid, _ in message_rows(con, mine, pg, ident):
         if pk not in keys:
             continue
         name = name or who
@@ -517,8 +583,8 @@ def _person(con, mine, k, entry, keys, photo_keys, pg):
         sample.append((t, rowid, is_me))
     calls = []
     pg.step(1)
-    for rowid, ts, thread_name, meta in con.execute("select rowid, ts, thread_name, meta from records where source = 'calls'"):
-        if key(thread_name) in keys:
+    for rowid, ts, thread, thread_name, meta in con.execute("select rowid, ts, thread, thread_name, meta from records where source = 'calls'"):
+        if ident("calls", thread, thread_name, person_meta(meta)) in keys:
             name = name or thread_name
             m = meta_of(meta)
             t = parse(ts)
@@ -553,7 +619,8 @@ def on_this_day(md=None):
         return {"error": f"There's no day {md} in the year."}
     mine = me_names()
     merged = merged_names()
-    first = con.execute("select min(ts) from records where ts > '1990'").fetchone()[0]
+    ident = identities(con, mine)
+    first = con.execute(f"select min(ts) from records where {SANE_TS}").fetchone()[0]
     start_year = int(first[:4]) if first and first[:4].isdigit() else today.year
     years = []
     for y in range(today.year, start_year - 1, -1):
@@ -570,7 +637,7 @@ def on_this_day(md=None):
         rows = [r for r in con.execute("select rowid, source, kind, ts, is_me, author, thread, thread_name, participants, title, text, meta "
                                        "from records where ts >= ? and ts < ? order by ts",
                                        (lo.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"), hi.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")))
-                if r[1] != "health" and local_date(r[3]) == d]  # Health's days: by date, below
+                if r[1] != "health" and (day_of(r[3]) if r[2] == "event" and meta_of(r[11]).get("all_day") is True else local_date(r[3])) == d]  # Health's days: by date, below
         if not rows:
             continue
         photos, places, threads, searches, watched, made, events, calls, steps = [], collections.Counter(), {}, [], [], [], [], [], None
@@ -583,10 +650,11 @@ def on_this_day(md=None):
                     places[p] += 1
             elif kind == "message" and source in CHATS:
                 # One person once, whichever apps you talked in (the busiest conversation opens); a group as a group.
-                m = meta_of(meta) if source == "imessage" else {}
+                m = meta_of(meta) if source in ("imessage", "discord") else {}
                 who = chat_partner(source, thread_name, participants, m, mine)
-                if who:
-                    pk, name = merged.get(key(who), (key(who), who))
+                pk = ident(source, thread, who, person_meta(meta)) if who else None
+                if pk:
+                    pk, name = merged.get(pk, (pk, person_meta(meta).get("person_name") or who))
                     t = threads.setdefault(("person", pk), {"name": name, "key": pk, "group": False, "members": [], "apps": collections.Counter(),
                                                             "messages": 0, "by_thread": collections.Counter(), "first": {}})
                 else:
@@ -607,7 +675,7 @@ def on_this_day(md=None):
                 if title and not title.startswith("http"):  # the video's title, when Google kept it
                     watched.append({"title": title[:120], "rowid": rowid})
             elif source == "calls":
-                calls.append({"name": merged.get(key(thread_name), (None, thread_name))[1], "rowid": rowid,
+                calls.append({"name": merged.get(ident("calls", thread, thread_name, person_meta(meta)), (None, thread_name))[1], "rowid": rowid,
                               "minutes": round(num(meta_of(meta).get("seconds")) / 60, 1)})
             elif source in ("calendar", "google_calendar") and kind == "event":
                 events.append({"title": (title or "")[:100], "rowid": rowid})
@@ -647,8 +715,9 @@ def nearest_days(con, d):
              f"or (kind = 'search' and source in ({','.join(repr(a) for a, _ in SEARCHES)})) or (source = 'google_activity' and kind = 'media') "
              "or (source in ('calendar', 'google_calendar') and kind = 'event') or (source in ('git_commits', 'documents') and is_me = '1') "
              "or source in ('apple_notes', 'notion') or kind = 'post'")  # what a day here shows
-    for (h,) in con.execute(f"select distinct substr(ts, 1, 13) from records where ts > '1990' and ({shown})"):
-        t = parse(f"{h}:00:00")
+    dated = "length(ts) = 10 or (kind = 'event' and json_extract(meta, '$.all_day') = 1)"
+    for (h,) in con.execute(f"select distinct case when {dated} then substr(ts, 1, 10) else substr(ts, 1, 13) end from records where {SANE_TS} and ({shown})"):
+        t = day_of(h) if len(h) == 10 else parse(f"{h}:00:00")
         if t:
             have.add((t.month, t.day))
     out = {"before": None, "after": None}
@@ -755,6 +824,7 @@ def find_trips(con, pts, away_km=100, gap_days=2, pg=None):
         trips.append(cur)
     out = []
     merged = merged_names()
+    ident = identities(con, me_names())
     if pg:
         pg.step(2, len(trips))
     for i, ds in enumerate(trips):
@@ -777,7 +847,7 @@ def find_trips(con, pts, away_km=100, gap_days=2, pg=None):
                     "countries": [c for c, _ in countries.most_common()], "farthest_km": round(km(h, (far[1], far[2]))),
                     "lat": round(sum(p[1] for p in photos) / len(photos), 3), "lon": round(sum(p[2] for p in photos) / len(photos), 3),
                     "sample": spread([p[5] for p in photos], 12), "photo_ids": [p[5] for p in photos],  # every one, in order
-                    "people": trip_people(con, lo, hi, merged),
+                    "people": trip_people(con, lo, hi, merged, ident),
                     "money": con.execute("select count(*) from records where source in ('phone_splitwise', 'phone_venmo') "
                                          "and ts >= ? and ts < ?", (lo, hi)).fetchone()[0]})
     out.sort(key=lambda t: t["start"], reverse=True)
@@ -800,18 +870,20 @@ def merged_names():
     return out
 
 
-def trip_people(con, lo, hi, merged=None):
+def trip_people(con, lo, hi, merged=None, ident=None):
     """Who you messaged most during a trip, by the names the people artifact uses."""
     mine = me_names()
     merged = merged if merged is not None else merged_names()
+    ident = ident or identities(con, mine)
     c = collections.Counter()
     names = {}
-    for source, thread_name, participants, meta in con.execute(
-            f"select source, thread_name, participants, meta from records where kind = 'message' and source in ({','.join('?' * len(CHATS))}) "
+    for source, thread, thread_name, participants, meta in con.execute(
+            f"select source, thread, thread_name, participants, meta from records where kind = 'message' and source in ({','.join('?' * len(CHATS))}) "
             "and ts >= ? and ts < ?", (*CHATS, lo, hi)):
-        who = chat_partner(source, thread_name, participants, meta_of(meta) if source == "imessage" else {}, mine)
-        if who and key(who) not in mine:
-            k, name = merged.get(key(who), (key(who), who))
+        who = chat_partner(source, thread_name, participants, meta_of(meta) if source in ("imessage", "discord") else {}, mine)
+        k = ident(source, thread, who, person_meta(meta)) if who and key(who) not in mine else None
+        if k:
+            k, name = merged.get(k, (k, person_meta(meta).get("person_name") or who))
             c[k] += 1
             names[k] = name
     return [{"key": k, "name": names[k], "messages": n} for k, n in c.most_common()]
@@ -904,14 +976,16 @@ def _firsts(con, mine, pg):
     items = []
     seen = set()
     pg.step(0)
-    talked = {key(p["name"]) for p in cached("people", people)["people"] if p["messages"] >= 20}
+    merged = merged_names()
+    talked = {p["key"] for p in cached("people", people)["people"] if p["messages"] >= 20}
     pg.step(0, count_where(con, MESSAGES))
     for k, who, source, t, is_me, rowid, _ in message_rows(con, mine, pg):
+        k = merged.get(k, (k,))[0]  # a name merged into another (an initial) is that person
         if k not in seen:
             seen.add(k)
-            items.append({"kind": "person", "what": who, "ts": t.isoformat(), "rowid": rowid, "detail": APP_NAMES.get(source, source)})
+            items.append({"kind": "person", "what": who, "ts": t.isoformat(), "rowid": rowid, "detail": APP_NAMES.get(source, source), "key": k})
     # Only people you went on to talk to: a first message nobody answered isn't much of a first.
-    items = [i for i in items if key(i["what"]) in talked]
+    items = [i for i in items if i.pop("key") in talked]
     countries, first_at, place_days = set(), {}, collections.defaultdict(set)
     for t, _, _, place, country, rowid in located(con, pg, step=1):  # where you were, not where a saved picture was
         if country and country not in countries:
@@ -932,7 +1006,7 @@ def _firsts(con, mine, pg):
             items.append({"kind": "project", "what": thread_name, "ts": t.isoformat(), "rowid": rowid, "detail": (title or "")[:80]})
     def first_of(source):
         """A source's first record with a time that can be right: (rowid, local time), or None."""
-        for rowid, ts in con.execute("select rowid, ts from records where source = ? and ts > '1995' order by ts limit 200", (source,)):
+        for rowid, ts in con.execute(f"select rowid, ts from records where source = ? and {SANE_TS} order by ts limit 200", (source,)):
             t = parse(ts)
             if t:
                 return rowid, t
@@ -1704,28 +1778,16 @@ def _groups(con, mine, pg):
     whose participants list two or more others, or one where two or more others wrote. A conversation an export
     keeps only your side of isn't one you can see the others in, so it's left out."""
     is_me = lambda a: key(a) in mine or key(a) in ("me", "you")
-    where = f"kind = 'message' and thread is not null and ts is not null and source not in ({','.join(repr(x) for x in NOT_CHATS)})"
-    pg.step(0, count_where(con, where))
+    pg.step(0, count_where(con, GROUP_ROWS))
     T = {}
     for i, (source, th, name, author, me, parts, meta) in enumerate(con.execute(
-            f"select source, thread, thread_name, author, is_me, participants, meta from records where {where}")):
+            f"select source, thread, thread_name, author, is_me, participants, meta from records where {GROUP_ROWS}")):
         pg.tick(i)
         t = T.get((source, th))
         if t is None:
             t = T[(source, th)] = {"n": 0, "mine": 0, "others": set(), "parts": None, "flag": False, "name": name}
-        t["n"] += 1
-        if str(me) == "1" or (author and is_me(author)):
-            t["mine"] += 1
-        elif author and len(t["others"]) < 50:
-            t["others"].add(author)
-        if t["parts"] is None and parts:
-            t["parts"] = {p.strip() for p in parts.split(",") if p.strip() and not is_me(p.strip())}
-        if not t["flag"] and meta and '"group": true' in meta:
-            t["flag"] = True
-        if name and not t["name"]:
-            t["name"] = name
-    chosen = {k: t for k, t in T.items() if t["n"] >= 20 and t["n"] > t["mine"]
-              and (t["flag"] or len(t["parts"] or ()) >= 2 or len(t["others"]) >= 2)}
+        tally(t, name, author, me, parts, meta, is_me)
+    chosen = {k: t for k, t in T.items() if is_group(t)}
     del T
     pg.step(1, sum(t["n"] for t in chosen.values()))
     G = {k: {"by": collections.Counter(), "night": collections.Counter(), "emoji_msgs": collections.Counter(), "chars": collections.Counter(),
@@ -1852,7 +1914,7 @@ def _groups(con, mine, pg):
                 scored.append((c * math.log(max(ratio, 1.01)) if len(G) >= 3 else c, w, c))
         scored.sort(reverse=True)
         busiest = max(g["days"].items(), key=lambda kv: (kv[1], kv[0]))
-        out.append({"key": hashlib.sha1(f"{source}\0{th}".encode()).hexdigest()[:12], "source": source, "app": app_label(source, con),
+        out.append({"key": group_key(source, th), "source": source, "app": app_label(source, con),
                     "name": group_title(t["name"], members), "named": not unnamed(t["name"], members),
                     "messages": n, "mine": g["by"].get("You", 0), "member_count": len(members),
                     "members": [{"name": m, "messages": c} for m, c in g["by"].most_common(12)],
@@ -1865,6 +1927,34 @@ def _groups(con, mine, pg):
                     "superlatives": superlatives(g, n)})
     out.sort(key=lambda x: -x["messages"])
     return {"groups": out, "messages": sum(x["messages"] for x in out), "apps": sorted({x["app"] for x in out})}
+
+
+GROUP_ROWS = f"kind = 'message' and thread is not null and ts is not null and source not in ({','.join(repr(x) for x in NOT_CHATS)})"
+
+
+def tally(t, name, author, me, parts, meta, is_me):
+    """One more of a conversation's messages, toward telling whether it's a group chat (is_group)."""
+    t["n"] += 1
+    if str(me) == "1" or (author and is_me(author)):
+        t["mine"] += 1
+    elif author and len(t["others"]) < 50:
+        t["others"].add(author)
+    if t["parts"] is None and parts:
+        t["parts"] = {p.strip() for p in parts.split(",") if p.strip() and not is_me(p.strip())}
+    if not t["flag"] and meta and '"group": true' in meta:
+        t["flag"] = True
+    if name and not t["name"]:
+        t["name"] = name
+
+
+def is_group(t):
+    """A conversation Group Chats has a page for: twenty messages or more, not all yours, and one an app marks as a
+    group, or with two or more others in it."""
+    return t["n"] >= 20 and t["n"] > t["mine"] and (t["flag"] or len(t["parts"] or ()) >= 2 or len(t["others"]) >= 2)
+
+
+def group_key(source, th):
+    return hashlib.sha1(f"{source}\0{th}".encode()).hexdigest()[:12]
 
 
 def same_people(names):
@@ -2094,7 +2184,7 @@ def viewable(con, rowids):
 
 def years_present(con):
     """Years with something of what you did in them (twenty records or more), newest first."""
-    rows = con.execute(f"select substr(ts, 1, 4) y, count(*) from records where ts > '1990' and ts not like '2001-01-01T00:00:00%' "
+    rows = con.execute(f"select substr(ts, 1, 4) y, count(*) from records where {SANE_TS} "
                        f"and kind not in ({','.join(repr(k) for k in NOT_YOURS)}) group by y").fetchall()
     today = datetime.now(TZ).year
     return [y for y, n in sorted(rows, reverse=True) if n >= 20 and y.isdigit() and int(y) <= today]
@@ -2184,7 +2274,7 @@ def _year(con, y, P, PL, J, R, F, M, media, pg):
     msgs = R["kinds"].get("messages")
     hours = msgs["years"].get(y) if msgs else None
     steps = [(ts[:10], steps_of(m)) for ts, m in con.execute(
-        "select ts, meta from records where kind = 'health_day' and ts like ?", (f"{y}-%",))]
+        "select ts, meta from records where kind = 'health_day' and ts like ?", (f"{y}-%",)) if day_of(ts)]
     steps = [(d, s) for d, s in steps if s]
     best_steps = max(steps, key=lambda x: x[1]) if steps else None
     made_y = M["totals"].get(y, {})
@@ -2262,26 +2352,72 @@ def thread(rowid, direction=None, edge=None, limit=60):
     first, last = (rows[0][1], rows[-1][1]) if rows else (ts, ts)
     more = lambda op, t: con.execute(f"select 1 from records where source = ? and thread = ? and kind in ('message', 'reaction') "
                                      f"and ts {op} ? limit 1", (source, th, t)).fetchone() is not None
+    page = {} if direction else {"explore": explore_page(con, source, th, thread_name, participants, meta, rows)}
     return {"rowid": int(rowid), **_who(con, source, th, thread_name, participants, meta), "messages": out,
-            "more_before": more("<", first), "more_after": more(">", last)}
+            "more_before": more("<", first), "more_after": more(">", last), **page}
+
+
+def explore_page(con, source, th, thread_name, participants, meta, rows):
+    """The page Explore has for a conversation, by the rules those pages are built with: the person's in Your People,
+    for a one-on-one; the chat's in Group Chats, for a group. {"page", "key", "name"}, or None when it has neither.
+    rows: the conversation's messages around the one opened (thread's), to tell it has one with a time that can be right."""
+    mine = me_names()
+    if not any(r[4] == "message" and parse(r[1]) for r in rows):
+        return None  # neither page counts a message with no time that can be right
+    who = chat_partner(source, thread_name, participants, meta_of(meta) if source in ("imessage", "discord") else {}, mine)
+    if who:
+        if source not in CHATS or not key(who) or key(who) in mine:
+            return None
+        # The person as Your People has them: who this conversation's name is (identities), under the key they're kept by.
+        k = identities(con, mine)(source, th, who, person_meta(meta))
+        return {"page": "person", "key": k, "name": person_meta(meta).get("person_name") or who} if k else None
+    is_me = lambda a: key(a) in mine or key(a) in ("me", "you")
+    t = {"n": 0, "mine": 0, "others": set(), "parts": None, "flag": False, "name": None}
+    by = collections.Counter()
+    for name, author, me, parts, m in con.execute(f"select thread_name, author, is_me, participants, meta from records "
+                                                  f"where {GROUP_ROWS} and source = ? and thread = ?", (source, th)):
+        tally(t, name, author, me, parts, m, is_me)
+        if author and str(me) != "1" and not is_me(author):
+            by[" ".join(author.split())] += 1
+    if not is_group(t):
+        return None
+    members = [m for m, _ in by.most_common()] + sorted((t["parts"] or set()) - set(by))
+    return {"page": "group", "key": group_key(source, th), "name": group_title(t["name"], members)}
+
+
+ATTACHED = re.compile(r"\s*\[attachment: ([^\]]*)\]")
 
 
 def _messages(rows):
-    """Rows of (rowid, ts, is_me, author, kind, text, meta) as a chat app shows them."""
+    """Rows of (rowid, ts, is_me, author, kind, text, meta) as a chat app shows them: what came with it (a picture on
+    this Mac is drawn, anything else named), whether it was edited (and what it said before, where that's kept) or
+    unsent, and the reactions an app keeps on the message itself (Instagram's and Messenger's; Messages keeps each
+    as a message of its own, kind "reaction")."""
+    mine = me_names()
     out = []
     for rid, ts_, is_me, author, kind, text, m in rows:
-        files = [f for f in (meta_of(m).get("files") or []) if isinstance(f, str)]
-        body = re.sub(r"\s*\[attachment: [^\]]*\]", "", text or "").strip()
+        mt = meta_of(m)
+        files = [f for f in (mt.get("files") or []) if isinstance(f, str)]
+        body = ATTACHED.sub("", text or "").strip()
+        drawn = next((Path(f).name for f in files if Path(f).suffix.lower() in IMAGE_EXT), None)
+        # Named in the text (Messages: "[attachment: IMG_1.heic (image/heic)]"), or a file kept with it.
+        named = [re.sub(r"\s+\([\w.+-]+/[\w.+-]+\)$", "", n).strip() for n in ATTACHED.findall(text or "")] + [Path(f).name for f in files]
+        attachments = list(dict.fromkeys(n for n in named if n and n != drawn and n not in body))
+        edits = mt.get("edits") if isinstance(mt.get("edits"), list) else []
+        reactions = [{"who": "You" if key(x.get("who")) in mine else x.get("who"), "reaction": x["reaction"]}
+                     for x in (mt.get("reactions") if isinstance(mt.get("reactions"), list) else [])
+                     if isinstance(x, dict) and isinstance(x.get("reaction"), str)]
         lt = parse(ts_)
         out.append({"rowid": rid, "ts": lt.isoformat() if lt else None, "at": ts_, "me": str(is_me) == "1", "author": author,
-                    "kind": kind, "text": body, "files": len(files),
-                    "image": any(Path(f).suffix.lower() in IMAGE_EXT for f in files)})
+                    "kind": kind, "text": body, "files": len(files), "image": drawn is not None, "attachments": attachments,
+                    "edited": bool(mt.get("edited") or edits), "before": [e["text"] for e in edits if isinstance(e, dict) and isinstance(e.get("text"), str)],
+                    "unsent": bool(mt.get("unsent")), "reactions": reactions})
     return out
 
 
 def _who(con, source, th, thread_name, participants, meta):
     """Which app a conversation is in, who it's with (no one name for a group), and whether only your side is kept."""
-    m = meta_of(meta) if source == "imessage" else {}
+    m = meta_of(meta) if source in ("imessage", "discord") else {}
     who = chat_partner(source, thread_name, participants, m, me_names())
     others = con.execute("select 1 from records where source = ? and thread = ? and kind = 'message' and is_me != '1' limit 1",
                          (source, th)).fetchone()
@@ -2419,11 +2555,11 @@ def preview_file(source, rid, files):
     small previews on this Mac (resources/derivatives/<first letter>/<id>_*.jpeg) even when the original, or a
     video, is only in iCloud; a photo record's id is its Photos id."""
     files = [x for x in (files or []) if isinstance(x, str)]
-    path = next((Path(x) for x in files if Path(x).suffix.lower() in IMAGE_EXT and Path(x).exists()), None)
+    path = next((p for p in (record_path(x, CORPUS) for x in files if Path(x).suffix.lower() in IMAGE_EXT) if p.exists()), None)
     if path or source != "photos":
         return path
     lib = next((Path(x.split(".photoslibrary")[0] + ".photoslibrary") for x in files if ".photoslibrary" in x),
-               Path.home() / "Pictures/Photos Library.photoslibrary")
+               photos_libraries()[0])
     u = str(rid or "")
     if not re.fullmatch(r"[0-9A-F-]{36}", u):
         u = next((Path(x).name.split("_")[0] for x in files if re.match(r"[0-9A-F-]{36}_", Path(x).name)), "")
