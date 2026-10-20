@@ -8,8 +8,6 @@ Homecoming is a Mac app that brings it home. It gathers your data into one libra
 2. **Bring it home.** Each download is recognized by what's inside, filed, and read into one organized library.
 3. **Explore it.** Browse what Homecoming makes from your data (your year, your people, your places, the rhythm of your days), or ask questions in plain words and get answers that point to the messages and photos they came from, and show them in place: the conversation, the photos, a map, the day, a chart over the years, the person, the email, the songs, the trip, the calendar.
 
-**This is version 0.3, an early release:** it works, with rough edges. Thank you for trying it. [What to try first](WHAT_TO_TRY.md), [what's new](CHANGELOG.md), and [how to tell us what went wrong](#reporting-a-problem).
-
 ## Install
 
 On a Mac with Apple silicon, with [Node.js](https://nodejs.org/) installed (the LTS installer), paste this into Terminal. It builds Homecoming and puts it in Applications, in about five minutes:
