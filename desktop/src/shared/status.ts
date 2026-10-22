@@ -433,6 +433,15 @@ function macView(src: Source, inp: StatusInput): SourceView {
   if (st?.skipped) return { ...v, section: 'unavailable', status: `Skipped: ${st.skipped}`, actions: [unskip] };
   const job = jobFor(src.id, jobs);
   if (job) return { ...v, section: 'working', ...jobStatus(job, now, src.connector), actions: [{ id: 'cancel-job', label: 'Stop' }] };
+  const signalError = src.id === 'signal' ? stats?.manifest?.signal?.notes?.not_read : undefined;
+  if (signalError) {
+    const keychain = signalError === 'keychain_refused';
+    return { ...v, section: t.records > 0 ? 'done' : 'todo', needsYou: true, priority: 12, ranAt: undefined,
+      status: keychain ? 'Signal needs Keychain access' : 'Couldn\'t read Signal',
+      detail: keychain ? 'Click Try Again, then allow access to Signal Safe Storage when macOS asks.'
+        : 'Open Signal and check that it works, then try reading it again. Your existing library is kept.',
+      actions: [{ id: 'run', label: 'Try Again', primary: true }, skip] };
+  }
   if (st?.lastError && later(st.lastErrorAt ?? '1970-01-01T00:00:00Z', t.ranAt)) {
     return { ...v, section: t.records > 0 ? 'done' : 'working', needsYou: true, priority: 12, status: 'Couldn\'t read it', detail: st.lastError, actions: [{ id: 'run', label: 'Try Again', primary: true }, skip] };
   }

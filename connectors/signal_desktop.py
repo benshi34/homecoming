@@ -63,6 +63,15 @@ def db_key():
     return key
 
 
+def wal_checksum(data, endian, state=(0, 0)):
+    """SQLite's rolling WAL checksum, over the header or one frame's first eight bytes and page."""
+    a, b = state
+    for x, y in struct.iter_unpack(endian + "II", data):
+        a = (a + x + b) & 0xFFFFFFFF
+        b = (b + y + a) & 0xFFFFFFFF
+    return a, b
+
+
 def decrypted(db, wal, key_hex):
     """The plain SQLite file, as bytes: every page of `db` (and, after it, every committed page of its write-ahead log)
     decrypted. A page whose HMAC doesn't match is a wrong key or a damaged file: an error, not a guess."""
@@ -83,14 +92,26 @@ def decrypted(db, wal, key_hex):
     pages = {n + 1: db[n * PAGE:(n + 1) * PAGE] for n in range(len(db) // PAGE)}
     size = len(pages)
     # The write-ahead log: a 32-byte header, then frames (a 24-byte header, then a page). A frame belongs to it while
-    # its salts are the header's; only what's up to its last commit (a frame giving the database's size) counts.
-    if len(wal) >= 32 and struct.unpack(">I", wal[8:12])[0] == PAGE:
+    # its salts and rolling checksum are valid; only through its last valid commit counts. The page HMAC alone
+    # doesn't authenticate the frame's commit marker or its place in the transaction.
+    if len(wal) >= 32:
+        magic, version, page_size = struct.unpack(">III", wal[:12])
+        if magic not in (0x377F0682, 0x377F0683) or version != 3007000 or page_size != PAGE:
+            raise SignalError("invalid_wal_header")
+        endian = "<" if magic == 0x377F0682 else ">"
+        checksum = wal_checksum(wal[:24], endian)
+        if checksum != struct.unpack(">II", wal[24:32]):
+            raise SignalError("invalid_wal_header")
         salts, pending, at = wal[16:24], {}, 32
         while at + 24 + PAGE <= len(wal):
             n, commit = struct.unpack(">II", wal[at:at + 8])
             if wal[at + 8:at + 16] != salts:
                 break
-            pending[n] = wal[at + 24:at + 24 + PAGE]
+            raw = wal[at + 24:at + 24 + PAGE]
+            checksum = wal_checksum(wal[at:at + 8] + raw, endian, checksum)
+            if not n or checksum != struct.unpack(">II", wal[at + 16:at + 24]):
+                break  # a torn or stale tail isn't part of a committed transaction
+            pending[n] = raw
             if commit:
                 pages.update(pending)
                 pending, size = {}, commit

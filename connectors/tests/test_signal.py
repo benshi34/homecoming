@@ -44,6 +44,39 @@ def plain_pages(db):
     return [plain[i:i + PAGE] for i in range(0, len(plain), PAGE)]
 
 
+def changed_pages(db, sql):
+    plain = bytearray(b"".join(plain_pages(db)))
+    plain[18:20] = b"\x01\x01"
+    with sqlite3.connect(":memory:") as con:
+        con.deserialize(bytes(plain))
+        con.execute(sql)
+        con.commit()
+        after = con.serialize()
+    return [(i + 1, after[i * PAGE:(i + 1) * PAGE]) for i in range(len(after) // PAGE)
+            if after[i * PAGE:(i + 1) * PAGE] != bytes(plain[i * PAGE:(i + 1) * PAGE])]
+
+
+def wal_bytes(db, frames, endian="<"):
+    """Encrypted pages with SQLite's header and rolling frame checksums, including either checksum byte order."""
+    state = [0, 0]
+
+    def checksum(data):
+        words = struct.unpack(endian + "I" * (len(data) // 4), data)
+        for i in range(0, len(words), 2):
+            state[0] = (state[0] + words[i] + state[1]) % 2**32
+            state[1] = (state[1] + words[i + 1] + state[0]) % 2**32
+        return struct.pack(">II", *state)
+
+    salts = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+    header = struct.pack(">IIII", 0x377F0682 if endian == "<" else 0x377F0683, 3007000, PAGE, 0) + salts
+    wal = bytearray(header + checksum(header))
+    for n, commit, plain in frames:
+        head = struct.pack(">II", n, commit)
+        page = encrypt_page(n, plain, bytes.fromhex(KEY), db[:16])
+        wal += head + salts + checksum(head + page) + page
+    return wal
+
+
 class SignalTests(unittest.TestCase):
     def setUp(self):
         t = tempfile.TemporaryDirectory()
@@ -88,33 +121,61 @@ class SignalTests(unittest.TestCase):
     def test_the_write_ahead_log(self):
         # Signal's newest writes sit in db.sqlite-wal: committed frames count, one after the last commit doesn't.
         db = (self.sql / "db.sqlite").read_bytes()
-        salt, key = db[:16], bytes.fromhex(KEY)
-
-        def changed(sql):
-            plain = bytearray(b"".join(plain_pages(db)))
-            plain[18:20] = b"\x01\x01"
-            con = sqlite3.connect(":memory:")
-            con.deserialize(bytes(plain))
-            con.execute(sql)
-            con.commit()
-            after = con.serialize()
-            return [(i + 1, after[i * PAGE:(i + 1) * PAGE]) for i in range(len(after) // PAGE)
-                    if after[i * PAGE:(i + 1) * PAGE] != bytes(plain[i * PAGE:(i + 1) * PAGE])]
-
-        committed = changed("update messages set body = 'low tide at 7?' where id = 'm1'")
-        uncommitted = changed("update messages set body = 'never saved' where id = 'm3'")
-        wal_salts = b"\x01\x02\x03\x04\x05\x06\x07\x08"
-        wal = bytearray(struct.pack(">IIII", 0x377F0682, 3007000, PAGE, 0) + wal_salts + bytes(8))
+        committed = changed_pages(db, "update messages set body = 'low tide at 7?' where id = 'm1'")
+        uncommitted = changed_pages(db, "update messages set body = 'never saved' where id = 'm3'")
         size = len(db) // PAGE
-        for i, (n, page) in enumerate(committed):
-            commit = size if i == len(committed) - 1 else 0
-            wal += struct.pack(">II", n, commit) + wal_salts + bytes(8) + encrypt_page(n, page, key, salt)
-        for n, page in uncommitted:
-            wal += struct.pack(">II", n, 0) + wal_salts + bytes(8) + encrypt_page(n, page, key, salt)
-        (self.sql / "db.sqlite-wal").write_bytes(bytes(wal))
-        recs, _ = self.run_connector()
-        self.assertEqual(recs["m1"]["text"], "low tide at 7?")
-        self.assertEqual(recs["m3"]["text"].split("\n")[0], "see you there")
+        frames = [(n, size if i == len(committed) - 1 else 0, page) for i, (n, page) in enumerate(committed)]
+        frames += [(n, 0, page) for n, page in uncommitted]
+        for endian in ("<", ">"):
+            with self.subTest(endian=endian):
+                (self.sql / "db.sqlite-wal").write_bytes(wal_bytes(db, frames, endian))
+                recs, _ = self.run_connector()
+                self.assertEqual(recs["m1"]["text"], "low tide at 7?")
+                self.assertEqual(recs["m3"]["text"].split("\n")[0], "see you there")
+
+    def test_a_bad_wal_checksum_keeps_only_the_last_valid_commit(self):
+        db = (self.sql / "db.sqlite").read_bytes()
+        size = len(db) // PAGE
+        first = changed_pages(db, "update messages set body = 'saved' where id = 'm1'")
+        second = changed_pages(db, "update messages set body = 'invalid' where id = 'm1'")
+        frames = [(n, size if i == len(first) - 1 else 0, page) for i, (n, page) in enumerate(first)]
+        frames += [(n, size if i == len(second) - 1 else 0, page) for i, (n, page) in enumerate(second)]
+        for bad_frame, expected in ((0, 'high tide at 6?'), (len(first), 'saved')):
+            with self.subTest(bad_frame=bad_frame):
+                wal = wal_bytes(db, frames)
+                wal[32 + bad_frame * (24 + PAGE) + 16] ^= 1  # page and its HMAC are still valid
+                (self.sql / "db.sqlite-wal").write_bytes(wal)
+                recs, _ = self.run_connector()
+                self.assertEqual(recs["m1"]["text"], expected)
+
+    def test_invalid_wal_headers_are_reported(self):
+        db = (self.sql / "db.sqlite").read_bytes()
+        for offset in (0, 4, 8, 24):  # magic, format version, page size, header checksum
+            with self.subTest(offset=offset):
+                wal = wal_bytes(db, [])
+                wal[offset] ^= 1
+                with self.assertRaisesRegex(signal_desktop.SignalError, "invalid_wal_header"):
+                    signal_desktop.decrypted(db, wal, KEY)
+
+    def test_wal_checksums_match_sqlites_own_writer(self):
+        # Independent reference: SQLite itself writes the checksums, rather than the encrypted test builder.
+        path = self.root / "checksum-reference.sqlite"
+        con = sqlite3.connect(path)
+        try:
+            con.execute("pragma journal_mode=wal")
+            con.execute("create table example (body text)")
+            con.execute("insert into example values ('hello')")
+            con.commit()
+            wal = path.with_name(path.name + "-wal").read_bytes()
+            endian = "<" if struct.unpack(">I", wal[:4])[0] == 0x377F0682 else ">"
+            state = signal_desktop.wal_checksum(wal[:24], endian)
+            self.assertEqual(state, struct.unpack(">II", wal[24:32]))
+            size = struct.unpack(">I", wal[8:12])[0]
+            for at in range(32, len(wal), 24 + size):
+                state = signal_desktop.wal_checksum(wal[at:at + 8] + wal[at + 24:at + 24 + size], endian, state)
+                self.assertEqual(state, struct.unpack(">II", wal[at + 16:at + 24]))
+        finally:
+            con.close()
 
     def test_a_wrong_key_reads_nothing_and_says_so(self):
         recs, manifest = self.run_connector(UMP_SIGNAL_KEY="00" * 32)
