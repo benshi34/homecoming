@@ -191,6 +191,8 @@ export const CATALOG: Source[] = [
 
   { id: 'notion_local', name: 'Notion (desktop app)', group: 'mac', connector: 'notion_local', produces: ['notion'],
     blurb: 'Pages the Notion app has cached on this Mac, with exact edit times.' },
+  { id: 'zotero', name: 'Zotero', group: 'mac', connector: 'zotero', produces: ['zotero'],
+    blurb: 'The papers and pages you saved in Zotero, your notes on them and your highlights in their PDFs. From the Zotero app on this Mac, and from zotero.org with an API key (your library and your groups).' },
   { id: 'documents', name: 'Documents', group: 'mac', connector: 'documents', produces: ['documents'],
     blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
