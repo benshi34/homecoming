@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 
 CONNECTORS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CONNECTORS))
+import setup  # noqa: E402
 WARP = "Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable/warp.sqlite"
 DOCK = """<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
 <key>autohide</key><true/><key>tilesize</key><integer>36</integer><key>mod-count</key><integer>812</integer>
@@ -71,11 +73,14 @@ class SetupTests(unittest.TestCase):
         self.tool("tailscale", """echo '{"Self": {"HostName": "laptop"}, "Peer": {"a": {"HostName": "box", "OS": "linux", "Online": true}, "b": {"HostName": "funnel-ingress-node"}}}'""")
         self.tool("prlctl", "printf 'NAME STATUS\\nWin11 stopped\\n'")
         self.tool("colima", "exit 1")
+        self.tool("xcrun", """[ "$1" = devicectl ] || exit 1; echo 'Devices:'; echo '{"result": {"devices": [{"deviceProperties": {"name": "Ada iPhone", "osVersionNumber": "26.1", "developerModeStatus": "enabled"}, "hardwareProperties": {"marketingName": "iPhone 16", "deviceType": "iPhone", "platform": "iOS"}, "connectionProperties": {"pairingState": "paired", "tunnelState": "connected", "lastConnectionDate": "2026-10-01T10:00:00Z"}}]}}'""")
+        self.tool("adb", "printf 'List of devices attached\\nR5CT1 device usb:1-1 product:tide model:Pixel_9 device:tide\\nX1 unauthorized\\n'")
+        self.tool("system_profiler", """echo '{"SPBluetoothDataType": [{"device_connected": [{"Ada AirPods": {"device_address": "AA:BB:CC:DD:EE:FF", "device_serialNumber": "SERIAL123", "device_minorType": "Headphones", "device_vendorID": "0x004C"}}]}], "SPDisplaysDataType": [{"spdisplays_ndrvs": [{"_name": "Studio Display", "_spdisplays_resolution": "2560 x 1440 @ 60.00Hz", "spdisplays_connection_type": "spdisplays_thunderbolt", "spdisplays_main": "spdisplays_yes", "_spdisplays_display-serial-number": "DSERIAL"}]}], "SPUSBHostDataType": [{"_name": "USB 3.1 Bus", "_items": [{"_name": "Tide Keyboard", "USBDeviceKeyVendorName": "Tide Co", "USBKeyHardwareType": "Removable", "USBDeviceKeySerialNumber": "USERIAL"}]}]}'""")
         # ssh runs the probe locally with HOME set to a second made-up home, as if it were the host's
         (self.root / "remote/.config/sway").mkdir(parents=True)
         (self.root / "remote/.config/sway/config").write_text("bindsym $mod+Return exec foot\n")
         (self.root / "remote/.tmux.conf").write_text("set -g mouse on\n")
-        self.tool("ssh", f'host=""; for a; do case "$a" in -o) skip=1;; *) [ -n "$skip" ] && skip="" && continue; [ -z "$host" ] && host="$a" && continue; cmd="$a";; esac; done\n'
+        self.tool("ssh", f'host=""; for a; do case "$a" in -o) skip=1;; --) ;; *) [ -n "$skip" ] && skip="" && continue; [ -z "$host" ] && host="$a" && continue; cmd="$a";; esac; done\n'
                          f'[ "$host" = box ] || exit 255\nHOME="{self.root}/remote" PATH=/usr/bin:/bin sh -c "{sys.executable} ${{cmd#python3}}"')
 
     def write(self, rel, text):
@@ -121,15 +126,48 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(dock, "autohide = True\npersistent-apps = [Ghostty]\ntilesize = 36", "the Dock's settings; not its counters")
         self.assertEqual(by["defaults:com.knollsoft.Rectangle"]["text"], "gapSize = 8", "an app's choices, not its update checks")
         warp = by["layout:Warp"]
-        self.assertEqual(warp["text"], "Window 1: 1440x900, 2 tabs\n  Tab 1\n    terminal ~/tides (focused)\n  servers (active) (pinned)\n"
-                                       "    side by side:\n      25% terminal ~\n      75% code (focused)")
+        self.assertEqual(warp["text"], "Window 1: 1440x900, 2 tabs\n  Tab 1\n    terminal ~/tides\n  servers (pinned)\n"
+                                       "    side by side:\n      25% terminal ~\n      75% code")
         self.assertIn("work:0 editor  [5d1e,200x50,0,0]\n    pane 0: nvim in ~/tides", by["layout:tmux"]["text"])
         self.assertEqual(by["layout:AeroSpace"]["text"], "1: Ghostty\n2: Firefox")
         self.assertIn("com.ada.sync: /usr/bin/true (every 3600s)", by["installed:launch_agents"]["text"])
         self.assertEqual(by["installed:brew"]["text"], "Formulae:\nripgrep\nCasks:\nghostty")
-        self.assertEqual(by["machines:tailscale"]["text"], "This Mac: laptop\nbox (linux) online")
+        self.assertEqual(by["machines:tailscale"]["text"], "This Mac: laptop\nbox (linux)")
         self.assertEqual(by["machines:ssh"]["text"], "box hostname=100.64.0.9 user=ada", "hosts, never their keys")
         self.assertEqual(by["machines:vms"]["text"], "Parallels: Win11 stopped")
+
+    def test_devices_without_addresses_or_serials(self):
+        by, recs, _ = self.run_setup()
+        self.assertEqual(by["device:phone:Ada iPhone"]["text"], "Ada iPhone\nmodel: iPhone 16\ntype: iPhone\nos: iOS 26.1\npaired: paired\ndeveloper mode: on")
+        self.assertEqual(by["device:phone:Pixel 9"]["text"], "Pixel 9\ntype: Android\nproduct: tide", "an unauthorized phone isn't listed")
+        self.assertNotIn("device:phone:X1", by)
+        self.assertEqual(by["device:bluetooth:Ada AirPods"]["text"], "Ada AirPods\ntype: Headphones\nvendor: Apple")
+        self.assertIn("resolution: 2560 x 1440 @ 60.00Hz\nconnection: thunderbolt\nmain: yes", by["device:display:Studio Display"]["text"])
+        self.assertEqual(by["device:usb:Tide Keyboard"]["text"], "Tide Keyboard\nvendor: Tide Co")
+        everything = json.dumps(recs)
+        for private in ("AA:BB:CC:DD:EE:FF", "SERIAL123", "DSERIAL", "USERIAL"):
+            self.assertNotIn(private, everything)
+
+    def test_what_isnt_a_change(self):
+        first, recs, _ = self.run_setup()
+        # focus moving between panes, a phone connecting: not a new version
+        con = sqlite3.connect(self.home / WARP)
+        con.execute("update pane_leaves set is_focused = 1 - is_focused")
+        con.execute("update windows set active_tab_index = 0")
+        con.commit()
+        con.close()
+        self.tool("xcrun", """[ "$1" = devicectl ] || exit 1; echo '{"result": {"devices": [{"deviceProperties": {"name": "Ada iPhone", "osVersionNumber": "26.1", "developerModeStatus": "enabled"}, "hardwareProperties": {"marketingName": "iPhone 16", "deviceType": "iPhone", "platform": "iOS"}, "connectionProperties": {"pairingState": "paired", "tunnelState": "disconnected", "lastConnectionDate": "2026-10-09T10:00:00Z"}}]}}'""")
+        time.sleep(1.1)
+        _, again, _ = self.run_setup()
+        self.assertEqual(len(again), len(recs))
+        # a file a program regenerates is kept once, as it is now
+        self.write(".warp/launch_configurations/restore.yaml", "# generated 2026-10-22 15:20 by restore-snapshot\nwindows: 1\n")
+        self.run_setup()
+        self.write(".warp/launch_configurations/restore.yaml", "# generated 2026-10-22 15:41 by restore-snapshot\nwindows: 2\n")
+        by, recs, _ = self.run_setup()
+        mine = [r for r in recs if r["meta"]["what"] == "file:~/.warp/launch_configurations/restore.yaml"]
+        self.assertEqual([r["text"].splitlines()[1] for r in mine], ["windows: 2"])
+        self.assertNotIn("changed", mine[0]["meta"])
 
     def test_a_change_is_a_new_version_with_its_diff(self):
         first, _, _ = self.run_setup()
@@ -151,12 +189,139 @@ class SetupTests(unittest.TestCase):
         by, _, _ = self.run_setup()
         self.assertEqual(by["defaults:com.apple.dock"]["meta"]["changed"]["diff"], "-tilesize = 36\n+tilesize = 48", "from the version before, not the first")
 
+    def test_versions_over_many_runs(self):
+        first, _, _ = self.run_setup()
+        self.write(".aerospace.toml", "gaps.inner.horizontal = 12\n")
+        changed, _, _ = self.run_setup()
+        self.run_setup()  # nothing changed since: the change and when it was first seen stay
+        by, recs, _ = self.run_setup()
+        self.assertEqual(by["file:~/.aerospace.toml"]["meta"]["changed"], changed["file:~/.aerospace.toml"]["meta"]["changed"])
+        self.assertEqual(by["defaults:com.apple.dock"]["ts"], first["defaults:com.apple.dock"]["ts"], "a setting is timed when first seen")
+        # back to the first text, restored with its old file time: a new version, once
+        old = self.write(".aerospace.toml", "gaps.inner.horizontal = 8\n[mode.main.binding]\nalt-h = 'focus left'\n")
+        os.utime(old, (1_600_000_000, 1_600_000_000))
+        by, recs, _ = self.run_setup()
+        newest = max((r for r in recs if r["meta"]["what"] == "file:~/.aerospace.toml"), key=lambda r: r["meta"]["seen"])
+        self.assertEqual(newest["meta"]["changed"]["from"], changed["file:~/.aerospace.toml"]["id"])
+        self.assertNotEqual(newest["id"], first["file:~/.aerospace.toml"]["id"], "an earlier version keeps its own record")
+        _, again, _ = self.run_setup()
+        self.assertEqual(len(again), len(recs), "and isn't a change again on the next run")
+
+    def test_a_change_past_the_cap_is_a_change(self):
+        self.write(".zshrc", "# x\n" * 40_000 + "alias a=b\n")
+        self.run_setup()
+        self.write(".zshrc", "# x\n" * 40_000 + "alias a=c\n")
+        _, recs, _ = self.run_setup()
+        mine = [r for r in recs if r["meta"]["what"] == "file:~/.zshrc"]
+        self.assertEqual(len(mine), 2)
+        self.assertTrue(mine[0]["text"].endswith("[cut: longer than this]"))
+
+    def test_an_earlier_runs_leak_is_taken_out(self):
+        self.run_setup()
+        f = self.corpus / "normalized/setup.jsonl"
+        leaked = {"id": "file:~/.npmrc@0", "source": "setup", "kind": "config", "ts": "2026-01-01T00:00:00Z", "title": "npm: ~/.npmrc",
+                  "text": "//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789",
+                  "meta": {"what": "file:~/.npmrc", "group": "shell", "seen": "2026-01-01T00:00:00Z",
+                           "changed": {"from": "x", "added": 1, "removed": 0, "diff": "+_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789"}}}
+        f.write_text(f.read_text() + json.dumps(leaked) + "\n")
+        self.run_setup()
+        self.assertNotIn("npm_abcdefghijklmnopqrstuvwxyz", f.read_text())
+        self.assertIn("file:~/.npmrc@0", f.read_text(), "the version stays, without its secret")
+
+    def test_ssh_includes_and_match_blocks(self):
+        self.write(".ssh/config", "Include config.d/*\nHost box lab\n  HostName 100.64.0.9\nMatch host *.corp\n  User someone-else\n")
+        self.write(".ssh/config.d/work", "Host=build\n  HostName build.example.com\n  User ci\n")
+        by, _, _ = self.run_setup()
+        self.assertEqual(by["machines:ssh"]["text"], "build hostname=build.example.com user=ci\nbox, lab hostname=100.64.0.9")
+
+    def test_one_odd_thing_stops_nothing_else(self):
+        (self.home / ".bashrc").write_bytes(b"alias ll='ls -l'\n\xff\xfe not utf-8\n")
+        self.write("Library/LaunchAgents/odd.plist", '<?xml version="1.0"?><plist version="1.0"><array><string>x</string></array></plist>')
+        self.write("Library/LaunchAgents/odder.plist", '<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>odder</string>'
+                   '<key>ProgramArguments</key><array><integer>1</integer></array></dict></plist>')
+        con = sqlite3.connect(self.home / WARP)
+        con.execute("alter table pane_nodes drop column flex")
+        con.commit()
+        con.close()
+        by, _, manifest = self.run_setup()
+        self.assertIn("alias ll='ls -l'", by["file:~/.bashrc"]["text"])
+        self.assertIn("odder: 1 (on demand)", by["installed:launch_agents"]["text"])
+        self.assertIn("layout:Warp", by, "a Warp without a column still gives its layout")
+        self.assertNotIn("not_read", manifest.get("notes", {}))
+
     def test_other_machines_over_ssh(self):
         by, _, manifest = self.run_setup(hosts="box gone")
-        self.assertEqual(manifest["notes"]["hosts_not_read"], ["gone"], "a host that doesn't answer stops no other")
+        self.assertEqual(manifest["notes"]["hosts_not_read"], {"gone": "couldn't sign in"}, "a host that doesn't answer stops no other")
         self.assertEqual(by["box:file:~/.tmux.conf"]["meta"]["tool"], "tmux")
         self.assertEqual(by["box:file:~/.config/sway/config"]["text"], "bindsym $mod+Return exec foot")
         self.assertIn("system:", by["box:running"]["text"])
+        # a login banner before the probe's JSON; a host without python3
+        self.tool("ssh", (self.bin / "ssh").read_text().replace('[ "$host" = box ] || exit 255', 'echo "Welcome to box"; [ "$host" = box ] || exit 127'))
+        by, _, manifest = self.run_setup(hosts="box nopython")
+        self.assertIn("box:file:~/.tmux.conf", by)
+        self.assertEqual(manifest["notes"]["hosts_not_read"], {"nopython": "no python3 there"})
+
+
+# (what a config says, what's kept): secrets in each syntax configs use, and settings that only look like secrets
+REDACTIONS = [
+    ('export OPENAI_API_KEY=sk-madeupmadeupmadeupmadeup1234', 'export OPENAI_API_KEY=[redacted]'),
+    ('"env": {"TIDE_API_TOKEN": "tok-made-up-123"}', '"env": {"TIDE_API_TOKEN": "[redacted]"}'),
+    ('"accessToken": "Zk2mQ9pL4xWv", "clientSecret": "s3cr3tValue99", "apiKey": "abcd1234efgh"',
+     '"accessToken": "[redacted]", "clientSecret": "[redacted]", "apiKey": "[redacted]"'),
+    ('"headers": {"Authorization": "Basic dXNlcjpwYXNzd29yZA=="}', '"headers": {"Authorization": "Basic [redacted]"}'),
+    ('"api_key" = "abc123secretvalue"', '"api_key" = "[redacted]"'),
+    ('token: abc123secretvalueXY', 'token: [redacted]'),
+    ('set -gx GITHUB_TOKEN abc123secretvalueXY', 'set -gx GITHUB_TOKEN [redacted]'),
+    ('local token = "abc123secretvalueXY"', 'local token = "[redacted]"'),
+    ('cfg = { token = "abc123secretvalueXY" }', 'cfg = { token = "[redacted]" }'),
+    ('"args": ["--auth-token", "abc123secretvalueXY"]', '"args": ["--auth-token", "[redacted]"]'),
+    ('"--key",\n  "7d3c1b2a-made-up-uuid",', '"--key",\n  "[redacted]",'),
+    ('"\\"{\\\\\\"token\\\\\\":\\\\\\"lin_api_Sqzp9xY2kLmN4bVc8RtW1qZ3\\\\\\"}\\""', '"\\"{\\\\\\"token\\\\\\":\\\\\\"[redacted]\\\\\\"}\\""'),
+    ('https://Zk9mQ2pL4xWv8RtYa7c3Bn5Dk1Fh@github.com/x', 'https://[redacted]@github.com/x'),
+    ('postgres://ada:hunter22@db/x', 'postgres://ada:[redacted]@db/x'),
+    ('curl "https://x.io/a?access_token=abcdef123456&page=2"', 'curl "https://x.io/a?access_token=[redacted]&page=2"'),
+    ('//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789', '//registry.npmjs.org/:_authToken=[redacted]'),
+    ('the password for the router is Tide-2024!', 'the password for the router is [redacted]'),
+    ("curl -H 'Authorization: Bearer abc123def456ghi'", "curl -H 'Authorization: Bearer [redacted]'"),
+    ('Set `api_key: your-key-here`', 'Set `api_key: [redacted]`'),
+    ('{"key": "cmd+shift+p", "command": "x"}', None), ('{"key": "ctrl+k ctrl+s"}', None),
+    ('ssh_key_path = "keys/deploy-2024"', None), ('token_file = "secrets/ci-2024"', None), ('"tokenizer": "cl100k_base"', None),
+    ('"MAX_THINKING_TOKENS": "31999"', None), ('max_tokens = 4096  # cap', None), ('env_key = "OPENAI_API_KEY"', None),
+    ('gpg --default-key ABCD1234', None), ('TestVeryLongCamelCaseName2Final', None), ('agentview task add "..." --key <source>', None),
+    ('if [[ $PWD =~ $HOME/x ]]; then', None), ('keybind = cmd+t=new_tab', None), ('commit = 3f49db7a8c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f', None),
+    ('the token expires after a day; set api_key in the file', None), ('export TOKEN=$(security find-generic-password -w -s x)', None),
+    ('url = "https://example.com:8080/x"', None), ('token: "{{ .Values.token }}"', None),
+]
+
+
+class VersionTests(unittest.TestCase):
+    def test_the_newest_version_is_the_one_seen_last(self):
+        # a config restored from a backup keeps its old file time: the version seen last is still the newest
+        with tempfile.TemporaryDirectory() as t:
+            (Path(t) / "setup.jsonl").write_text(
+                json.dumps({"id": "a@1", "ts": "2026-02-01T00:00:00Z", "text": "edited", "meta": {"what": "a", "seen": "2026-02-01T00:00:00.000001+00:00"}}) + "\n" +
+                json.dumps({"id": "a@2", "ts": "2020-01-01T00:00:00Z", "text": "restored", "meta": {"what": "a", "seen": "2026-03-01T00:00:00.000001+00:00"}}) + "\n")
+            old = setup.NORM
+            setup.NORM = Path(t)
+            try:
+                self.assertEqual(setup.Versions().latest["a"]["id"], "a@2")
+            finally:
+                setup.NORM = old
+
+
+class RedactionTests(unittest.TestCase):
+    def test_each_syntax(self):
+        for raw, kept in REDACTIONS:
+            with self.subTest(raw=raw):
+                self.assertEqual(setup.redact(raw), raw if kept is None else kept)
+                self.assertEqual(setup.redact(setup.redact(raw)), setup.redact(raw), "redacting twice changes nothing")
+
+    def test_prose(self):
+        self.assertEqual(setup.redact("Set `api_key: your-key-here` in the file", prose=True), "Set `api_key: your-key-here` in the file",
+                         "in docs, a value has to look like a key")
+        self.assertEqual(setup.redact("- `api_key`, `organization_id`: dropped. token: see below", prose=True),
+                         "- `api_key`, `organization_id`: dropped. token: see below", "docs name keys without holding them")
+        self.assertEqual(setup.redact("Put it in `TIDE_API_KEY=sk-ant-abcdefghijklmnopqrstuv1234`.", prose=True), "Put it in `TIDE_API_KEY=[redacted]`.")
 
 
 if __name__ == "__main__":
