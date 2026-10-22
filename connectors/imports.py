@@ -3849,12 +3849,14 @@ def flat(x, prefix="", out=None):
 
 
 def leftover_time(v):
-    """A date in a leftover field: ISO-like text or Unix seconds/milliseconds, else None."""
+    """A date in a leftover field: ISO-like text (2024-01-13, or 2024/01/13), or Unix seconds/milliseconds, else None."""
     v = str(v).strip()
     if re.fullmatch(r"\d{10}(\.\d+)?", v):
         return from_unix(float(v))
     if re.fullmatch(r"\d{13}", v):
         return from_unix(int(v), "ms")
+    # Goodreads writes 2024/01/13: the same date with slashes (or dots)
+    v = re.sub(r"^(\d{4})[/.](\d{1,2})[/.](\d{1,2})\b", lambda d: f"{d[1]}-{int(d[2]):02d}-{int(d[3]):02d}", v)
     m = re.match(r"(\d{4}-\d{2}-\d{2})([T ]\d{2}:\d{2}(:\d{2})?)?", v)
     if m and 1900 <= int(v[:4]) <= 2100:
         try:
