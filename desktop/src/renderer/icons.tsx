@@ -85,7 +85,7 @@ const SOURCES: Record<string, [string, string]> = {
   app_usage: ['hourglass', 'indigo'], ai_coding: ['code', 'purple'], documents: ['doc', 'blue'], git_commits: ['branch', 'orange'],
   notion_local: ['doc', 'graphite'], voice_memos: ['wave', 'red'], iphone_backup: ['iphone', 'graphite'],
   editor_history: ['code', 'blue'], shell_history: ['terminal', 'graphite'], podcasts: ['wave', 'purple'],
-  whatsapp: ['bubble', 'green'], books: ['book', 'orange'], zotero: ['book', 'red'], apple_maps: ['pin', 'blue'],
+  whatsapp: ['bubble', 'green'], signal: ['bubble', 'blue'], books: ['book', 'orange'], zotero: ['book', 'red'], apple_maps: ['pin', 'blue'],
   google_takeout: ['tray', 'blue'], google_photos_drive: ['photo', 'teal'], instagram: ['camera', 'pink'], facebook: ['people', 'blue'],
   discord: ['bubbles', 'indigo'], linkedin: ['briefcase', 'blue'], notion: ['doc', 'graphite'], chatgpt: ['sparkle', 'teal'],
   claude_ai: ['sparkle', 'orange'], x: ['at', 'graphite'], reddit: ['bubble', 'orange'], spotify: ['music', 'green'],

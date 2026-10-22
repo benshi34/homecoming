@@ -208,6 +208,49 @@ class XTests(Base):
         follows = {(r["meta"]["what"], r["meta"]["account"], r["is_me"]) for r in self.of("x", "follow")}
         self.assertEqual(follows, {("follower", "7", False), ("following", "8", True)})
 
+    def test_messages_name_people_your_posts_name(self):
+        # A DM names people by account id alone; your posts mention one (display name) and reply to another (handle).
+        dm = lambda i, frm, to, text: {"messageCreate": {"id": i, "senderId": frm, "recipientId": to, "text": text, "urls": [],  # noqa: E731
+                                                          "mediaUrls": [], "reactions": [], "createdAt": "2026-09-02T10:00:00.000Z"}}
+        self.zip("x/twitter-2026.zip", {
+            "data/account.js": ACCOUNT,
+            "data/tweets.js": ytd("tweets", [
+                tweet("1", "lunch with @grace_h", entities={"urls": [], "user_mentions": [{"id_str": "7", "screen_name": "grace_h", "name": "Grace Hopper"}]}),
+                tweet("2", "@alan_t agreed", in_reply_to_screen_name="alan_t", in_reply_to_user_id_str="9", in_reply_to_status_id_str="5")]),
+            "data/direct-messages.js": ytd("directMessages", [
+                {"dmConversation": {"conversationId": "7-42", "messages": [dm("m1", "7", "42", "tides?"), dm("m2", "42", "7", "at noon")]}},
+                {"dmConversation": {"conversationId": "9-42", "messages": [dm("m3", "9", "42", "hello")]}},
+                {"dmConversation": {"conversationId": "11-42", "messages": [dm("m4", "11", "42", "who am I")]}}]),
+            "data/direct-messages-group.js": ytd("directMessagesGroup", [{"dmConversation": {"conversationId": "g1", "messages": [
+                {"conversationNameUpdate": {"initiatingUserId": "42", "name": "Tide club", "createdAt": "2026-09-01T00:00:00.000Z"}},
+                {"messageCreate": {"id": "m5", "senderId": "7", "text": "high tide at 6", "urls": [], "mediaUrls": [], "reactions": [],
+                                   "createdAt": "2026-09-02T11:00:00.000Z"}},
+                {"messageCreate": {"id": "m6", "senderId": "11", "text": "see you", "urls": [], "mediaUrls": [], "reactions": [],
+                                   "createdAt": "2026-09-02T11:01:00.000Z"}}]}}])})
+        self.run_import()
+        dms = self.by_id("x", "message")
+        got = {k: (v["author"], v["thread_name"], v.get("participants")) for k, v in dms.items()}
+        self.assertEqual(got, {"m1": ("Grace Hopper", "Grace Hopper", "Grace Hopper"), "m2": ("me", "Grace Hopper", "Grace Hopper"),
+                               "m3": ("@alan_t", "@alan_t", "@alan_t"), "m4": ("11", "11-42", "11"),
+                               "m5": ("Grace Hopper", "Tide club", "Grace Hopper, 11"), "m6": ("11", "Tide club", "Grace Hopper, 11")})
+        self.assertEqual(dms["m1"]["meta"]["sender_id"], "7", "the account id stays")
+
+    def test_unnamed_groups_do_not_add_the_group_id_as_a_person(self):
+        dm = lambda i, sender: {"messageCreate": {"id": i, "senderId": sender, "text": "hello",
+                                                "createdAt": "2026-09-02T10:00:00.000Z"}}
+        self.zip("x/twitter-2026.zip", {
+            "data/account.js": ACCOUNT,
+            "data/tweets.js": ytd("tweets", [tweet("1", "hi @grace_h", entities={"user_mentions": [
+                {"id_str": "7", "screen_name": "grace_h", "name": "Grace Hopper"}]})]),
+            "data/direct-messages-group.js": ytd("directMessagesGroup", [
+                {"dmConversation": {"conversationId": "999999999", "messages": [dm("g1", "7"), dm("g2", "11")]}},
+                {"dmConversation": {"conversationId": "888888888", "messages": [dm("g3", "7")]}}])})
+        self.run_import()
+        dms = self.by_id("x", "message")
+        self.assertEqual(dms["g1"]["participants"], "Grace Hopper, 11")
+        self.assertEqual(dms["g2"]["thread_name"], "999999999")
+        self.assertEqual((dms["g3"]["participants"], dms["g3"]["thread_name"]), ("Grace Hopper", "888888888"))
+
     def test_empty_and_broken_files_stop_nothing(self):
         self.zip("x/twitter-2026.zip", {
             "data/account.js": ACCOUNT,  # one that names no account fails the archive (test_bridge.py's malformed export)
