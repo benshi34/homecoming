@@ -2504,10 +2504,12 @@ def x_messages(e, w, me_id, files_for, who=None):
         # conversation is named for the other person.
         ids = [str(x) for m in msgs for mc in [m.get("messageCreate")] if isinstance(mc, dict)
                for x in (mc.get("senderId"), mc.get("recipientId")) if x is not None]
-        ids += str(c.get("conversationId") or "").split("-") if not names else []
+        direct = re.fullmatch(r"(\d+)-(\d+)", str(c.get("conversationId") or ""))
+        if direct:
+            ids += list(direct.groups())
         others = list(dict.fromkeys(i for i in ids if i and i != me_id))
         people = ", ".join(who.get(i, i) for i in others) or None
-        name = names[-1][1] if names else who.get(others[0]) if len(others) == 1 and others[0] in who else c.get("conversationId")
+        name = names[-1][1] if names else who.get(others[0]) if direct and len(others) == 1 and others[0] in who else c.get("conversationId")
         for m in msgs:
             mc = m.get("messageCreate")
             if not isinstance(mc, dict) or not mc.get("id") or w.has(mc.get("id")):

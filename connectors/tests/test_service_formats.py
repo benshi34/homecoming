@@ -235,6 +235,22 @@ class XTests(Base):
                                "m5": ("Grace Hopper", "Tide club", "Grace Hopper, 11"), "m6": ("11", "Tide club", "Grace Hopper, 11")})
         self.assertEqual(dms["m1"]["meta"]["sender_id"], "7", "the account id stays")
 
+    def test_unnamed_groups_do_not_add_the_group_id_as_a_person(self):
+        dm = lambda i, sender: {"messageCreate": {"id": i, "senderId": sender, "text": "hello",
+                                                "createdAt": "2026-09-02T10:00:00.000Z"}}
+        self.zip("x/twitter-2026.zip", {
+            "data/account.js": ACCOUNT,
+            "data/tweets.js": ytd("tweets", [tweet("1", "hi @grace_h", entities={"user_mentions": [
+                {"id_str": "7", "screen_name": "grace_h", "name": "Grace Hopper"}]})]),
+            "data/direct-messages-group.js": ytd("directMessagesGroup", [
+                {"dmConversation": {"conversationId": "999999999", "messages": [dm("g1", "7"), dm("g2", "11")]}},
+                {"dmConversation": {"conversationId": "888888888", "messages": [dm("g3", "7")]}}])})
+        self.run_import()
+        dms = self.by_id("x", "message")
+        self.assertEqual(dms["g1"]["participants"], "Grace Hopper, 11")
+        self.assertEqual(dms["g2"]["thread_name"], "999999999")
+        self.assertEqual((dms["g3"]["participants"], dms["g3"]["thread_name"]), ("Grace Hopper", "888888888"))
+
     def test_empty_and_broken_files_stop_nothing(self):
         self.zip("x/twitter-2026.zip", {
             "data/account.js": ACCOUNT,  # one that names no account fails the archive (test_bridge.py's malformed export)
