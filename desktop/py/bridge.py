@@ -82,6 +82,7 @@ MAC_PATHS = {
     "apple_maps": [LIB / "Containers/com.apple.Maps/Data/Maps/MapsSync_0.0.1"],
     "voice_memos": [LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"],
     "notion_local": [LIB / "Application Support/Notion/notion.db"],
+    "zotero": [HOME / "Zotero/zotero.sqlite"],  # or wherever its prefs.js says; and zotero.org with a key (zotero.py)
     # and Obsidian vaults wherever they are, read with these (not looked for alone: see PROTECTED)
     "documents": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents", LIB / "CloudStorage", HOME / "Dropbox"],
     "git_commits": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents/com~apple~CloudDocs",

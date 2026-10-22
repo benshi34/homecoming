@@ -21,7 +21,7 @@ const EXPLORE: Record<string, ExplorePage> = {
   imessage: 'people', calls: 'people', contacts: 'people', instagram: 'people', facebook: 'people', discord: 'groups',
   photos: 'places', iphone_backup: 'movement', health: 'movement', spotify: 'listening', podcasts: 'listening', app_usage: 'rhythms',
   browser_history: 'curiosity', google_takeout: 'curiosity', git_commits: 'made', documents: 'made', apple_notes: 'made', ai_coding: 'made',
-  calendar: 'stream', reminders: 'stream', voice_memos: 'made', whatsapp: 'people', signal: 'groups',
+  calendar: 'stream', reminders: 'stream', voice_memos: 'made', zotero: 'stream', whatsapp: 'people', signal: 'groups',
 };
 
 // The width a chart has: it fills its group and redraws as the window changes.
