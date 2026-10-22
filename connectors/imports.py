@@ -2392,6 +2392,7 @@ def x_archive(es, W, used):
         elif re.search(r"(^|/)data/js/tweet_index\.js$", e.path):
             used.add(e.path)  # Grailbird's list of its month files
     versions = x_versions([t for _, ts in posts for t in ts])
+    who = x_people([t for _, ts in posts for t in ts])
     for e, items in posts:
         guarded(e, used, x_posts, items, W("x"), notes, versions, files_for)
     for e in es:
@@ -2401,7 +2402,7 @@ def x_archive(es, W, used):
         p = e.path
         if re.search(r"data/direct-messages(-group)?\.js$", p):
             used.add(p)
-            guarded(e, used, x_messages, W("x"), me_id, files_for)
+            guarded(e, used, x_messages, W("x"), me_id, files_for, who)
         elif re.search(r"data/grok-chat-item(-part\d+)?\.js$", p):
             used.add(p)
             guarded(e, used, x_grok, W("x"))
@@ -2476,14 +2477,37 @@ def x_tweets_csv(e, W, used):
               url=f"https://x.com/i/status/{r['tweet_id']}", meta={k: v for k, v in (("reply_to_id", r.get("in_reply_to_status_id")),) if v})
 
 
-def x_messages(e, w, me_id, files_for):
+def x_people(posts):
+    """Account id -> a name, from your own posts: whom they mention (display name) and reply to (@handle). DMs name
+    people by account id alone; these are the names to give them."""
+    names = {}
+    for t in posts:
+        for u in listish((t.get("entities") or {}).get("user_mentions") if isinstance(t.get("entities"), dict) else None):
+            if isinstance(u, dict) and u.get("id_str") and (u.get("name") or u.get("screen_name")):
+                names[str(u["id_str"])] = u.get("name") or f"@{u['screen_name']}"
+    for t in posts:
+        uid, handle = t.get("in_reply_to_user_id_str"), t.get("in_reply_to_screen_name")
+        if uid and handle and str(uid) not in names:
+            names[str(uid)] = f"@{handle}"
+    return names
+
+
+def x_messages(e, w, me_id, files_for, who=None):
+    who = who or {}
     for conv in listish(ytd(e)):
         c = conv.get("dmConversation") if isinstance(conv, dict) and isinstance(conv.get("dmConversation"), dict) else {}
         msgs = [m for m in listish(c.get("messages")) if isinstance(m, dict)]
         # A group's name is the last one it was given (conversationNameUpdate); else its id, as before.
         names = sorted(((u.get("createdAt") or "", u.get("name")) for m in msgs
                         for u in [m.get("conversationNameUpdate")] if isinstance(u, dict) and u.get("name")), key=lambda x: x[0])
-        name = names[-1][1] if names else c.get("conversationId")
+        # Everyone in it but you, by name where your posts give one (else their account id, as before). A one-on-one
+        # conversation is named for the other person.
+        ids = [str(x) for m in msgs for mc in [m.get("messageCreate")] if isinstance(mc, dict)
+               for x in (mc.get("senderId"), mc.get("recipientId")) if x is not None]
+        ids += str(c.get("conversationId") or "").split("-") if not names else []
+        others = list(dict.fromkeys(i for i in ids if i and i != me_id))
+        people = ", ".join(who.get(i, i) for i in others) or None
+        name = names[-1][1] if names else who.get(others[0]) if len(others) == 1 and others[0] in who else c.get("conversationId")
         for m in msgs:
             mc = m.get("messageCreate")
             if not isinstance(mc, dict) or not mc.get("id") or w.has(mc.get("id")):
@@ -2495,9 +2519,10 @@ def x_messages(e, w, me_id, files_for):
                 if isinstance(text, str) and isinstance(u, dict) and isinstance(u.get("url"), str) and u.get("url") and isinstance(u.get("expanded"), str):
                     text = text.replace(u["url"], u["expanded"])
             w.add(id=mc.get("id"), kind="message", ts=ts,
-                  author="me" if me else mc.get("senderId"), is_me=me, thread=c.get("conversationId"),
-                  thread_name=name, text=text,
-                  meta={"files": files_for(mc.get("id"), ts)})
+                  author="me" if me else who.get(str(mc.get("senderId")), mc.get("senderId")), is_me=me, thread=c.get("conversationId"),
+                  thread_name=name, participants=people, text=text,
+                  meta={k: v for k, v in (("files", files_for(mc.get("id"), ts)),
+                                          ("sender_id", None if me else mc.get("senderId"))) if v})
 
 
 def x_likes(e, w):
