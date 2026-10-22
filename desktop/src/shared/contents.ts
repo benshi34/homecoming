@@ -13,6 +13,7 @@ const KINDS: Record<string, Record<string, string>> = {
   editor_history: { file_edit: 'Saved versions of files' },
   podcasts: { listen: 'Episodes played', subscription: 'Shows you follow' },
   whatsapp: { message: 'Messages', event: 'Group chat changes', post: 'Your status updates' },
+  signal: { message: 'Messages', call: 'Calls' },
   books: { book: 'Books in your library', read: 'Books you finished', highlight: 'Highlights and notes' },
   apple_maps: { search: 'Searches in Maps', directions: 'Directions you got', place_lookup: 'Places you looked at',
     place: 'Favorites and places saved in your guides', guide: 'Your guides', place_visit: 'Places you visited, as Maps kept them',

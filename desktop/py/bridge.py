@@ -64,6 +64,7 @@ MAC_PATHS = {
     "contacts": [LIB / "Application Support/AddressBook"],
     "imessage": [LIB / "Messages/chat.db"],
     "whatsapp": [LIB / "Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite"],
+    "signal_desktop": [LIB / "Application Support/Signal/sql/db.sqlite"],
     "mail_app": [LIB / "Mail"],
     "apple_notes": [LIB / "Group Containers/group.com.apple.notes/NoteStore.sqlite"],
     "calendar_events": [LIB / "Group Containers/group.com.apple.calendar/Calendar.sqlitedb"],
