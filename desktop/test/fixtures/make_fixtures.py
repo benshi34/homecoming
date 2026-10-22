@@ -349,7 +349,7 @@ def explore_corpus(corpus):
         "0d00a3d01fe1ba4a0b3d0000000049454e44ae426082"))
     n = iter(range(1, 10 ** 6))
     sets = {k: [] for k in ("imessage", "instagram", "discord", "calls", "photos", "shared_photos", "health", "git_commits", "apple_notes",
-                            "google_activity", "calendar", "signal", "phone_airbnb")}
+                            "google_activity", "calendar", "signal", "phone_airbnb", "x")}
 
     def add(source, **f):
         sets[source].append({"id": f"{source}-{next(n)}", "source": source, "kind": f.pop("kind", "record"), **f})
@@ -442,6 +442,10 @@ def explore_corpus(corpus):
     add("google_activity", kind="media", ts="2025-03-12T23:00:00Z", is_me=True, title="How engines work",
         text="https://www.youtube.com/watch?v=abc")
     add("calendar", kind="event", ts="2025-03-12T19:30:00Z", title="Dinner with Grace")
+    # A post of yours on X, and a retweet: someone else's post, not something you made.
+    add("x", kind="post", ts="2025-05-01T09:00:00Z", author="me", is_me=True, text="Shipped the engine")
+    add("x", kind="post", ts="2025-05-01T10:00:00Z", author="me", is_me=True, text="RT @grace_h: Compilers are fun",
+        meta={"retweet_of": "grace_h"})
     for source, rows in sets.items():
         with (norm / f"{source}.jsonl").open("w") as fh:
             for r in rows:

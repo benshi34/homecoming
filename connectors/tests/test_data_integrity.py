@@ -292,5 +292,23 @@ class MappedExportTests(unittest.TestCase):
         self.assertEqual(len(self.records('goodreads_other')), 2, 'its file is the catch-all\'s again')
 
 
+class LeftoverDateTests(unittest.TestCase):
+    """A CSV no parser knows still gets its dates when they're written 2024/01/13 (Goodreads), not only 2024-01-13."""
+
+    def test_slash_dates(self):
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        corpus = Path(t.name) / 'corpus'
+        (corpus / 'imports/shelf').mkdir(parents=True)
+        (corpus / 'identity.json').write_text('{"names":[],"emails":[],"usernames":[]}')
+        (corpus / 'imports/shelf/library_export.csv').write_text(
+            'Book Id,Title,Date Read,Date Added\n1,A,2024/08/02,2024/7/20\n2,B,,2024/09/01\n3,C,,not a date\n')
+        r = subprocess.run([sys.executable, '-c', 'import imports; imports.main()'], cwd=CONNECTORS,
+                           env={**os.environ, 'CORPUS_DIR': str(corpus)}, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rs = [json.loads(x) for x in (corpus / 'normalized/shelf_other.jsonl').read_text().splitlines()]
+        self.assertEqual([r.get('ts') for r in rs], ['2024-08-02T00:00:00', '2024-09-01T00:00:00', None])
+
+
 if __name__ == '__main__':
     unittest.main()
