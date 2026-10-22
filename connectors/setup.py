@@ -11,7 +11,6 @@ version seen and a new one carries the diff from the last. Secrets in configs (A
 
 import datetime as dt
 import difflib
-import fnmatch
 import glob
 import hashlib
 import math
@@ -19,7 +18,6 @@ import json
 import os
 import plistlib
 import re
-import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -36,10 +34,10 @@ AVENUE = ("Local files and read-only commands. Configs (each version kept, with 
           "Finder, Stage Manager and apps like Rectangle and iTerm2, filtered to settings. Layouts: Warp's warp.sqlite "
           "(windows, tabs, pane splits, each pane's folder), `tmux list-panes -a`, `aerospace list-windows --all`. "
           "Installed: /Applications, `brew leaves`, ~/Library/LaunchAgents, scripts in ~/.local/bin and ~/bin. "
-          "Machines: `tailscale status --json`, ~/.ssh/config's hosts, `prlctl list`, `colima list`, UTM's VMs; and, for hosts named "
-          "in UMP_SETUP_HOSTS, the same configs plus uname, tmux, crontab, user services, containers and attached phones over ssh "
-          "(python3 there). Devices, each its own record: `xcrun devicectl list devices` (iPhones, iPads, Watches), `adb devices -l`, "
-          "`system_profiler` for paired Bluetooth devices, displays and USB devices (names and kinds, never addresses or serials).")
+          "Machines: `tailscale status --json`, ~/.ssh/config's hosts, `prlctl list`, `colima list`, UTM's VMs. Devices, each "
+          "its own record: `xcrun devicectl list devices` (iPhones, iPads, Watches), `adb devices -l`, `system_profiler` for "
+          "paired Bluetooth devices, displays and USB devices (names and kinds, never addresses or serials). Linux too: i3, "
+          "sway, Hyprland, systemd user units; and crontab and the OS. Another machine is read by machines.py.")
 
 NOW = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")  # when a version with no time of its own was first seen
 CAP = 60_000
@@ -66,6 +64,11 @@ FILES = [
     ("window manager", "skhd", [".skhdrc", ".config/skhd/skhdrc"]),
     ("window manager", "Hammerspoon", [".hammerspoon/init.lua"]),
     ("window manager", "SketchyBar", [".config/sketchybar/sketchybarrc"]),
+    ("window manager", "i3", [".config/i3/config"]),
+    ("window manager", "sway", [".config/sway/config"]),
+    ("window manager", "Hyprland", [".config/hypr/hyprland.conf"]),
+    ("shell", "X", [".xinitrc", ".xprofile"]),
+    ("installed", "systemd", [".config/systemd/user/*.service", ".config/systemd/user/*.timer"]),
     ("keyboard", "Karabiner", [".config/karabiner/karabiner.json"]),
     ("editor", "VS Code", ["Library/Application Support/Code/User/settings.json", "Library/Application Support/Code/User/keybindings.json"]),
     ("editor", "Cursor", ["Library/Application Support/Cursor/User/settings.json", "Library/Application Support/Cursor/User/keybindings.json",
@@ -634,90 +637,31 @@ def devices(w, v):
     usb(sp.get("SPUSBHostDataType"))
 
 
-# ---------------------------------------------------------------- other machines, over ssh (opt-in: UMP_SETUP_HOSTS)
+# ---------------------------------------------------------------- what runs on its own (Linux and Macs alike)
 
-REMOTE = r"""
-import glob, json, os, subprocess, sys
-pats = json.loads(sys.argv[1]); home = os.path.expanduser("~"); out = {"files": {}, "cmds": {}}
-for pat in pats:
-    for p in sorted(glob.glob(os.path.join(home, pat)))[:50]:
-        try:
-            if os.path.isfile(p) and os.path.getsize(p) < 2000000:
-                out["files"]["~" + p[len(home):]] = [open(p, errors="replace").read(), os.path.getmtime(p)]
-        except OSError:
-            pass
-for name, cmd in (("system", "uname -srm; sw_vers 2>/dev/null; cat /etc/os-release 2>/dev/null | head -2"),
-                  ("tmux", "tmux list-panes -a -F '#{session_name}:#{window_index} #{window_name} #{pane_current_command} #{pane_current_path}'"),
-                  ("crontab", "crontab -l"), ("services", "systemctl --user list-units --type=service --state=running --no-legend --plain"),
-                  ("containers", "docker ps --format '{{.Names}} {{.Image}}'"),
-                  ("devices", "adb devices -l 2>/dev/null | tail -n +2 | awk '$2 == \"device\" {print $0}'")):
-    try:
-        r = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=15)
-        if r.returncode == 0 and r.stdout.strip():
-            out["cmds"][name] = r.stdout[:20000]
-    except Exception:
-        pass
-try:
-    import tempfile
-    f = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
-    subprocess.run(["xcrun", "devicectl", "list", "devices", "--quiet", "--json-output", f], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-    found = []
-    for d in json.load(open(f)).get("result", {}).get("devices", []):
-        hp, dp = d.get("hardwareProperties", {}), d.get("deviceProperties", {})
-        found.append(f"{dp.get('name')}: {hp.get('marketingName')} ({hp.get('platform')} {dp.get('osVersionNumber')})")
-    os.unlink(f)
-    if found:
-        out["cmds"]["devices"] = "\n".join(sorted(found)) + ("\n" + out["cmds"]["devices"] if out["cmds"].get("devices") else "")
-except Exception:
-    pass
-print(json.dumps(out))
-"""
-LINUX_FILES = [("window manager", "i3", ".config/i3/config"), ("window manager", "sway", ".config/sway/config"),
-               ("window manager", "Hyprland", ".config/hypr/hyprland.conf"), ("shell", "X", ".xinitrc"),
-               ("machines", "systemd", ".config/systemd/user/*.service")]
+def scheduled(w, v):
+    """crontab, and on Linux the user services systemd runs: the jobs a person set up."""
+    cron = run(["crontab", "-l"])
+    if cron and cron.strip():
+        v.add(w, "installed:crontab", "inventory", "Your crontab", cron, None, {"group": "installed", "tool": "cron"})
+    units = run(["systemctl", "--user", "list-unit-files", "--type=service", "--state=enabled", "--no-legend", "--plain"])
+    if units and units.strip():
+        names = sorted(l.split()[0] for l in units.splitlines() if l.strip())
+        v.add(w, "installed:systemd", "inventory", f"{len(names)} services of your own (systemd)", "\n".join(names), None,
+              {"group": "installed", "tool": "systemd"})
 
 
-def remote(w, v):
-    """Each host in UMP_SETUP_HOSTS (ssh names, space-separated): its configs and what it runs, read over ssh with
-    python3 there. Nothing is installed or left on the host."""
-    hosts = (os.environ.get("UMP_SETUP_HOSTS") or "").split()
-    tools = {p: (g, t) for g, t, ps in FILES for p in ps if not p.startswith("Library/")}
-    tools.update({p: (g, t) for g, t, p in LINUX_FILES})
-    pats = list(tools)
-    for host in hosts:
-        try:
-            r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, "python3 - " + shlex.quote(json.dumps(pats))],
-                               input=REMOTE, capture_output=True, text=True, errors="replace", timeout=120)
-        except (OSError, subprocess.TimeoutExpired):
-            w.notes.setdefault("hosts_not_read", {})[host] = "no answer"
-            continue
-        # the probe's JSON is its last line; a login banner or an rc file's echo may come before it
-        line = next((l for l in reversed(r.stdout.splitlines()) if l.startswith("{")), "")
-        try:
-            got = json.loads(line) if r.returncode == 0 else None
-        except ValueError:
-            got = None
-        if not got:
-            why = "no python3 there" if r.returncode == 127 else "couldn't sign in" if r.returncode == 255 else f"exit {r.returncode}"
-            w.notes.setdefault("hosts_not_read", {})[host] = why
-            continue
-        for path, (text, mtime) in got["files"].items():
-            group, tool = next(((g, t) for pat, (g, t) in tools.items() if fnmatch.fnmatch(path[2:], pat)), ("machines", "config"))
-            v.add(w, f"{host}:file:{path}", "config", f"{host}: {tool}: {path}", text, from_unix(mtime),
-                  {"group": group, "tool": tool, "path": path, "host": host, "lines": text.count("\n") + 1}, prose=path.endswith(".md"))
-        cmds = got["cmds"]
-        if cmds.get("tmux"):  # a layout, like this Mac's
-            v.add(w, f"{host}:layout:tmux", "layout", f"{host}: tmux", cmds.pop("tmux"), None, {"group": "terminal", "tool": "tmux", "host": host})
-        if cmds:
-            text = "\n\n".join(f"{k}:\n{val.strip()}" for k, val in cmds.items())
-            v.add(w, f"{host}:running", "inventory", f"{host}: system, sessions and services", text, None,
-                  {"group": "machines", "tool": "ssh", "host": host})
+def system(w, v):
+    """What this machine is: its OS and version, for a machine read from another (machines.py)."""
+    text = "\n".join(x.strip() for x in (run(["uname", "-srm"]), run(["sw_vers"]), (open("/etc/os-release").read() if os.path.exists("/etc/os-release") else None)) if x)
+    if text:
+        v.add(w, "machines:system", "inventory", "This machine", text, None, {"group": "machines", "tool": "system"})
 
 
 def main():
     with Writer("setup", AVENUE, forget=lambda old: bool((old.get("meta") or {}).get("generated"))) as w:
         v = Versions()
-        for part in (configs, domains, warp, tmux, aerospace, apps, brew, launch_agents, scripts, tailscale, ssh_hosts, vms, devices, remote):
+        for part in (configs, domains, warp, tmux, aerospace, apps, brew, launch_agents, scripts, tailscale, ssh_hosts, vms, devices, scheduled, system):
             try:
                 part(w, v)
             except Exception as e:  # one tool's odd file stops nothing else

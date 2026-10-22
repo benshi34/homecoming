@@ -249,17 +249,6 @@ class SetupTests(unittest.TestCase):
         self.assertIn("layout:Warp", by, "a Warp without a column still gives its layout")
         self.assertNotIn("not_read", manifest.get("notes", {}))
 
-    def test_other_machines_over_ssh(self):
-        by, _, manifest = self.run_setup(hosts="box gone")
-        self.assertEqual(manifest["notes"]["hosts_not_read"], {"gone": "couldn't sign in"}, "a host that doesn't answer stops no other")
-        self.assertEqual(by["box:file:~/.tmux.conf"]["meta"]["tool"], "tmux")
-        self.assertEqual(by["box:file:~/.config/sway/config"]["text"], "bindsym $mod+Return exec foot")
-        self.assertIn("system:", by["box:running"]["text"])
-        # a login banner before the probe's JSON; a host without python3
-        self.tool("ssh", (self.bin / "ssh").read_text().replace('[ "$host" = box ] || exit 255', 'echo "Welcome to box"; [ "$host" = box ] || exit 127'))
-        by, _, manifest = self.run_setup(hosts="box nopython")
-        self.assertIn("box:file:~/.tmux.conf", by)
-        self.assertEqual(manifest["notes"]["hosts_not_read"], {"nopython": "no python3 there"})
 
 
 # (what a config says, what's kept): secrets in each syntax configs use, and settings that only look like secrets
