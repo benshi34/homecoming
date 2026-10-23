@@ -181,6 +181,8 @@ export const CATALOG: Source[] = [
     blurb: 'Which files you saved in VS Code, Cursor and similar editors, and when. Not the files themselves.' },
   { id: 'shell_history', name: 'Terminal history', group: 'mac', connector: 'shell_history', produces: ['shell_history'],
     blurb: 'The commands you typed in Terminal. Passwords, tokens and keys in them are replaced with [redacted].' },
+  { id: 'setup', name: 'Your setup', group: 'mac', connector: 'setup', produces: ['setup'],
+    blurb: 'How you have set up this Mac and the tools you work in: terminal, shell, editor, window manager and coding agent configs, the Dock, keyboard and trackpad settings, your Warp, tmux and AeroSpace layouts, the apps and background jobs you installed, and the machines you reach. Each change is kept, with what changed. Keys and tokens in configs are replaced with [redacted].' },
   { id: 'podcasts', name: 'Podcasts', group: 'mac', connector: 'podcasts', produces: ['podcasts'],
     blurb: 'The shows you follow and the episodes you played in Apple Podcasts.' },
   { id: 'books', name: 'Books', group: 'mac', connector: 'books', produces: ['books'],
@@ -200,6 +202,9 @@ export const CATALOG: Source[] = [
     blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
     blurb: 'Your commits across every repository under Documents, Desktop and your code folders (Developer, Code, Projects...).' },
+  { id: 'machines', name: 'Your other machines', group: 'mac', connector: 'machines', produces: ['machines'],
+    blurb: 'The same sources from the other Macs and Linux machines you reach over ssh (a Mac mini, a cloud workstation, a server, a Lima or OrbStack VM), kept beside this Mac\'s and marked with the machine each came from. Nothing is installed or left on them, and a message or contact this Mac already has is kept once. A machine shared with you, or a coworker\'s on a work network, isn\'t read.',
+    knownGaps: ['Finds your own Tailscale machines and this Mac\'s VMs by itself; a machine only in ~/.ssh/config is read once it\'s named in machines.json (signing in to some sends a phone prompt).', 'Needs python3 on the machine, and ssh that signs in without asking (a key, not a password or phone prompt).', 'On Linux: agent sessions, terminal history, git commits, documents and your setup; the rest are Mac apps.'] },
 
   // ---------------------------------------------------------------- iPhone
   {

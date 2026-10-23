@@ -75,6 +75,8 @@ MAC_PATHS = {
     "ai_coding": [HOME / ".claude/projects", HOME / ".codex/sessions", LIB / "Application Support/Cursor/User/globalStorage/state.vscdb",
                   LIB / "Application Support/Code/User/workspaceStorage"],
     "editor_history": [LIB / f"Application Support/{e}/User/History" for e in ("Code", "Cursor", "VSCodium", "Windsurf")],
+    "machines": [CORPUS / "machines.json"],  # or your own machines on Tailscale, or VMs: machines.anywhere_to_look, at probe time
+    "setup": [HOME / ".zshrc", HOME / ".gitconfig", HOME / ".claude/settings.json", HOME / ".config", HOME / "Library/LaunchAgents"],
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
     "books": [LIB / "Containers/com.apple.iBooksX/Data/Documents/BKLibrary", LIB / "Containers/com.apple.iBooksX/Data/Documents/AEAnnotation"],
@@ -358,6 +360,12 @@ def probe():
     for name, paths in MAC_PATHS.items():
         states = [look(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
         sources[name] = "ok" if "ok" in states else "blocked" if "blocked" in states else "absent"
+    if sources.get("machines") != "ok":
+        try:
+            import machines
+            sources["machines"] = "ok" if machines.anywhere_to_look() else "absent"
+        except Exception:  # Tailscale misbehaving stops no other source's probe
+            pass
     from common import git_bin
     if not git_bin():  # commits can't be read without git
         sources["git_commits"] = "absent"
@@ -409,6 +417,7 @@ FACETS = {
     "ai_coding": "json_extract(meta, '$.tool')",
     "editor_history": "json_extract(meta, '$.editor')",
     "shell_history": "json_extract(meta, '$.shell')",
+    "setup": "json_extract(meta, '$.group')",
     # Documents in an export land in imported_documents; split them by the export's folder (a service you added).
     "imported_documents": "substr(json_extract(meta, '$.origin'), 1, instr(json_extract(meta, '$.origin') || '/', '/') - 1)",
     "photos": "json_extract(meta, '$.type')",

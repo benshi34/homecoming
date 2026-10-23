@@ -13,6 +13,7 @@ const KINDS: Record<string, Record<string, string>> = {
   editor_history: { file_edit: 'Saved versions of files' },
   podcasts: { listen: 'Episodes played', subscription: 'Shows you follow' },
   whatsapp: { message: 'Messages', event: 'Group chat changes', post: 'Your status updates' },
+  setup: { config: 'Configs you wrote, each version', preference: 'Mac and app settings', layout: 'Your windows, tabs and panes', inventory: 'Apps, background jobs and machines' },
   zotero: { reference: 'Papers, books and pages you saved', note: 'Your notes on them', highlight: 'Highlights and comments in their PDFs' },
   signal: { message: 'Messages', call: 'Calls' },
   books: { book: 'Books in your library', read: 'Books you finished', highlight: 'Highlights and notes' },
