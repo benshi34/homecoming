@@ -1,0 +1,18 @@
+{
+  "service": "The StoryGraph",
+  "version": 1,
+  "items": [
+    {"describe": "Books you read", "file": "*.csv", "header": "Title,Authors,", "where": {"Read Status": ["read"]}, "kind": "read",
+     "time": ["Last Date Read", "Date Added"], "formats": ["%Y/%m/%d"], "title": "Title", "text": ["Title", "Authors", "Review", "Tags"],
+     "id": "ISBN/UID", "author": "me"},
+    {"describe": "Books you're reading", "file": "*.csv", "header": "Title,Authors,", "where": {"Read Status": ["currently-reading"]}, "kind": "read",
+     "time": "Date Added", "formats": ["%Y/%m/%d"], "title": "Title", "text": ["Title", "Authors", "Review", "Tags"],
+     "id": "ISBN/UID", "author": "me"},
+    {"describe": "Books you want to read", "file": "*.csv", "header": "Title,Authors,", "where": {"Read Status": ["to-read"]}, "kind": "saved",
+     "time": "Date Added", "formats": ["%Y/%m/%d"], "title": "Title", "text": ["Title", "Authors", "Tags"],
+     "id": "ISBN/UID", "author": "me"},
+    {"describe": "Books you stopped or put down", "file": "*.csv", "header": "Title,Authors,", "unless": {"Read Status": ["read", "currently-reading", "to-read"]},
+     "kind": "saved", "time": ["Last Date Read", "Date Added"], "formats": ["%Y/%m/%d"], "title": "Title",
+     "text": ["Title", "Authors", "Read Status", "Review", "Tags"], "id": "ISBN/UID", "author": "me"}
+  ]
+}

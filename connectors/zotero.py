@@ -1,114 +1,24 @@
 """Zotero: the papers, books and pages you saved, your notes on them and your highlights in their PDFs.
 
-Two ways in, read the same way:
-  - zotero.org's API, with a key (zotero.org/settings/keys): your library and every group the key can read, whether or
-    not the Zotero app is on this Mac. The key comes from UMP_ZOTERO_KEY, else the Keychain item "Homecoming Zotero".
-  - the Zotero app's database on this Mac (zotero.sqlite in its data folder), for a library that isn't synced.
-An item is "<library>:<key>" either way (user, or group:<id>), so a library read both ways is kept once, the API's
-copy first: it says who added an item to a group."""
+Read from the Zotero app's database on this Mac (zotero.sqlite in its data folder): your library and every group the
+app syncs. Nothing is fetched from zotero.org: a library kept only there comes in once the Zotero app has synced it
+here. An item is "<library>:<key>" (user, or group:<id>), Zotero's own key."""
 
-import json
 import os
 import re
 import sqlite3
-import subprocess
-import time
-import urllib.error
-import urllib.request
 
 from common import HOME, LIB, Writer, connect, snapshot_sqlite
 from email_parse import html_to_text
 
-API = "https://api.zotero.org"
-KEYCHAIN = "Homecoming Zotero"
-AVENUE = ("zotero.org's API (v3) with a read key from UMP_ZOTERO_KEY or the Keychain item \"Homecoming Zotero\": "
-          "/keys/current says whose key it is and which libraries it reads; /users/<id>/items and /groups/<id>/items "
-          "(100 at a time), /collections, /users/<id>/groups for groups' names; meta.createdByUser says who added a "
-          "group's item. Else, or as well, the Zotero app's zotero.sqlite (data folder from prefs.js's "
-          "extensions.zotero.dataDir, else ~/Zotero): items + itemData/fieldsCombined, creators, collections, tags, "
+AVENUE = ("The Zotero app's zotero.sqlite (data folder from prefs.js's extensions.zotero.dataDir, else ~/Zotero), read "
+          "from a snapshot: libraries and groups, items + itemData/fieldsCombined, creators, collections, tags, "
           "itemNotes, itemAnnotations (deletedItems left out). Items: kind reference; notes: note; PDF highlights and "
-          "comments: highlight. Attachments aren't records: a PDF's highlights name the item it's attached to.")
+          "comments: highlight. Attachments aren't records: a PDF's highlights name the item it's attached to. "
+          "Nothing from zotero.org's API.")
 
 ANNOTATION_TYPES = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline", 6: "text"}
 SKIP_TYPES = {"attachment"}
-
-
-# ---------------------------------------------------------------- the API
-
-def api_key():
-    if os.environ.get("UMP_ZOTERO_KEY"):
-        return os.environ["UMP_ZOTERO_KEY"].strip()
-    try:
-        r = subprocess.run(["security", "find-generic-password", "-w", "-s", KEYCHAIN], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return r.stdout.strip() or None if r.returncode == 0 else None
-
-
-def get(path, key):
-    """One API call, as (JSON, headers). Waits out a Backoff or Retry-After, as the API asks."""
-    base = os.environ.get("UMP_ZOTERO_API") or API
-    for attempt in range(4):
-        req = urllib.request.Request(base + path, headers={"Zotero-API-Version": "3", "Zotero-API-Key": key})
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                body, headers = json.loads(r.read().decode() or "null"), r.headers
-            wait = headers.get("Backoff")
-            if wait:
-                time.sleep(min(float(wait), 60))
-            return body, headers
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 503) and attempt < 3:
-                time.sleep(min(float(e.headers.get("Retry-After") or 5), 60))
-                continue
-            raise
-
-
-def pages(path, key):
-    """Every item of a list the API gives 100 at a time."""
-    start = 0
-    while True:
-        sep = "&" if "?" in path else "?"
-        items, headers = get(f"{path}{sep}limit=100&start={start}", key)
-        yield from items or []
-        start += len(items or [])
-        if not items or start >= int(headers.get("Total-Results") or 0):
-            return
-
-
-def from_api(key, w):
-    """(library id, its name, mine?) -> its items, as the API's data objects with who added each."""
-    info, _ = get("/keys/current", key)
-    user = info.get("userID")
-    access = info.get("access") or {}
-    libraries = []
-    if (access.get("user") or {}).get("library"):
-        libraries.append(("user", f"/users/{user}", "My Library"))
-    groups = access.get("groups") or {}
-    if groups:
-        names = {}
-        try:
-            names = {str(g["id"]): (g.get("data") or {}).get("name") for g in pages(f"/users/{user}/groups", key)}
-        except urllib.error.HTTPError:
-            pass  # a key that reads groups but can't list them: their ids name them
-        ids = list(names) if "all" in groups else [g for g in groups if (groups[g] or {}).get("library")]
-        libraries += [(f"group:{g}", f"/groups/{g}", names.get(g) or f"Zotero group {g}") for g in ids]
-    out = []
-    for lib, path, name in libraries:
-        try:
-            collections = {c["key"]: (c.get("data") or {}).get("name") for c in pages(f"{path}/collections", key)}
-            items = []
-            for it in pages(f"{path}/items", key):
-                d = dict(it.get("data") or {})
-                by = ((it.get("meta") or {}).get("createdByUser") or {})
-                d["_by"] = by.get("username") if lib != "user" else None
-                d["_mine"] = lib == "user" or (user is not None and by.get("id") == user)
-                items.append(d)
-        except urllib.error.HTTPError as e:
-            w.notes.setdefault("not_read", {})[lib] = f"HTTP {e.code}"
-            continue
-        out.append((lib, name, collections, items))
-    return out
 
 
 # ---------------------------------------------------------------- the app's database
@@ -123,7 +33,8 @@ def data_dir():
 
 
 def from_app(db):
-    """The same as from_api, from zotero.sqlite: items in the API's shape, the trash left out."""
+    """(library id, its name, its collections, its items) for each library in zotero.sqlite: items in the shape of
+    Zotero's API (its data objects), the trash left out."""
     con = connect(snapshot_sqlite(db, "zotero/zotero.sqlite"))
     have = {r[0] for r in con.execute("select name from sqlite_master")}
     types = "itemTypesCombined" if "itemTypesCombined" in have else "itemTypes"
@@ -195,7 +106,7 @@ def person(c):
 
 
 def zotero_time(s):
-    """Zotero's times: ISO (the API) or "2024-01-13 10:00:00", UTC (the app's database)."""
+    """Zotero's times: "2024-01-13 10:00:00", UTC, in the app's database (or ISO already)."""
     if not s:
         return None
     s = str(s)
@@ -248,13 +159,6 @@ def write(w, lib, name, collections, items):
 
 def main():
     with Writer("zotero", AVENUE) as w:
-        key = api_key()
-        if key:
-            try:
-                for lib in from_api(key, w):
-                    write(w, *lib)
-            except (urllib.error.URLError, OSError, ValueError) as e:  # offline, a key revoked: what was read before stays
-                w.notes["api"] = f"not read: {getattr(e, 'code', None) or type(e).__name__}"
         db = os.path.join(data_dir(), "zotero.sqlite")
         if os.path.exists(db):
             try:

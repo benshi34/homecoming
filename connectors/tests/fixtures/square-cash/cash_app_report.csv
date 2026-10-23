@@ -1,0 +1,2 @@
+Transaction ID,Date,Transaction Type,Currency,Amount,Fee,Net Amount,Asset Type,Asset Price,Asset Amount,Status,Notes,Name of sender/receiver,Account
+abc123,2024-11-03 14:05:09 EST,Sent P2P,USD,-$12.00,$0,-$12.00,,,,,Lunch,Sam Ortiz,Your Cash

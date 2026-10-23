@@ -1,0 +1,5 @@
+
+Transactions
+User,Riley Park,00000000aaaaaaaa
+ID,Timestamp,Transaction Type,Asset,Quantity Transacted,Price Currency,Price at Transaction,Subtotal,Total (inclusive of fees and/or spread),Fees and/or Spread,Notes
+65f0c0ffee0000000000abcd,2025-01-15 14:05:09 UTC,Buy,BTC,0.0005,USD,$95000.00,$47.50,$49.49,$1.99,Bought 0.0005 BTC for 49.49 USD

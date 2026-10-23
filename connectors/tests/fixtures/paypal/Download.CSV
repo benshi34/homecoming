@@ -1,0 +1,4 @@
+﻿"Date","Time","TimeZone","Name","Type","Status","Currency","Gross","Fee","Net","From Email Address","To Email Address","Transaction ID","Item Title","Item ID","Reference Txn ID","Receipt ID","Balance","Note"
+"03/14/2025","09:05:11","PDT","Example Shop","Express Checkout Payment","Completed","USD","-24.99","0.00","-24.99","riley@example.com","shop@example.com","1AB23456CD789012E","Lighthouse poster","","","","-24.99",""
+"03/14/2025","09:05:11","PDT","","Bank Deposit to PP Account ","Pending","USD","24.99","0.00","24.99","","riley@example.com","9ZY87654XW321098V","Lighthouse poster","","1AB23456CD789012E","","0.00",""
+"04/02/2025","18:20:44","PDT","Sam Ortiz","General Payment","Completed","USD","10.00","-0.59","9.41","sam@example.com","riley@example.com","3CD45678EF901234G","","","","","9.41","Thanks for dinner"

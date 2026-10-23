@@ -195,7 +195,8 @@ export const CATALOG: Source[] = [
   { id: 'notion_local', name: 'Notion (desktop app)', group: 'mac', connector: 'notion_local', produces: ['notion'],
     blurb: 'Pages the Notion app has cached on this Mac, with exact edit times.' },
   { id: 'zotero', name: 'Zotero', group: 'mac', connector: 'zotero', produces: ['zotero'],
-    blurb: 'The papers and pages you saved in Zotero, your notes on them and your highlights in their PDFs. From the Zotero app on this Mac, and from zotero.org with an API key (your library and your groups).' },
+    blurb: 'The papers and pages you saved in Zotero, your notes on them and your highlights in their PDFs, from the Zotero app on this Mac: your library and your groups.',
+    knownGaps: ['Only what the Zotero app on this Mac has. A library kept only on zotero.org comes in once the app has synced it here.'] },
   { id: 'documents', name: 'Documents', group: 'mac', connector: 'documents', produces: ['documents'],
     blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
@@ -569,6 +570,8 @@ export const IMPORT_PARSER_SOURCES: Record<string, string[]> = {
   // Exports read with a mapping Claude wrote (connectors/mapped_exports.py): services you added. main.ts adds
   // those, and adds them to the catch-alls below, when it attributes an import's errors.
   mapped_exports: [],
+  // Fitbit's series by the minute, a record a day: in Takeout, or in a Fitbit download you added (main.ts adds those).
+  fitbit_days: ['google_takeout'],
   // Catch-alls: structured files and media in any export that no parser above read (imports.py).
   other_data: ['google_takeout', 'discord', 'x', 'linkedin', 'instagram', 'facebook', 'notion'],
   other_files: ['google_takeout', 'discord', 'x', 'instagram', 'facebook', 'notion'],

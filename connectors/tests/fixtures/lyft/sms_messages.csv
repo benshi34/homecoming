@@ -1,0 +1,3 @@
+message_delivered_at,message_body,to_user_role,from_user_role
+2024-05-01 17:05:12.123 UTC,I'm by the blue door,driver,passenger
+2024-05-01 17:06:30.456 UTC,On my way!,passenger,driver

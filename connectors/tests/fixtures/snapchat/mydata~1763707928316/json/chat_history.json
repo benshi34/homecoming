@@ -1,0 +1,9 @@
+{
+  "jordan.example": [
+    {"From": "jordan.example", "Media Type": "TEXT", "Created": "2024-01-20 06:33:05 UTC", "Content": "see you at 7", "Conversation Title": null, "IsSender": false, "Created(microseconds)": 1705732385472, "IsSaved": false, "Media IDs": ""},
+    {"From": "riley.p", "Media Type": "TEXT", "Created": "2024-01-20 06:35:12 UTC", "Content": "on my way", "Conversation Title": null, "IsSender": true, "Created(microseconds)": 1705732512000, "IsSaved": true, "Media IDs": ""}
+  ],
+  "0b9e2c1a-1111-2222-3333-444455556666": [
+    {"From": "riley.p", "Media Type": "MEDIA", "Created": "2024-02-01 12:00:00 UTC", "Content": "", "Conversation Title": "Weekend Plans", "IsSender": true, "Created(microseconds)": 1706788800000, "IsSaved": true, "Media IDs": "b~xyz | b~Gabc"}
+  ]
+}

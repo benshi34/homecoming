@@ -1,0 +1,16 @@
+{
+  "service": "Trello",
+  "version": 1,
+  "items": [
+    {"describe": "Cards on your boards", "file": "*.json", "path": "cards", "kind": "note", "time": "dateLastActivity", "title": "name",
+     "text": ["name", "desc"], "url": "url", "id": "id", "thread": "@root.id", "thread_name": "@root.name"},
+    {"describe": "Comments on cards", "file": "*.json", "path": "actions", "where": {"type": ["commentCard"]}, "kind": "comment", "time": "date",
+     "title": "data.card.name", "text": ["data.text"], "author": "memberCreator.fullName", "id": "id",
+     "thread": "data.card.id", "thread_name": "data.card.name"},
+    {"describe": "Other things done on your boards", "file": "*.json", "path": "actions", "unless": {"type": ["commentCard"]}, "kind": "event",
+     "time": "date", "title": "data.card.name", "text": ["type", "data.card.name", "data.list.name"], "author": "memberCreator.fullName", "id": "id",
+     "thread": "@root.id", "thread_name": "@root.name"},
+    {"describe": "Checklists", "file": "*.json", "path": "checklists", "kind": "note", "title": "name", "text": ["name"], "id": "id",
+     "thread": "@root.id", "thread_name": "@root.name"}
+  ]
+}

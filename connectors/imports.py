@@ -30,6 +30,7 @@ Formats are auto-detected from file names / columns, so exports can be dropped i
     anything else ... pdf/docx/pptx/pages/md/txt/html/ipynb -> imported_documents (e.g. Drive, Notion export)
 """
 
+import bisect
 import collections
 import csv
 import ctypes
@@ -37,6 +38,7 @@ import hashlib
 import html
 import io
 import json
+import math
 import os
 import posixpath
 import re
@@ -3790,6 +3792,447 @@ def notion_export(es, W, used):
                                    text=text[:200_000], meta={"path": rel(e.path)})
 
 
+# Fitbit's series by the reading: a minute's steps, distance, calories or floors, heart rate every few seconds, blood
+# oxygen and skin temperature through the night, a run's pace by the second, in files of a day to a month named by the day
+# they start. Years of them are millions of readings: each series is read as one record a day. Three kinds of file, all
+# checked against a real Takeout (2025) that has the three for the same minutes:
+# - the JSON series, [{"dateTime": "MM/DD/YY HH:MM:SS", "value": …}] (heart rate's value {bpm, confidence}), in the
+#   account archive's Physical Activity/ (MyFitbitData/<you>/) and Takeout's Global Export Data/ (Takeout/Fitbit/, Google
+#   Health/ since the rename); heartrate-… in older archives. Steps, distance (cm) and heart rate in UTC; calories and
+#   altitude (feet) in the person's time.
+# - Google's CSVs, Physical Activity_GoogleData/<family>_<date>.csv (in a folder a family since 2026): a timestamp in UTC,
+#   the values (as the readme beside each says), and since 2026 a data source: the phone, the band and Health Connect each
+#   count the same steps, so a day's total is the device that counted the most, never their sum.
+# - the older CSVs beside them: Minute SpO2 (UTC), Heart Rate Variability Details (UTC, with no zone mark), Wrist
+#   Temperature (against your usual), Active Zone Minutes and estimated_oxygen_variation (the person's time).
+# The same day in two kinds (the JSON and Google's CSV of the same minutes) is read from the one first below.
+_DAY = r"(?P<start>\d{4}-\d\d-\d\d)"
+_JSON, _GOOGLE, _OLD = r"(^|/)(?:Physical Activity|Global Export Data)/", r"(^|/)Physical Activity_GoogleData/(?:[^/]+/)?", r"(^|/)(?:[^/]+/)?"
+FITBIT_FILES = [(re.compile(where + name + r"$"), series, clock, cols, by) for where, name, series, clock, cols, by in (
+    # where, its name, its series, its clock, its values as (column, part, times what), the column its readings group by
+    (_JSON, rf"steps-{_DAY}\.json", "steps", "utc", [("value", "steps", 1)], None),
+    (_JSON, rf"distance-{_DAY}\.json", "distance", "utc", [("value", "distance_cm", 1)], None),
+    (_JSON, rf"calories-{_DAY}\.json", "calories", "local", [("value", "calories", 1)], None),
+    (_JSON, rf"altitude-{_DAY}\.json", "altitude", "local", [("value", "feet", 1)], None),
+    (_JSON, rf"heart_?rate-{_DAY}\.json", "heart_rate", "utc", [("value.bpm", "bpm", 1)], None),
+    (_GOOGLE, rf"steps_{_DAY}\.csv", "steps", "utc", [("steps", "steps", 1)], None),
+    (_GOOGLE, rf"distance_{_DAY}\.csv", "distance", "utc", [("distance", "distance_cm", 100)], None),  # metres
+    (_GOOGLE, rf"calories_{_DAY}\.csv", "calories", "utc", [("calories", "calories", 1)], None),
+    (_GOOGLE, rf"altitude_{_DAY}\.csv", "altitude", "utc", [("gain", "feet", 1 / 304.8)], None),  # millimetres
+    (_GOOGLE, rf"heart_rate_{_DAY}\.csv", "heart_rate", "utc", [("beats per minute", "bpm", 1)], None),
+    (_GOOGLE, rf"floors_{_DAY}\.csv", "floors", "utc", [("floors", "floors", 1)], None),
+    (_GOOGLE, rf"active_minutes_{_DAY}\.csv", "active_minutes", "utc",
+     [("light", "light", 1), ("moderate", "moderate", 1), ("very", "very", 1)], None),
+    (_GOOGLE, rf"active_zone_minutes_{_DAY}\.csv", "active_zone_minutes", "utc", [("total minutes", "minutes", 1)], "heart rate zone"),
+    (_OLD, rf"Active Zone Minutes - {_DAY}\.csv", "active_zone_minutes", "local", [("total_minutes", "minutes", 1)], "heart_zone_id"),
+    (_GOOGLE, rf"calories_in_heart_rate_zone_{_DAY}\.csv", "calories_in_heart_rate_zone", "utc", [("kcal", "calories", 1)],
+     "heart rate zone type"),
+    (_GOOGLE, rf"activity_level_{_DAY}\.csv", "activity_level", "utc", [], "level"),
+    (_GOOGLE, rf"live_pace_{_DAY}\.csv", "live_pace", "utc",
+     [("steps", "steps", 1), ("distance millimeters", "distance_mm", 1), ("altitude gain millimeters", "altitude_gain_mm", 1)], None),
+    (_GOOGLE, rf"cardio_load_{_DAY}\.csv", "cardio_load", "utc",
+     [("total", "total", 1), ("workout", "workout", 1), ("background", "background", 1)], None),
+    (_GOOGLE, rf"body_temperature_{_DAY}\.csv", "body_temperature", "utc", [("temperature celsius", "celsius", 1)], None),
+    (_OLD, rf"Wrist Temperature - {_DAY}\.csv", "wrist_temperature", "local", [("temperature", "celsius", 1)], None),
+    (_GOOGLE, rf"oxygen_saturation_{_DAY}\.csv", "oxygen_saturation", "utc", [("oxygen saturation percentage", "percent", 1)], None),
+    (_OLD, rf"Minute SpO2 - {_DAY}\.csv", "oxygen_saturation", "utc", [("value", "percent", 1)], None),
+    (_OLD, rf"estimated_oxygen_variation-{_DAY}\.csv", "oxygen_variation", "local", [("infrared to red signal ratio", "ratio", 1)], None),
+    (_OLD, rf"Heart Rate Variability Details - {_DAY}\.csv", "heart_rate_variability", "utc",
+     [("rmssd", "rmssd_ms", 1), ("coverage", "coverage", 1), ("low_frequency", "low_frequency", 1), ("high_frequency", "high_frequency", 1)], None),
+    (_GOOGLE, rf"heart_rate_variability_{_DAY}\.csv", "heart_rate_variability", "utc",
+     [("root mean square of successive differences milliseconds", "rmssd_ms", 1), ("standard deviation milliseconds", "deviation_ms", 1)], None),
+    (_GOOGLE, rf"speed_{_DAY}\.csv", "speed", "utc", [("speed", "km_per_hour", 1)], None),
+    (_GOOGLE, rf"cadence_{_DAY}\.csv", "cadence", "utc", [("steps per minute", "steps_per_minute", 1)], None),
+    (_GOOGLE, rf"stride_length_{_DAY}\.csv", "stride_length", "utc", [("stride length", "cm", 1)], None),
+    (_GOOGLE, rf"ground_contact_time_{_DAY}\.csv", "ground_contact_time", "utc", [("ground contact time", "ms", 1)], None),
+    (_GOOGLE, rf"vertical_oscillation_{_DAY}\.csv", "vertical_oscillation", "utc", [("vertical oscillation", "cm", 1)], None),
+    (_GOOGLE, rf"vertical_ratio_{_DAY}\.csv", "vertical_ratio", "utc", [("vertical ratio", "ratio", 1)], None),
+)]
+FITBIT_NAME = re.compile(r"\d{4}-\d\d-\d\d\.(json|csv)$")  # what every one of them ends with
+# A day of each series: its title, how its readings add up ("sum": the day's total; "range": its lowest, average and
+# highest; "count": how many of each value, a minute each), its parts as (part, how one is written, its unit), the first
+# the day's figure, and for a series grouped by a column, what its groups are.
+FITBIT_KINDS = {
+    "steps": ("Steps", "sum", [("steps", "{:,.0f}", "")]),
+    "distance": ("Distance", "sum", [("distance_cm", lambda v: f"{v / 1e5:.2f}", " km")]),
+    "calories": ("Calories burned", "sum", [("calories", "{:,.0f}", "")]),
+    "altitude": ("Altitude climbed", "sum", [("feet", lambda v: f"{v:,.0f} ft ({v * 0.3048:,.0f} m)", "")]),
+    "floors": ("Floors climbed", "sum", [("floors", "{:,.0f}", "")]),
+    "heart_rate": ("Heart rate", "range", [("bpm", "{:.0f}", " bpm")]),
+    "active_minutes": ("Active minutes", "sum", [("light", "{:,.0f}", " light"), ("moderate", "{:,.0f}", " moderate"),
+                                                 ("very", "{:,.0f}", " very active")]),
+    "active_zone_minutes": ("Active Zone Minutes", "sum", [("minutes", "{:,.0f}", "")], "zones"),
+    "calories_in_heart_rate_zone": ("Calories burned by heart rate zone", "sum", [("calories", "{:,.0f}", "")], "zones"),
+    "activity_level": ("Activity level", "count", [], "levels"),
+    "live_pace": ("Live pace", "sum", [("steps", "{:,.0f}", " steps"), ("distance_mm", lambda v: f"{v / 1e6:.2f}", " km"),
+                                       ("altitude_gain_mm", lambda v: f"{v / 1e3:,.0f}", " m climbed")]),
+    "cardio_load": ("Cardio load", "sum", [("total", "{:,.1f}", " in all"), ("workout", "{:,.1f}", " in workouts"),
+                                           ("background", "{:,.1f}", " outside them")]),
+    "body_temperature": ("Skin temperature", "range", [("celsius", "{:.1f}", " °C")]),
+    "wrist_temperature": ("Wrist temperature against your usual", "range", [("celsius", "{:+.1f}", " °C")]),
+    "oxygen_saturation": ("Blood oxygen", "range", [("percent", "{:.0f}", "%")]),
+    "oxygen_variation": ("Estimated oxygen variation", "range", [("ratio", "{:g}", "")]),
+    "heart_rate_variability": ("Heart rate variability", "range", [("rmssd_ms", "{:.0f}", " ms"), ("coverage", "{:g}", ""),
+                                                                   ("low_frequency", "{:g}", ""), ("high_frequency", "{:g}", ""),
+                                                                   ("deviation_ms", "{:g}", " ms")]),
+    "speed": ("Speed", "range", [("km_per_hour", "{:.1f}", " km/h")]),
+    "cadence": ("Cadence", "range", [("steps_per_minute", "{:.0f}", " steps a minute")]),
+    "stride_length": ("Stride length", "range", [("cm", "{:.0f}", " cm")]),
+    "ground_contact_time": ("Ground contact time", "range", [("ms", "{:.0f}", " ms")]),
+    "vertical_oscillation": ("Vertical oscillation", "range", [("cm", "{:.1f}", " cm")]),
+    "vertical_ratio": ("Vertical ratio", "range", [("ratio", "{:.1f}", "")]),
+}
+FITBIT_WRITTEN = set()  # the sources fitbit_days wrote this run
+# Fitbit's routes: gps_location_<date>.csv in Google's Physical Activity_GoogleData/ (timestamp in UTC, latitude,
+# longitude, altitude in metres: a point a second while a workout records its route, a file a UTC day; since 2026 maybe
+# a data source too). Read as Location History's trips are, one record a route: where it started and ended, how far,
+# how long, and its path thinned to FITBIT_PATH points (the rest counted, as Location History's raw points are). A route
+# is a run of points without a gap of FITBIT_GAP, or a workout's (Health Fitness Data_GoogleData/UserExercises_*.csv,
+# else Global Export Data/exercise-*.json) with its pauses, named by it.
+FITBIT_ROUTE = re.compile(_GOOGLE + rf"gps_location_{_DAY}\.csv$")
+FITBIT_GAP, FITBIT_PATH, FITBIT_SLACK = 300, 200, timedelta(minutes=2)  # seconds; points kept; a workout's ends, give or take
+
+
+def fitbit_reads(path):
+    """Whether fitbit_days reads a file: a series' (fitbit_file) or a route's."""
+    return bool(fitbit_file(path) or FITBIT_ROUTE.search(path))
+
+
+def fitbit_file(path):
+    """The FITBIT_FILES entry a path is (its index, and the match), or None."""
+    if FITBIT_NAME.search(path):
+        for i, (pattern, *_) in enumerate(FITBIT_FILES):
+            if m := pattern.search(path):
+                return i, m
+    return None
+
+
+def fitbit_zone(es, roots):
+    """The time zone in a Fitbit export's Profile.csv (Personal & Account/ in the archive, Your Profile/ in Takeout), next
+    to where its series are; None when there's none that names one."""
+    for e in es:
+        if e.name != "Profile.csv" or not any(e.path.startswith(r) and e.path.count("/") == r.count("/") + 1 for r in roots):
+            continue
+        try:
+            row = next(csv.DictReader(io.StringIO(e.text())), {})
+            zone = next(v for k, v in row.items() if k and k.strip().lower() in ("timezone", "time_zone") and v and v.strip())
+            return ZoneInfo(zone.strip())
+        except Exception:  # noqa: BLE001 - no zone, or not one this Mac knows ("null", an offset): the next, or this Mac's
+            continue
+    return None
+
+
+def fitbit_day(t, zone):
+    """The day a reading at t ("03/01/24 08:00:00", or ISO) is on: its own date when zone is False (a series written in
+    the person's time), else t's UTC time on the clock of zone (None: this Mac's)."""
+    m = re.match(r"(\d\d)/(\d\d)/(\d\d) (\d\d):(\d\d)", t) or re.match(r"(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)", t)
+    if not m:
+        return None
+    y, mo, d = (2000 + int(m[3]), int(m[1]), int(m[2])) if "/" in m[0] else (int(m[1]), int(m[2]), int(m[3]))
+    try:
+        dt = datetime(y, mo, d, int(m[4]), int(m[5]))
+    except ValueError:
+        return None
+    if zone is False:
+        return dt.date().isoformat()
+    dt = dt.replace(tzinfo=timezone.utc)
+    return (dt.astimezone(zone) if zone else dt.astimezone()).date().isoformat()
+
+
+def fitbit_readings(e, cols, by):
+    """(time, device, group, values) for each reading in a Fitbit series file: a JSON list of {dateTime, value}, or a CSV
+    whose first column is the time (and, since 2026, with a data source). A value that isn't a number is None."""
+    def number(v):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return v if v == v else None  # NaN
+    if e.path.lower().endswith(".json"):
+        def at(it, path):
+            for k in path.split("."):
+                it = it.get(k) if isinstance(it, dict) else None
+            return it
+        items = e.json()
+        for it in items if isinstance(items, list) else []:
+            if isinstance(it, dict):
+                yield str(it.get("dateTime") or ""), "", None, [number(at(it, c)) for c, _, _ in cols]
+        return
+    with e.open() as f:  # read as it goes: a month of heart rate every 5 s is half a million rows
+        rows = csv.reader(io.TextIOWrapper(f, encoding="utf-8-sig", errors="replace", newline=""))
+        at = {h.strip().lower(): i for i, h in enumerate(next(rows, []))}
+        idx, dev, grp = [at.get(c) for c, _, _ in cols], at.get("data source"), at.get(by) if by else None
+        for r in rows:
+            if r:
+                cell = lambda i: r[i].strip() if i is not None and i < len(r) else None  # noqa: E731
+                yield r[0].strip(), cell(dev) or "", cell(grp) if by else None, [number(cell(i)) for i in idx]
+
+
+def fitbit_add(parts, part, v):
+    a = parts.get(part)
+    if a is None:
+        parts[part] = [v, v, 1, v]  # lowest, total, readings, highest
+    else:
+        a[0], a[1], a[2], a[3] = min(a[0], v), a[1] + v, a[2] + 1, max(a[3], v)
+
+
+def fitbit_merge(into, parts, groups):
+    for k, a in parts.items():
+        b = into[0].get(k)
+        into[0][k] = list(a) if b is None else [min(a[0], b[0]), a[1] + b[1], a[2] + b[2], max(a[3], b[3])]
+    for k, a in groups.items():
+        b = into[1].setdefault(k, [0.0, 0])
+        b[0], b[1] = b[0] + a[0], b[1] + a[1]
+
+
+def fitbit_text(series, day, devs):
+    """A day's record of one series: its text and meta, from what each device recorded ({device: [parts, groups]})."""
+    title, how, parts, *group = FITBIT_KINDS[series]
+    d = datetime.fromisoformat(day)
+    on = f"{title} on {d:%A} {d.day} {d:%B %Y}: "
+    num = lambda x: int(x) if x == int(x) else round(x, 1)  # noqa: E731
+    say = lambda fmt, v: fmt(v) if callable(fmt) else fmt.format(v)  # noqa: E731
+    if how == "range":  # every device's readings together
+        both = [{}, {}]
+        for p, g in devs.values():
+            fitbit_merge(both, p, g)
+        p = both[0]
+        key, fmt, unit = parts[0]
+        low, total, n, high = p[key]
+        span = say(fmt, low) + unit if low == high else f"{say(fmt, low)} to {say(fmt, high)}{unit}, {say(fmt, total / n)} on average"
+        return on + f"{span} ({n:,} reading{'s' if n != 1 else ''})", \
+            {f"{key}_lowest": num(low), f"{key}_average": num(total / n), f"{key}_highest": num(high), "readings": n,
+             **{f"{k}_average": num(p[k][1] / p[k][2]) for k, _, _ in parts[1:] if k in p}}
+    # A total, or a count: the device that recorded the most. Each counts the same steps: added up, they'd be twice them.
+    size = {dev: p[parts[0][0]][1] if parts else sum(c for _, c in g.values()) for dev, (p, g) in devs.items()
+            if not parts or parts[0][0] in p}
+    best = max(size, key=lambda dev: (size[dev], dev))
+    p, g = devs[best]
+    if how == "count":
+        order = sorted(g.items(), key=lambda kv: (-kv[1][1], kv[0]))
+        text = on + ", ".join(f"{c:,} {'minutes ' if i == 0 else ''}{k}" for i, (k, (_, c)) in enumerate(order))
+        meta, fmt, unit = {group[0]: {k: c for k, (_, c) in order}, "readings": sum(c for _, c in g.values())}, "{:,.0f}", " minutes"
+    else:
+        text = on + ", ".join(say(fmt, p[k][1]) + unit for k, fmt, unit in parts if k in p)
+        meta, (_, fmt, unit) = {k: num(p[k][1]) for k, _, _ in parts if k in p}, parts[0]
+        if g:
+            order = sorted(g.items(), key=lambda kv: (-kv[1][0], kv[0]))
+            text += " (" + ", ".join(f"{k} {say(fmt, t)}" for k, (t, _) in order) + ")"
+            meta[group[0]] = {k: num(t) for k, (t, _) in order}
+        meta["readings"] = p[parts[0][0]][2]
+    if len(size) > 1:
+        text += " (by device: " + ", ".join(f"{dev or 'unnamed'} {say(fmt, v)}{unit}" for dev, v in
+                                           sorted(size.items(), key=lambda kv: (-kv[1], kv[0]))) + ")"
+        meta["by_device"] = {dev or "unnamed": num(v) for dev, v in size.items()}
+    return text, {**meta, **({"device": best} if best else {})}
+
+
+def fitbit_workouts(es, root):
+    """(start, end, name, id) of the workouts in the Fitbit export at root, in UTC, by start: UserExercises' rows, else the
+    exercise logs' (startTime, UTC, and duration in ms)."""
+    def utc(v):  # "2025-07-19 20:32:00+0000"
+        return datetime.fromisoformat(re.sub(r"([+-]\d\d)(\d\d)$", r"\1:\2", str(v or "").strip())).astimezone(timezone.utc)
+    rows, logs = [], []
+    for e in es:
+        rest = e.path[len(root):] if e.path.startswith(root) else ""
+        try:
+            if re.fullmatch(r"Health Fitness Data_GoogleData/UserExercises_[^/]*\.csv", rest):
+                for r in csv.DictReader(io.StringIO(e.text())):
+                    try:
+                        rows.append((utc(r.get("exercise_start")), utc(r.get("exercise_end")), r.get("activity_name") or None, r.get("exercise_id")))
+                    except (TypeError, ValueError):
+                        continue
+            elif re.fullmatch(r"Global Export Data/exercise-\d+\.json", rest):
+                for it in e.json():
+                    try:
+                        a = datetime.strptime(it["startTime"], "%m/%d/%y %H:%M:%S").replace(tzinfo=timezone.utc)
+                        logs.append((a, a + timedelta(milliseconds=float(it.get("duration") or 0)), it.get("activityName"), str(it.get("logId"))))
+                    except (KeyError, TypeError, ValueError, AttributeError):
+                        continue
+        except Exception:  # noqa: BLE001 - a file of them that can't be read: its routes aren't named, that's all
+            continue
+    return sorted(w for w in rows or logs if w[1] >= w[0])
+
+
+def fitbit_meters(a, b):
+    """The distance between two (lat, lon) points, in metres (haversine)."""
+    la1, lo1, la2, lo2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
+    return 2 * 6371008.8 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def fitbit_routes(es, used, mapped):
+    """(source, record, points not kept) for every route in the Fitbit exports' gps_location files (FITBIT_ROUTE)."""
+    groups, mine = {}, set()  # (source, export root) -> {the day a file starts: its largest copy}
+    for e in es:
+        m = FITBIT_ROUTE.search(e.path)
+        if not m or e.path in used and e.path not in mine:
+            continue
+        mine.add(e.path)
+        key = leftover_source(e)
+        source = key if key in mapped else f"{key}_other"
+        AV.setdefault(source, other_avenue(key))
+        files = groups.setdefault((source, e.path[:m.end(1)]), {})
+        if m["start"] not in files or (e.size or 0) > (files[m["start"]].size or 0):
+            files[m["start"]] = e
+    used.update(mine)
+    for (source, root), files in sorted(groups.items()):
+        workouts = fitbit_workouts(es, root)
+        starts = [w[0] for w in workouts]
+
+        def workout(t, now=None):
+            """The workout t is in: the one the route is on while it lasts (they overlap: an auto-detected walk in a
+            workout), else one it's in, else one it's within FITBIT_SLACK of."""
+            if now and now[0] - FITBIT_SLACK <= t <= now[1] + FITBIT_SLACK:
+                return now
+            i = bisect.bisect_right(starts, t + FITBIT_SLACK) - 1
+            near = [workouts[j] for j in range(i, max(-1, i - 4), -1) if workouts[j][1] + FITBIT_SLACK >= t]
+            return next((x for x in near if x[0] <= t <= x[1]), near[0] if near else None)
+
+        def route(r):
+            (t0, *p0), (t1, *p1) = r["points"][0], r["points"][-1]
+            n = len(r["points"])  # FITBIT_PATH of them, evenly through it, its first and last among them
+            path = [r["points"][round(i * (n - 1) / (min(n, FITBIT_PATH) - 1))] for i in range(min(n, FITBIT_PATH))] if n > 1 else r["points"]
+            secs, alts = (t1 - t0).total_seconds(), [p[3] for p in r["points"] if p[3] is not None]
+            name = r["workout"][2] if r["workout"] and r["workout"][2] else "Route"
+            long = f"{secs // 3600:.0f} h {secs % 3600 // 60:.0f} min" if secs >= 3600 else f"{secs // 60:.0f} min" if secs >= 60 else f"{secs:.0f} s"
+            far = f"{r['meters'] / 1000:.1f} km" if r["meters"] >= 100 else f"{r['meters']:.0f} m"
+            at = lambda p: f"{p[0]:.5f}°, {p[1]:.5f}°"  # noqa: E731
+            meta = {"activity": name if r["workout"] else None, "workout": r["workout"][3] if r["workout"] else None,
+                    "meters": round(r["meters"]), "seconds": round(secs), "from": at(p0), "to": at(p1), "points": len(r["points"]),
+                    "path": [[round(p[1], 5), round(p[2], 5)] for p in path], "altitude_lowest": min(alts, default=None),
+                    "altitude_highest": max(alts, default=None), "device": r["device"] or None}
+            return source, {"id": f"fitbit:route:{iso(t0)}" + (f":{r['device']}" if r["device"] else ""), "kind": "trip",
+                            "ts": iso(t0), "ts_end": iso(t1), "author": "me", "is_me": True, "title": name,
+                            "text": f"{name}: {far} in {long}, from {at(p0)} to {at(p1)}",
+                            "meta": {k: v for k, v in meta.items() if v is not None}}, len(r["points"]) - len(path)
+        on = {}  # device -> the route it's on
+        for start in sorted(files):
+            e = files[start]
+            try:  # a day's file is small (a point a second while recording): read whole, so a damaged one adds nothing
+                with e.open() as f:
+                    rows = list(csv.reader(io.TextIOWrapper(f, encoding="utf-8-sig", errors="replace", newline="")))
+            except Exception as x:  # noqa: BLE001 - damaged or cut short: said so, the catch-all has it, the others are read
+                unreadable(e, x, used)
+                continue
+            at = {h.strip().lower(): i for i, h in enumerate(rows[0] if rows else [])}
+            la, lo, al, dv = at.get("latitude"), at.get("longitude"), at.get("altitude"), at.get("data source")
+            for row in rows[1:]:
+                cell = lambda i: row[i].strip() if i is not None and i < len(row) else None  # noqa: E731
+                try:
+                    t = datetime.fromisoformat(row[0].strip().replace("Z", "+00:00")).astimezone(timezone.utc)
+                    lat, lon = float(cell(la)), float(cell(lo))
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180) or abs(lat) < 0.01 and abs(lon) < 0.01:  # nowhere, or 0,0
+                    continue
+                try:
+                    alt = float(cell(al))
+                except (TypeError, ValueError):
+                    alt = None
+                dev = cell(dv) or ""
+                r = on.get(dev)
+                w = workout(t, r and r["workout"])
+                if r and t <= r["points"][-1][0]:  # the same point again (a file's edge), or one out of order
+                    continue
+                if r and ((t - r["points"][-1][0]).total_seconds() > FITBIT_GAP and not (w and w is r["workout"]) or
+                          w and r["workout"] and w is not r["workout"]):  # a gap, outside one workout; or the next workout
+                    yield route(r)
+                    r = None
+                if r is None:
+                    r = on[dev] = {"points": [], "meters": 0.0, "workout": w, "device": dev}
+                elif w and not r["workout"]:
+                    r["workout"] = w
+                if r["points"]:
+                    last = r["points"][-1]
+                    d = fitbit_meters((last[1], last[2]), (lat, lon))
+                    if d <= 100 * max(1.0, (t - last[0]).total_seconds()):  # faster than 360 km/h: GPS gone astray
+                        r["meters"] += d
+                r["points"].append((t, lat, lon, alt))
+        for r in on.values():
+            yield route(r)
+
+
+def fitbit_days(es, W, used):
+    """Fitbit's series by the reading (FITBIT_FILES), each as one record a day: the day's total steps, distance, calories,
+    floors and the like, or its lowest, average and highest heart rate, temperature, blood oxygen and the like. A day is
+    the person's: the UTC series are put on the clock of the zone in the export's Profile.csv (this Mac's when it has
+    none), daylight saving and all. And each route a record (fitbit_routes). The records go where the export's others do:
+    to the source of the folder's mapping (the Fitbit mapping the app ships), else to the catch-all's, <export>_other."""
+    FITBIT_WRITTEN.clear()
+    mapped = {folder_key(f) for f in load_mappings()}
+    groups, roots, mine = {}, {}, set()  # (kind, source) -> {the day a file starts: its largest copy}; source -> folders
+    for e in es:
+        found = fitbit_file(e.path)
+        if not found or e.path in used and e.path not in mine:
+            continue
+        (kind, m), key = found, leftover_source(e)
+        mine.add(e.path)
+        source = key if key in mapped else f"{key}_other"
+        AV.setdefault(source, other_avenue(key))
+        files = groups.setdefault((kind, source), {})
+        if m["start"] not in files or (e.size or 0) > (files[m["start"]].size or 0):  # the same batch in two exports: once
+            files[m["start"]] = e
+        roots.setdefault(source, set()).add(e.path[:m.end(1)])
+    used.update(mine)
+    zones = {source: fitbit_zone(es, r) for source, r in roots.items()}
+    days = {}  # (source, series) -> {day: (the kind of file it's read from, {device: [parts, groups]})}
+    for (kind, source), files in sorted(groups.items()):  # in FITBIT_FILES' order: the first kind with a day has it
+        _, series, clock, cols, by = FITBIT_FILES[kind]
+        zone, have, seen = zones[source] if clock == "utc" else False, days.setdefault((source, series), {}), set()
+        for start in sorted(files):
+            e = files[start]
+            before, seen, on, got = seen, set(), {}, {}
+            try:
+                for t, dev, grp, vals in fitbit_readings(e, cols, by):
+                    if cols and (vals[0] is None or series == "heart_rate" and vals[0] <= 0):
+                        continue
+                    key = hash((t, dev, grp))  # (a number, not the strings: a month's readings are half a million)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if key in before:  # a batch repeats the readings at its edge that the one before it has
+                        continue
+                    minute = t[:14] if t[2:3] == "/" else t[:16]  # a minute's readings are on one day: worked out once
+                    if minute not in on:
+                        on[minute] = fitbit_day(t, zone)
+                    if on[minute] is None:
+                        continue
+                    parts, sums = got.setdefault(on[minute], {}).setdefault(dev, [{}, {}])
+                    for (_, part, times), v in zip(cols, vals):
+                        if v is not None:
+                            fitbit_add(parts, part, v * times)
+                    if by:
+                        g = sums.setdefault(re.sub(r"^heart rate zone type ", "", (grp or "unnamed").replace("_", " ").lower()), [0.0, 0])
+                        g[0], g[1] = g[0] + (vals[0] * cols[0][2] if cols else 1), g[1] + 1
+            except Exception as x:  # noqa: BLE001 - damaged or cut short: said so, the catch-all has it, the others are read
+                unreadable(e, x, used)
+                seen = before
+                continue
+            for day, devs in got.items():
+                if have.setdefault(day, (kind, {}))[0] == kind:  # else an earlier kind of file has this day
+                    for dev, (parts, sums) in devs.items():
+                        fitbit_merge(have[day][1].setdefault(dev, [{}, {}]), parts, sums)
+    for source, rec, dropped in fitbit_routes(es, used, mapped):
+        w = W(source)
+        FITBIT_WRITTEN.add(source)
+        if not w.has(rec["id"]):
+            w.add(**rec)
+        if dropped:
+            w.notes["raw_points_not_kept"] = w.notes.get("raw_points_not_kept", 0) + dropped
+    for (source, series), have in sorted(days.items()):
+        if not have:
+            continue
+        w = W(source)
+        FITBIT_WRITTEN.add(source)
+        for day, (kind, devs) in sorted(have.items()):
+            text, meta = fitbit_text(series, day, devs)
+            zone = zones[source] if FITBIT_FILES[kind][2] == "utc" else None
+            w.add(id=f"fitbit:{series}:{day}", kind="activity", ts=f"{day}T00:00:00", author="me", is_me=True,
+                  title=FITBIT_KINDS[series][0], text=text,
+                  meta={"series": series, "day": day, **meta, **({"zone": zone.key} if zone else {})})
+
+
 # Takeout's index of what's in it (archive_browser.html; Archiv_Übersicht.html in German): the one page at its top.
 TAKEOUT_INDEX = re.compile(r"(^|/)Takeout(?: \d+)?/[^/]+\.html?$|(^|/)archive_browser\.html$")
 
@@ -3859,6 +4302,10 @@ FILE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mp4", ".mov", "
 def leftover_source(e):
     top = PurePosixPath(e.origin).parts[0] if e.origin else "imports"
     return re.sub(r"\W+", "_", "takeout" if top.lower().startswith("takeout") else top.lower())
+
+
+def other_avenue(key):
+    return f"Files in the {key} export that no specific parser reads, one record per item. {DROP}"
 
 
 def flat(x, prefix="", out=None):
@@ -3941,7 +4388,7 @@ def other_data(es, W, used):
                     and not any(re.search(LEFTOVER_IDS, str(k), re.I) for k in l[0])]
             plain = len(lists) == 1 and len(lists[0][0]) == 1
             groups = [(" / ".join(p[-2:]), "" if plain else "/".join(p) + "#", [flat(it) for it in l]) for p, l in keep]
-            taken = tuple(".".join(p) + "." for p, _ in lists)
+            taken = tuple(".".join(p) + "." for p, _ in lists) + tuple(m + "." for m in MAPPED.get(e.path, ()))
             rest = [(k, v) for k, v in flat(items) if not (k + ".").startswith(taken)]
             if rest:
                 groups.append((stem.replace("_", " "), "rest#" if lists else "", [rest]))
@@ -3952,7 +4399,7 @@ def other_data(es, W, used):
             continue
         source = f"{leftover_source(e)}_other"
         LEFTOVER_WRITTEN.add(source)
-        AV.setdefault(source, f"Files in the {leftover_source(e)} export that no specific parser reads, one record per item. {DROP}")
+        AV.setdefault(source, other_avenue(leftover_source(e)))
         used.add(e.path)
         w = W(source)
         for title, prefix, group in groups:
@@ -3989,7 +4436,7 @@ def other_files(es, W, used):
 
 
 PARSERS = [ai_exports, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, zoom,
-           notion_export, mapped_exports, other_documents, other_data, other_files]
+           notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
 
 
 def main():
@@ -4045,11 +4492,12 @@ def unclaimed_ledger(es, used):
     manifest = read_manifest()
     for source, m in list(manifest.items()):
         parser = str(m.get("parser", "")) if isinstance(m, dict) else ""
-        # A catch-all this run didn't write, or a mapping's source whose mapping was taken out (its files are the
-        # catch-all's again: kept, they'd be counted twice). And a source of this Mac's or the iPhone's that a mailbox
-        # replaced, before mail_source (one in imports/mail/ was read as Mail's mail): its file holds only that mailbox,
-        # now read as <folder>_mail, so it goes, and its own connector reads it whole again.
+        # A catch-all (or one Fitbit's days went to) this run didn't write, or a mapping's source whose mapping was taken
+        # out (its files are the catch-all's again: kept, they'd be counted twice). And a source of this Mac's or the
+        # iPhone's that a mailbox replaced, before mail_source (one in imports/mail/ was read as Mail's mail): its file
+        # holds only that mailbox, now read as <folder>_mail, so it goes, and its own connector reads it whole again.
         if parser.endswith((":other_data", ":other_files")) and source not in LEFTOVER_WRITTEN or \
+                parser.endswith(":fitbit_days") and source not in FITBIT_WRITTEN or \
                 parser.endswith(":mapped_exports") and source not in MAPPED_SOURCES or \
                 parser == "connectors/imports.py:google" and (source in OTHER_SOURCES or source.startswith("phone_")):
             (CORPUS / "normalized" / f"{source}.jsonl").unlink(missing_ok=True)

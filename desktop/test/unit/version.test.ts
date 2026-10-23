@@ -67,12 +67,10 @@ test('the build, in words', () => {
   assert.equal(buildNote({ version: '0.3.0', commit: null, date: null }), '', 'a copy from Download ZIP, built before builds were stamped');
 });
 
-// The version is package.json's: the changelog's newest entry is it, and the README names it.
+// The version is package.json's: the changelog's newest entry is it. (The README doesn't name it any more.)
 test('CHANGELOG.md has this version, newest first, in words', () => {
   const r = parseChangelog(fs.readFileSync(path.join(REPO, 'CHANGELOG.md'), 'utf8'));
   assert.equal(r[0]?.version, VERSION, `CHANGELOG.md's newest entry should be desktop/package.json's version (${VERSION})`);
   for (let i = 1; i < r.length; i++) assert.ok(compareVersions(r[i - 1].version, r[i].version) > 0, `${r[i - 1].version} before ${r[i].version}`);
   for (const x of r) assert.ok(x.bullets.length || x.text.length, `${x.version} says what's new`);
-  const [major, minor] = VERSION.split('.');
-  assert.match(fs.readFileSync(path.join(REPO, 'README.md'), 'utf8'), new RegExp(`\\bversion ${major}\\.${minor}\\b`), 'README.md says which version this is');
 });

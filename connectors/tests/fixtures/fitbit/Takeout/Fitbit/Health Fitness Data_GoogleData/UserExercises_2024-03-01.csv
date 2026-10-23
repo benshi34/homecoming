@@ -1,0 +1,2 @@
+exercise_id,exercise_start,exercise_end,utc_offset,exercise_created,exercise_last_updated,activity_name,log_type
+1001,2024-03-05 00:15:00+0000,2024-03-05 00:40:00+0000,+05:30,2024-03-05 00:40:10+0000,2024-03-05 00:40:10+0000,Outdoor Walk,TRACKER

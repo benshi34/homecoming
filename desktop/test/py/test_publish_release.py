@@ -89,6 +89,20 @@ class PublishRelease(unittest.TestCase):
     def assertNotPushed(self):
         self.assertEqual(git(self.public, "rev-parse", "main"), self.published, "never pushed")
 
+    def community(self, rel, text, subject):
+        """A pull request merged on GitHub since the last release: someone else's commit, then GitHub's merge of it."""
+        seed = self.tmp / "seed"
+        git(seed, "switch", "-q", "-c", f"pr-{len(git(seed, 'branch').splitlines())}")
+        write(seed, rel, text)
+        git(seed, "add", "-A")
+        subprocess.run(["git", "-C", str(seed), "commit", "-q", "-m", subject], check=True, env={**ENV, "GIT_AUTHOR_NAME": "Kit Rowan"})
+        h = git(seed, "rev-parse", "HEAD")
+        git(seed, "switch", "-q", "main")
+        git(seed, "merge", "-q", "--no-ff", "-m", f"Merge pull request from kit/{subject}", h)
+        git(seed, "push", "-q", "origin", "main")
+        self.published = git(self.public, "rev-parse", "main")
+        return h
+
     def test_ready_to_push_and_not_pushed(self):
         (self.private / "README.md").write_text("uncommitted, and not published\n")
         code, out, clone = self.publish()
@@ -130,6 +144,41 @@ class PublishRelease(unittest.TestCase):
         code, out, _ = self.publish()
         self.assertEqual(code, 1)
         self.assertIn('CHANGELOG.md doesn\'t say what\'s new in 0.4.0: add a "## 0.4.0" section', out)
+        self.assertNotPushed()
+
+    def test_what_was_merged_on_github_stops_it(self):
+        self.community("connectors/signal.py", "# reads Signal\n", "Signal on this Mac")
+        code, out, clone = self.publish()
+        self.assertEqual(code, 1, out)
+        self.assertRegex(out, r"has 1 commit since its last release \(\w{7}\) that private main doesn't, and publishing would undo")
+        self.assertRegex(out, r"\n  \w{7} Kit Rowan: Signal on this Mac\n")
+        self.assertIn("Nothing was published", out)
+        self.assertEqual(git(clone, "rev-parse", "HEAD"), self.published, "nothing committed")
+        self.assertEqual((clone / "connectors/signal.py").read_text(), "# reads Signal\n", "nor copied over")
+        self.assertNotPushed()
+
+    def test_what_was_merged_on_github_and_brought_over_goes_on(self):
+        picked = self.community("connectors/signal.py", "# reads Signal\n", "Signal on this Mac")
+        self.community("connectors/dates.py", "# slashes too\n", "Dates with slashes")
+        git(self.private, "fetch", "-q", str(self.public), "main")
+        git(self.private, "cherry-pick", "-x", picked)
+        write(self.private, "connectors/signal.py", "# reads Signal\n# and its calls\n")  # changed again since: -x still names it
+        write(self.private, "connectors/dates.py", "# slashes too\n")  # brought over by hand: its change is in the copy
+        git(self.private, "add", "-A")
+        git(self.private, "commit", "-q", "-m", "Signal's calls, and dates with slashes")
+        code, out, clone = self.publish()
+        self.assertEqual(code, 0, out)
+        self.assertEqual((clone / "connectors/signal.py").read_text(), "# reads Signal\n# and its calls\n")
+        self.assertEqual(git(clone, "rev-parse", "HEAD~1"), self.published, "one commit on top of the merges")
+        self.assertNotIn("undoing", out)
+        self.assertNotPushed()
+
+    def test_one_left_out_on_purpose_is_undone(self):
+        h = self.community("connectors/signal.py", "# reads Signal\n", "Signal on this Mac")
+        code, out, clone = self.publish("--skip-public", h[:9].upper())
+        self.assertEqual(code, 0, out)
+        self.assertRegex(out, r"undoing, as --skip-public says: \w{7} Kit Rowan: Signal on this Mac")
+        self.assertFalse((clone / "connectors/signal.py").exists(), "left out of private main, so the release takes it away")
         self.assertNotPushed()
 
     def test_failing_tests_stop_it_before_the_commit(self):

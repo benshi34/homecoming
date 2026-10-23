@@ -1,0 +1,16 @@
+{
+  "service": "Tinder",
+  "version": 1,
+  "items": [
+    {"describe": "Messages you sent", "file": "data.json", "path": "Messages.*.messages", "kind": "message", "time": "sent_date",
+     "formats": ["%a, %d %b %Y %H:%M:%S GMT"], "zone": "UTC", "text": ["message", "type", "fixed_height"], "author": "me",
+     "thread": "@up.match_id", "thread_name": "@up.match_id"},
+    {"describe": "Days you opened Tinder", "file": "data.json", "path": "Usage.app_opens.*", "kind": "activity", "time": "@key", "author": "me"},
+    {"describe": "Profiles you liked, by day", "file": "data.json", "path": "Usage.swipes_likes.*", "kind": "activity", "time": "@key", "author": "me"},
+    {"describe": "Profiles you passed on, by day", "file": "data.json", "path": "Usage.swipes_passes.*", "kind": "activity", "time": "@key", "author": "me"},
+    {"describe": "Super Likes you sent, by day", "file": "data.json", "path": "Usage.superlikes.*", "kind": "activity", "time": "@key", "author": "me"},
+    {"describe": "Your matches, by day", "file": "data.json", "path": "Usage.matches.*", "kind": "activity", "time": "@key", "author": "me"},
+    {"describe": "Messages you sent, by day", "file": "data.json", "path": "Usage.messages_sent.*", "kind": "activity", "time": "@key", "author": "me"},
+    {"describe": "Messages you got, by day", "file": "data.json", "path": "Usage.messages_received.*", "kind": "activity", "time": "@key", "author": "me"}
+  ]
+}

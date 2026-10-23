@@ -1,0 +1,4 @@
+timestamp,message,action,match_id
+2026-02-01 20:05:40,"Hi,
+there",sent,c0ffee01
+2026-02-01 20:07:00,Hello!,received,c0ffee01

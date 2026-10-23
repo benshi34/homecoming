@@ -1,0 +1,15 @@
+{
+  "service": "Fitbit",
+  "version": 1,
+  "items": [
+    {"describe": "Your workouts and walks", "file": "exercise-*.json", "kind": "activity", "time": "startTime", "formats": ["%m/%d/%y %H:%M:%S"],
+     "zone": "UTC", "id": "logId", "author": "me"},
+    {"describe": "How you slept", "file": "sleep-*.json", "kind": "activity", "time": "startTime", "id": "logId", "author": "me"},
+    {"describe": "Your sleep scores", "file": "sleep_score.csv", "kind": "activity", "time": "timestamp",
+     "id": "sleep_log_entry_id", "author": "me"},
+    {"describe": "Your weight", "file": "weight-*.json", "kind": "record", "time": "date", "formats": ["%m/%d/%y"],
+     "id": "logId", "author": "me"},
+    {"describe": "Your resting heart rate", "file": "resting_heart_rate-*.json", "needs": ["value.date"], "kind": "record", "time": "value.date",
+     "formats": ["%m/%d/%y"], "text": ["value.value"], "author": "me"}
+  ]
+}

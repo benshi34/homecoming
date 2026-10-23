@@ -1,0 +1,32 @@
+{
+  "service": "Trakt",
+  "version": 1,
+  "items": [
+    {"describe": "Films you watched", "file": "*history*.json", "where": {"type": ["movie"]}, "kind": "watch", "time": "watched_at",
+     "title": "movie.title", "text": ["movie.title", "movie.year"], "id": "id", "author": "me"},
+    {"describe": "Episodes you watched", "file": "*history*.json", "unless": {"type": ["movie"]}, "kind": "watch", "time": "watched_at",
+     "title": "show.title", "text": ["show.title", "episode.title"], "id": "id", "author": "me"},
+    {"describe": "Films you rated", "file": "ratings-*.json", "where": {"type": ["movie"]}, "kind": "review", "time": "rated_at",
+     "title": "movie.title", "text": ["movie.title", "movie.year"], "author": "me"},
+    {"describe": "Shows, seasons and episodes you rated", "file": "ratings-*.json", "unless": {"type": ["movie"]}, "kind": "review",
+     "time": "rated_at", "title": "show.title", "text": ["show.title", "episode.title"], "author": "me"},
+    {"describe": "Films on your watchlist", "file": "lists-watchlist*.json", "where": {"type": ["movie"]}, "kind": "saved", "time": "listed_at",
+     "title": "movie.title", "text": ["movie.title", "movie.year", "notes"], "id": "id", "author": "me"},
+    {"describe": "Shows on your watchlist", "file": "lists-watchlist*.json", "unless": {"type": ["movie"]}, "kind": "saved", "time": "listed_at",
+     "title": "show.title", "text": ["show.title", "episode.title", "notes"], "id": "id", "author": "me"},
+    {"describe": "Films you made favorites", "file": "lists-favorites*.json", "where": {"type": ["movie"]}, "kind": "like", "time": "listed_at",
+     "title": "movie.title", "text": ["movie.title", "movie.year", "notes"], "id": "id", "author": "me"},
+    {"describe": "Shows you made favorites", "file": "lists-favorites*.json", "unless": {"type": ["movie"]}, "kind": "like", "time": "listed_at",
+     "title": "show.title", "text": ["show.title", "notes"], "id": "id", "author": "me"},
+    {"describe": "Films in your lists", "file": "lists-list-*.json", "where": {"type": ["movie"]}, "kind": "saved", "time": "listed_at",
+     "title": "movie.title", "text": ["movie.title", "movie.year", "notes"], "id": "id", "thread": "@file", "thread_name": "@file", "author": "me"},
+    {"describe": "Shows in your lists", "file": "lists-list-*.json", "unless": {"type": ["movie"]}, "kind": "saved", "time": "listed_at",
+     "title": "show.title", "text": ["show.title", "episode.title", "notes"], "id": "id", "thread": "@file", "thread_name": "@file", "author": "me"},
+    {"describe": "Lists you made", "file": "lists-lists.json", "kind": "post", "time": "created_at", "title": "name",
+     "text": ["name", "description"], "url": "share_link", "id": "ids.trakt", "author": "me"},
+    {"describe": "Your comments on films", "file": "comments-*.json", "where": {"type": ["movie"]}, "kind": "comment", "time": "comment.created_at",
+     "title": "movie.title", "text": ["comment.comment"], "id": "comment.id", "author": "me"},
+    {"describe": "Your other comments", "file": "comments-*.json", "unless": {"type": ["movie"]}, "kind": "comment", "time": "comment.created_at",
+     "title": "show.title", "text": ["comment.comment"], "id": "comment.id", "author": "me"}
+  ]
+}

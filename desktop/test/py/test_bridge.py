@@ -634,6 +634,15 @@ class MappingTests(Sandbox):
         self.run_bridge("save-mapping", "wattpad", "--remove")
         self.assertFalse((self.corpus / "mappings/wattpad.json").exists())
 
+    def test_try_leaves_fitbit_series_to_their_own_reader(self):
+        """Fitbit's series by the minute are read a day at a time (imports.fitbit_days) whatever the mapping says: Try
+        Mapping doesn't list them as files nothing reads."""
+        d = self.corpus / "imports/wattpad/MyFitbitData/Riley/Physical Activity"
+        d.mkdir(parents=True)
+        (d / "steps-2024-03-01.json").write_text('[{"dateTime": "03/01/24 08:00:00", "value": "12"}]')
+        t = self.run_bridge("try-mapping", "wattpad", stdin=json.dumps(self.MAPPING))
+        self.assertEqual((t["structured"], t["unmapped"]), (2, []))
+
     def test_try_says_when_ids_repeat(self):
         """A mapping whose id field is the same for many items (a shelf, not a book): Try Mapping says how many would be
         left out, rather than the import failing on them."""
@@ -643,6 +652,14 @@ class MappingTests(Sandbox):
         d.write_text(json.dumps({"data": {"stories": [{"title": "A", "tags": "x"}, {"title": "B", "tags": "x"}, {"title": "C", "tags": "y"}]}}))
         rule = self.run_bridge("try-mapping", "wattpad", stdin=json.dumps(mapping))["rules"][0]
         self.assertEqual((rule["items"], rule["repeats"]), (2, 1))
+
+    def test_try_doesnt_call_overlapping_downloads_repeats(self):
+        """Two bank downloads whose dates overlap: the transactions in both are the same ones (overlap), not a mistake."""
+        shutil.copytree(REPO / "connectors/tests/fixtures/ofx/chase", self.corpus / "imports/chase")
+        mapping = (REPO / "desktop/data/mappings/chase.json").read_text()
+        by = {r["describe"]: r for r in self.run_bridge("try-mapping", "chase", stdin=mapping)["rules"]}
+        bank = by["Your checking and savings activity, from a QFX, QBO or OFX download"]
+        self.assertEqual((bank["items"], bank["repeats"], bank["files"]), (8, 0, 2))
 
 
 class StatsTests(Sandbox):

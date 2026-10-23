@@ -6,6 +6,7 @@ Run: python3 -m unittest discover -s connectors/tests -p 'test_*.py'
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -290,6 +291,31 @@ class MappedExportTests(unittest.TestCase):
         self.assertNotIn('goodreads', m)
         self.assertFalse((self.corpus / 'normalized/goodreads.jsonl').exists(), 'not kept beside the catch-all\'s copy')
         self.assertEqual(len(self.records('goodreads_other')), 2, 'its file is the catch-all\'s again')
+
+    def test_overlapping_bank_downloads_are_kept_once_and_not_counted_as_a_mistake(self):
+        here = Path(__file__).resolve().parent
+        (self.corpus / 'imports/chase').mkdir()
+        for f in (here / 'fixtures/ofx/chase').iterdir():
+            (self.corpus / 'imports/chase' / f.name).write_bytes(f.read_bytes())
+        (self.corpus / 'mappings/chase.json').write_bytes((here.parents[1] / 'desktop/data/mappings/chase.json').read_bytes())
+        for run in (1, 2):
+            m = self.imports_run()
+            recs = self.records('chase')
+            self.assertEqual(len(recs), 10, f'run {run}: March and April overlap by two; each once')
+            self.assertEqual(len({r['id'] for r in recs}), 10)
+            self.assertEqual(m['chase']['notes'], {'in_another_file': 2}, 'not same_id_as_another: no mistake to report')
+
+    def test_a_broken_file_in_a_mapped_export_stops_no_other(self):
+        """A download too deep to read, or a CSV field longer than csv allows: skipped, and every other export is read."""
+        here = Path(__file__).resolve().parent
+        (self.corpus / 'imports/chase').mkdir()
+        (self.corpus / 'imports/chase/Chase1234_Activity_20260331.QFX').write_text('<OFX>' + '<AGG>\n' * 200_000)
+        (self.corpus / 'imports/chase/Chase1234_Activity_20260415.CSV').write_text('Details,Posting Date,Description\n"' + 'x' * 200_000 + '",03/01/2026,A\n')
+        shutil.copy(here / 'fixtures/ofx/chase/Chase5678_Activity_20260331.QBO', self.corpus / 'imports/chase')
+        (self.corpus / 'mappings/chase.json').write_bytes((here.parents[1] / 'desktop/data/mappings/chase.json').read_bytes())
+        self.imports_run()
+        self.assertEqual([r['title'] for r in self.records('letterboxd')], ['Film 1'], 'another export: read')
+        self.assertTrue(self.records('chase'), 'the same export\'s good download: read')
 
 
 class LeftoverDateTests(unittest.TestCase):

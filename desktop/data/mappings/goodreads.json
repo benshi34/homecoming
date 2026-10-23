@@ -1,0 +1,19 @@
+{
+  "service": "Goodreads",
+  "version": 1,
+  "items": [
+    {"describe": "Books you read", "file": "goodreads_library_export*.csv", "where": {"Exclusive Shelf": ["read"]}, "kind": "read",
+     "time": ["Date Read", "Date Added"], "formats": ["%Y/%m/%d"], "title": "Title", "text": ["Title", "Author", "My Review", "Private Notes"],
+     "id": "Book Id", "author": "me"},
+    {"describe": "Books you're reading", "file": "goodreads_library_export*.csv", "where": {"Exclusive Shelf": ["currently-reading"]}, "kind": "read",
+     "time": "Date Added", "formats": ["%Y/%m/%d"], "title": "Title", "text": ["Title", "Author", "My Review", "Private Notes"],
+     "id": "Book Id", "author": "me"},
+    {"describe": "Books you want to read", "file": "goodreads_library_export*.csv", "where": {"Exclusive Shelf": ["to-read"]}, "kind": "saved",
+     "time": "Date Added", "formats": ["%Y/%m/%d"], "title": "Title", "text": ["Title", "Author", "Private Notes"],
+     "id": "Book Id", "author": "me"},
+    {"describe": "Books on your other shelves", "file": "goodreads_library_export*.csv",
+     "unless": {"Exclusive Shelf": ["read", "currently-reading", "to-read"]}, "kind": "saved",
+     "time": ["Date Read", "Date Added"], "formats": ["%Y/%m/%d"], "title": "Title",
+     "text": ["Title", "Author", "Exclusive Shelf", "My Review", "Private Notes"], "id": "Book Id", "author": "me"}
+  ]
+}
