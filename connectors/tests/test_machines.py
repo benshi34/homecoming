@@ -173,6 +173,7 @@ esac""")
         lines = {l[2:].split()[0]: l for l in out.splitlines() if l.strip()}
         self.assertIn("tailscale   darwin, python3", lines["box"].lower())
         self.assertNotIn("phone", out, "a phone on the network isn't a machine to read")
+        self.assertNotIn("funnel", out, "nor Tailscale's own relay")
         self.assertRegex(out, r"old .*offline")
         self.assertIn("not checked", lines["lab"], "an ssh host isn't signed in to (it may send a phone prompt)")
         self.assertNotIn("*.corp", out)

@@ -75,9 +75,7 @@ MAC_PATHS = {
     "ai_coding": [HOME / ".claude/projects", HOME / ".codex/sessions", LIB / "Application Support/Cursor/User/globalStorage/state.vscdb",
                   LIB / "Application Support/Code/User/workspaceStorage"],
     "editor_history": [LIB / f"Application Support/{e}/User/History" for e in ("Code", "Cursor", "VSCodium", "Windsurf")],
-    # somewhere other machines could be: Tailscale, Lima or OrbStack VMs, or one named in machines.json (ssh config hosts aren't tried by themselves)
-    "machines": [LIB / "Containers/io.tailscale.ipn.macos", LIB / "Group Containers/W5364U7YZB.io.tailscale.ipn.macsys",
-                 HOME / ".lima", HOME / ".orbstack", CORPUS / "machines.json"],
+    "machines": [CORPUS / "machines.json"],  # or your own machines on Tailscale, or VMs: machines.anywhere_to_look, at probe time
     "setup": [HOME / ".zshrc", HOME / ".gitconfig", HOME / ".claude/settings.json", HOME / ".config", HOME / "Library/LaunchAgents"],
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
@@ -362,6 +360,12 @@ def probe():
     for name, paths in MAC_PATHS.items():
         states = [look(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
         sources[name] = "ok" if "ok" in states else "blocked" if "blocked" in states else "absent"
+    if sources.get("machines") != "ok":
+        try:
+            import machines
+            sources["machines"] = "ok" if machines.anywhere_to_look() else "absent"
+        except Exception:  # Tailscale misbehaving stops no other source's probe
+            pass
     from common import git_bin
     if not git_bin():  # commits can't be read without git
         sources["git_commits"] = "absent"

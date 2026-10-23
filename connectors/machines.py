@@ -29,7 +29,7 @@ import tarfile
 import time
 from pathlib import Path
 
-from common import CORPUS, HOME, NORM, RAW, read_manifest, write_manifest
+from common import CORPUS, HOME, NORM, RAW, read_manifest, tailscale_devices, tailscale_status, write_manifest
 
 HERE = Path(__file__).resolve().parent
 CONFIG = CORPUS / "machines.json"
@@ -88,26 +88,16 @@ def prefix(machine):
 # ---------------------------------------------------------------- finding them
 
 def tailscale_peers():
-    for cmd in (["tailscale", "status", "--json"], ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "status", "--json"]):
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if r.returncode == 0:
-            try:
-                d = json.loads(r.stdout)
-            except ValueError:
-                return []
-            out = []
-            for p in (d.get("Peer") or {}).values():
-                name = (p.get("DNSName") or "").split(".")[0] or p.get("HostName")
-                if name and p.get("HostName") != "funnel-ingress-node" and (p.get("OS") or "") in ("macOS", "linux", ""):
-                    # yours: signed in as you, not shared into your network by someone else (nor a coworker's)
-                    mine = not p.get("ShareeNode") and p.get("UserID") is not None and p.get("UserID") == (d.get("Self") or {}).get("UserID")
-                    out.append({"name": name, "via": "tailscale", "os": p.get("OS"), "online": bool(p.get("Online")),
-                                "addresses": p.get("TailscaleIPs") or [], "mine": mine})
-            return out
-    return []
+    d = tailscale_status()
+    out = []
+    for p in tailscale_devices(d):
+        name = (p.get("DNSName") or "").split(".")[0] or p.get("HostName")
+        if name and p.get("OS") in ("macOS", "linux"):
+            # yours: signed in as you, not shared into your network by someone else (nor a coworker's)
+            mine = not p.get("ShareeNode") and p.get("UserID") is not None and p.get("UserID") == (d.get("Self") or {}).get("UserID")
+            out.append({"name": name, "via": "tailscale", "os": p.get("OS"), "online": bool(p.get("Online")),
+                        "addresses": p.get("TailscaleIPs") or [], "mine": mine})
+    return out
 
 
 def vms():
@@ -129,6 +119,14 @@ def vms():
                 continue
             out.append({"name": name, "via": "VM on this Mac", "online": running, "mine": True, **({} if running else {"why": "stopped"})})
     return out
+
+
+def anywhere_to_look():
+    """Whether this Mac could have other machines to read, cheaply (the app asks every minute): your own Mac or Linux
+    machine on Tailscale, Lima or OrbStack set up (their folders), or machines.json naming one."""
+    if config().get("read") or (HOME / ".lima").is_dir() or (HOME / ".orbstack").is_dir():
+        return True
+    return any(p["mine"] for p in tailscale_peers())
 
 
 def ssh_hosts():

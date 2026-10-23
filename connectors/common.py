@@ -461,3 +461,26 @@ class Writer:
         if self.notes:
             print(f"[{self.source}] notes: {self.notes}")
         return False
+
+
+def tailscale_status():
+    """Tailscale's view of your network (`tailscale status --json`), from its command on PATH or the one inside the app
+    wherever it's installed (UMP_APPLICATIONS in the tests); None without Tailscale or signed out."""
+    roots = (Path(os.environ.get("UMP_APPLICATIONS") or "/Applications"), HOME / "Applications")
+    for cmd in (shutil.which("tailscale"), *(str(r / "Tailscale.app/Contents/MacOS/Tailscale") for r in roots)):
+        if not cmd or not os.path.exists(cmd):
+            continue
+        try:
+            r = subprocess.run([cmd, "status", "--json"], capture_output=True, text=True, timeout=20)
+            d = json.loads(r.stdout) if r.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            continue
+        if isinstance(d, dict):
+            return d
+    return None
+
+
+def tailscale_devices(status):
+    """The devices on a Tailscale network: its peers with an operating system. (Tailscale's own nodes, the Funnel
+    ingress relays shared into every network that uses Funnel, have none.)"""
+    return [p for p in ((status or {}).get("Peer") or {}).values() if isinstance(p, dict) and p.get("OS")]
