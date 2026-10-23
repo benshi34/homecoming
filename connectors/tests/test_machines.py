@@ -38,6 +38,7 @@ host=""; skip=""; for a; do
 done
 echo "$host" >> "{self.root}/ssh.log"
 case "$host" in
+  box2) HOME="{self.root}/box2" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" sh -c "$last";;
   box|theirs|coworker) HOME="{self.box}" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" sh -c "$last";;
   nopython) exit 127;;
   *) echo "Permission denied (publickey)." >&2; exit 255;;
@@ -75,6 +76,14 @@ esac""")
         self.assertEqual((m["nopython"], m["lab"]), ({"not_read": "no python3 there"}, {"not_read": "couldn't sign in without asking"}))
         self.assertEqual(list(self.tmp.iterdir()), [], "nothing left on the machine")
         self.assertFalse((self.box / "corpus").exists())
+
+    def test_two_machines_read_at_once_keep_what_both_have_once(self):
+        (self.root / "box2").mkdir()
+        (self.root / "box2/.zsh_history").write_text(": 1767265200:0;make train\n: 1767265300:0;htop\n")
+        self.py("import machines; machines.main()", UMP_MACHINES="box box2", UMP_MACHINES_AT_ONCE="2")
+        texts = sorted(r["text"] for m in ("box", "box2") for r in self.records(f"shell_history@{m}"))
+        self.assertEqual(texts, ["git status", "htop", "make train"])
+        self.assertEqual(list(self.tmp.iterdir()), [])
 
     def test_what_a_machine_no_longer_has_is_kept(self):
         self.py("import machines; machines.main()", UMP_MACHINES="box")

@@ -320,9 +320,10 @@ def merge(machine, source, data):
     return n, same
 
 
-def read(machine):
+def read(machine, fetched=None):
+    """A machine's records into normalized/: fetched there (or given, fetched already), then merged here."""
     t = time.time()
-    files, log = fetch(machine, connectors(machine))
+    files, log = fetched if fetched is not None else fetch(machine, connectors(machine))
     (RAW / "machines").mkdir(parents=True, exist_ok=True)
     (RAW / "machines" / f"{machine}.log").write_text(log)
     there = json.loads(files.get("manifest.json") or b"{}")
@@ -343,20 +344,29 @@ def read(machine):
     return {"sources": sources, "seconds": round(time.time() - t)}
 
 
+AT_ONCE = int(os.environ.get("UMP_MACHINES_AT_ONCE") or 3)
+
+
 def main():
     manifest = read_manifest()
     before = (manifest.get("machines") or {}).get("machines") or {}
     entry = {"avenue": __doc__.split("\n\n")[0], "machines": {m: v for m, v in before.items() if m not in chosen()}}
-    for machine in chosen():
-        try:
-            entry["machines"][machine] = read(machine)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as e:
-            entry["machines"][machine] = {"not_read": str(e) if not isinstance(e, subprocess.TimeoutExpired) else "took too long"}
-        # a source not read this time (fewer chosen, or the machine was away) keeps what the last read said of it
-        old = (before.get(machine) or {}).get("sources") or {}
-        if old and "sources" in entry["machines"][machine]:
-            entry["machines"][machine]["sources"] = {**old, **entry["machines"][machine]["sources"]}
-        print(f"[machines] {machine}: {entry['machines'][machine]}")
+    # Read there a few at a time (each is mostly waiting on that machine); merged here one at a time, as each comes
+    # back, so two machines with the same message don't both keep it.
+    with concurrent.futures.ThreadPoolExecutor(AT_ONCE) as pool:
+        started = {pool.submit(lambda m: (time.time(), fetch(m, connectors(m))), m): m for m in chosen()}
+        for done in concurrent.futures.as_completed(started):
+            machine = started[done]
+            try:
+                t, fetched = done.result()
+                entry["machines"][machine] = {**read(machine, fetched), "seconds": round(time.time() - t)}
+            except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as e:
+                entry["machines"][machine] = {"not_read": str(e) if not isinstance(e, subprocess.TimeoutExpired) else "took too long"}
+            # a source not read this time (fewer chosen, or the machine was away) keeps what the last read said of it
+            old = (before.get(machine) or {}).get("sources") or {}
+            if old and "sources" in entry["machines"][machine]:
+                entry["machines"][machine]["sources"] = {**old, **entry["machines"][machine]["sources"]}
+            print(f"[machines] {machine}: {entry['machines'][machine]}", flush=True)
     # A machine no longer chosen keeps what was read from it (taking it out is a choice of its own: delete its files).
     kept = sorted({p.stem.split("@", 1)[1] for p in NORM.glob("*@*.jsonl")} - set(chosen()))
     if kept:
