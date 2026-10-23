@@ -75,6 +75,7 @@ MAC_PATHS = {
     "ai_coding": [HOME / ".claude/projects", HOME / ".codex/sessions", LIB / "Application Support/Cursor/User/globalStorage/state.vscdb",
                   LIB / "Application Support/Code/User/workspaceStorage"],
     "editor_history": [LIB / f"Application Support/{e}/User/History" for e in ("Code", "Cursor", "VSCodium", "Windsurf")],
+    "machines": [HOME / ".ssh/config", CORPUS / "machines.json"],  # and Tailscale's machines (machines.py --find)
     "setup": [HOME / ".zshrc", HOME / ".gitconfig", HOME / ".claude/settings.json", HOME / ".config", HOME / "Library/LaunchAgents"],
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],

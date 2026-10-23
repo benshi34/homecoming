@@ -170,7 +170,10 @@ LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 
 
 def snapshot_sqlite(src, name):
-    """Copy a live SQLite DB into corpus/raw/<name> without disturbing the owning app."""
+    """Copy a live SQLite DB into corpus/raw/<name> without disturbing the owning app. UMP_READ_IN_PLACE (another
+    machine read by machines.py, whose disk may have no room for a copy): the DB itself, opened read-only by connect."""
+    if os.environ.get("UMP_READ_IN_PLACE") == "1":
+        return Path(src)
     src, dst = Path(src), RAW / name
     dst.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm", "-journal"):

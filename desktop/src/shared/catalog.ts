@@ -202,6 +202,9 @@ export const CATALOG: Source[] = [
     blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
     blurb: 'Your commits across every repository under Documents, Desktop and your code folders (Developer, Code, Projects...).' },
+  { id: 'machines', name: 'Your other machines', group: 'mac', connector: 'machines', produces: ['machines'],
+    blurb: 'The same sources from the other Macs and Linux machines you reach over ssh (a Mac mini, a cloud workstation, a server, a Lima or OrbStack VM), kept beside this Mac\'s and marked with the machine each came from. Nothing is installed or left on them, and a message or contact this Mac already has is kept once.',
+    knownGaps: ['Reads only the machines you choose: none until then.', 'Needs python3 on the machine, and ssh that signs in without asking (a key, not a password or phone prompt).', 'On Linux: agent sessions, terminal history, git commits, documents and your setup; the rest are Mac apps.'] },
 
   // ---------------------------------------------------------------- iPhone
   {
