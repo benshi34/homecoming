@@ -18,6 +18,7 @@ the first's: the same id (an iMessage through iCloud, a commit), or the same thi
 a synced browser visit: see fingerprints). Like a source on this Mac, what a machine no longer has is kept."""
 
 import concurrent.futures
+import importlib.util
 import io
 import json
 import os
@@ -194,14 +195,34 @@ def find(with_ssh=False, also=()):
 
 # ---------------------------------------------------------------- reading one
 
+# Packages the connectors use that are plain Python, so they go along (the other machine rarely has them); a compiled
+# one (cryptography, for Signal) can't: built for this Mac, not that machine.
+PURE = ("pypdf", "typing_extensions")
+
+
 def bundle():
-    """These connectors as a gzipped tar: no tests, no vendored phone tools, no caches."""
+    """These connectors as a gzipped tar: no tests, no vendored phone tools, no caches; and PURE's packages that this
+    Python has, in _deps/."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as t:
         for p in sorted(HERE.rglob("*")):
             rel = p.relative_to(HERE)
-            if p.is_file() and rel.parts[0] not in ("tests", "vendor") and "__pycache__" not in rel.parts and p.suffix in (".py", ".txt", ".json"):
+            if p.is_file() and rel.parts[0] not in ("tests", "vendor", "_deps") and "__pycache__" not in rel.parts and p.suffix in (".py", ".txt", ".json"):
                 t.add(p, arcname=f"connectors/{rel}")
+        for name in PURE:
+            try:
+                spec = importlib.util.find_spec(name)
+            except (ImportError, ValueError):
+                spec = None
+            if not spec or not spec.origin:
+                continue
+            where = Path(spec.origin)
+            files = sorted(where.parent.rglob("*.py")) if where.name == "__init__.py" else [where]
+            if where.name == "__init__.py" and any(f.suffix in (".so", ".pyd", ".dylib") for f in where.parent.rglob("*")):
+                continue
+            for f in files:
+                if "__pycache__" not in f.parts:
+                    t.add(f, arcname=f"connectors/_deps/{f.relative_to(where.parent.parent if where.name == '__init__.py' else where.parent)}")
     return buf.getvalue()
 
 
@@ -341,6 +362,11 @@ def read(machine, fetched=None):
             if n or same:
                 sources[source] = {"count": n, **({"also_on_this_mac": same} if same else {}),
                                    **({"notes": there[source]["notes"]} if isinstance(there.get(source), dict) and there[source].get("notes") else {})}
+    if isinstance(there.get("machines"), dict) and there["machines"].get("not_read"):
+        sources["_access"] = {"not_read": there["machines"]["not_read"]}
+    for name, said in there.items():  # one that couldn't run there, and why
+        if isinstance(said, dict) and said.get("not_read") and name not in sources:
+            sources[name] = {"not_read": said["not_read"]}
     return {"sources": sources, "seconds": round(time.time() - t)}
 
 
@@ -363,7 +389,7 @@ def main():
             except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as e:
                 entry["machines"][machine] = {"not_read": str(e) if not isinstance(e, subprocess.TimeoutExpired) else "took too long"}
             # a source not read this time (fewer chosen, or the machine was away) keeps what the last read said of it
-            old = (before.get(machine) or {}).get("sources") or {}
+            old = {k: v for k, v in ((before.get(machine) or {}).get("sources") or {}).items() if k != "_access"}  # this read says
             if old and "sources" in entry["machines"][machine]:
                 entry["machines"][machine]["sources"] = {**old, **entry["machines"][machine]["sources"]}
             print(f"[machines] {machine}: {entry['machines'][machine]}", flush=True)

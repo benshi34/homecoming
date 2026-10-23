@@ -85,6 +85,33 @@ esac""")
         self.assertEqual(texts, ["git status", "htop", "make train"])
         self.assertEqual(list(self.tmp.iterdir()), [])
 
+    def test_plain_python_packages_go_along_and_what_cant_run_there_says_why(self):
+        import io, tarfile
+        sys.path.insert(0, str(CONNECTORS))
+        import machines
+        names = tarfile.open(fileobj=io.BytesIO(machines.bundle())).getnames()
+        try:
+            import pypdf  # noqa: F401
+            self.assertIn("connectors/_deps/pypdf/__init__.py", names)
+        except ImportError:
+            pass
+        self.assertFalse([n for n in names if n.endswith((".so", ".pyd", ".dylib")) or n.startswith("connectors/tests/")])
+        # a connector whose package that machine lacks: a note, not just a traceback in the log
+        self.py("import remote_run; remote_run.main(['no_such_reader'])")
+        said = json.loads((self.corpus / "manifest.json").read_text())["no_such_reader"]
+        self.assertEqual(said, {"not_read": "needs no_such_reader on this machine's Python"})
+
+    @unittest.skipIf(sys.platform != "darwin" or os.geteuid() == 0, "Full Disk Access is a Mac's, and root reads anything")
+    def test_a_mac_without_full_disk_access_for_remote_login_says_so(self):
+        (self.box / "Library/Messages").mkdir(parents=True)
+        db = self.box / "Library/Messages/chat.db"
+        db.write_bytes(b"")
+        db.chmod(0)
+        self.addCleanup(db.chmod, 0o644)
+        self.py("import machines; machines.main()", UMP_MACHINES="box")
+        box = json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]["box"]["sources"]
+        self.assertIn("Full Disk Access for Remote Login", box["_access"]["not_read"])
+
     def test_what_a_machine_no_longer_has_is_kept(self):
         self.py("import machines; machines.main()", UMP_MACHINES="box")
         (self.box / ".zsh_history").write_text(": 1767268800:0;ls\n")
