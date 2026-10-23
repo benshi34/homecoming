@@ -27,6 +27,58 @@ RECTANGLE = """<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
 </dict></plist>"""
 
 
+WARP_PANE = "0123456789abcdef0123456789abcdef"
+S1, S2, S3 = "4ccc0001-0000-4000-8000-000000000000", "4ccc0002-0000-4000-8000-000000000000", "4ccc0003-0000-4000-8000-000000000000"
+C4 = "01a10004-0000-7000-8000-000000000000"
+C1, C2, C3 = "01a10001-0000-7000-8000-000000000000", "01a10002-0000-7000-8000-000000000000", "01a10003-0000-7000-8000-000000000000"
+STARTED = 1767261600  # 2026-01-01 10:00 UTC, when the made-up agents started
+
+
+def processes(home):
+    """Made-up processes for a stand-in ps: (pid, ppid, tty, args, environment)."""
+    return [
+        (100, 1, "??", "/Applications/Warp.app/Contents/MacOS/stable", {}),
+        (101, 100, "ttys001", "-zsh", {"TERM_PROGRAM": "WarpTerminal", "WARP_TERMINAL_SESSION_UUID": WARP_PANE}),
+        (102, 101, "ttys001", "claude --resume", {"TERM_PROGRAM": "WarpTerminal", "WARP_TERMINAL_SESSION_UUID": WARP_PANE}),
+        (103, 102, "ttys001", "node /usr/local/lib/node_modules/@openai/codex/bin/codex exec hi", {"TERM_PROGRAM": "WarpTerminal"}),  # started by the agent
+        (200, 1, "??", "/Applications/Ghostty.app/Contents/MacOS/ghostty", {}),
+        # an iTerm id inherited from where Ghostty was opened isn't Ghostty's pane
+        (202, 200, "ttys002", "claude", {"TERM_PROGRAM": "ghostty", "ITERM_SESSION_ID": "w9t9p9:STALE"}),
+        (203, 200, "ttys003", "claude", {"TERM_PROGRAM": "ghostty"}),
+        (301, 300, "ttys004", "claude", {"TERM_PROGRAM": "tmux", "TMUX_PANE": "%0"}),
+        (400, 1, "??", "/Users/x/.codex/bin/codex app-server", {"TERM_PROGRAM": "ghostty"}),  # a server, in no terminal
+        (401, 1, "ttys005", f"node /usr/local/bin/codex resume {C1}", {"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t0p0:ABC"}),
+        (402, 1, "ttys006", "codex", {"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t1p0:DEF"}),
+        (204, 200, "ttys007", "codex", {"TERM_PROGRAM": "ghostty"}),
+        (500, 1, "??", "/opt/lanes/bin/lane-runner --all", {}),
+        (501, 500, "ttys008", "bash", {}),
+        (502, 501, "ttys008", "claude", {}),  # a runner's agent: no terminal says where it is
+    ]
+
+
+def agent_files(home):
+    (home / ".claude/sessions").mkdir(parents=True)
+    (home / ".claude/projects/-tides").mkdir(parents=True)
+    # rewritten shorter in place: stale bytes after the object
+    (home / ".claude/sessions/102.json").write_text(json.dumps({"pid": 102, "sessionId": S1, "cwd": str(home)}) + '"cwd": "/old"}')
+    (home / ".claude/sessions/202.json").write_text(json.dumps({"pid": 202, "sessionId": S2, "cwd": str(home)}))
+    (home / ".claude/sessions/203.json").write_text(json.dumps({"pid": 203, "sessionId": S3, "cwd": str(home / "tides")}))
+    (home / ".claude/sessions/202.made-up.key").write_text("KEYFILE-NEVER-READ")
+    (home / f".claude/projects/-tides/{S1}.jsonl").write_text(
+        json.dumps({"type": "ai-title", "aiTitle": "Tide chart"}) + "\n" + json.dumps({"type": "custom-title", "customTitle": "Fix the tide chart"}) + "\n")
+    (home / f".claude/projects/-tides/{S2}.jsonl").write_text(json.dumps({"type": "ai-title", "aiTitle": "Moon phases\nand more"}) + "\n")
+    (home / ".codex").mkdir()
+    con = sqlite3.connect(home / ".codex/state_5.sqlite")
+    con.execute("create table threads (id text, cwd text, created_at_ms integer, title text, name text, source text, originator text)")
+    con.executemany("insert into threads values (?, ?, ?, ?, ?, ?, ?)", [
+        (C1, str(home), (STARTED - 86400) * 1000, "Port the tide tables", None, "cli", "codex-tui"),
+        (C2, str(home / "tides"), (STARTED + 2) * 1000, "Reply with exactly: ok", None, "exec", "codex_exec"),  # `codex exec`'s
+        (C3, str(home / "tides"), (STARTED + 3) * 1000, "can you add alerts for low tide", "Tide alerts", "vscode", "codex-tui"),
+        (C4, str(home), (STARTED + 4) * 1000, "make the moon tables", "Moon tables", "cli", "codex-tui")])
+    con.commit()
+    con.close()
+
+
 def warp_db(path):
     path.parent.mkdir(parents=True)
     con = sqlite3.connect(path)
@@ -36,19 +88,22 @@ def warp_db(path):
         CREATE TABLE pane_nodes (id INTEGER, tab_id INTEGER, parent_pane_node_id INTEGER, flex REAL, is_leaf INTEGER);
         CREATE TABLE pane_branches (id INTEGER, pane_node_id INTEGER, horizontal INTEGER);
         CREATE TABLE pane_leaves (pane_node_id INTEGER, kind TEXT, is_focused INTEGER, custom_vertical_tabs_title TEXT);
-        CREATE TABLE terminal_panes (id INTEGER, kind TEXT, cwd TEXT);
+        CREATE TABLE terminal_panes (id INTEGER, kind TEXT, uuid BLOB, cwd TEXT);
         INSERT INTO windows VALUES (1, 1, 1440, 900, 0);
         INSERT INTO tabs VALUES (1, 1, NULL, NULL, NULL, 0), (2, 1, 'servers', NULL, NULL, 1);
         INSERT INTO pane_nodes VALUES (1, 1, NULL, NULL, 1), (2, 2, NULL, NULL, 0), (3, 2, 2, 1.0, 1), (4, 2, 2, 3.0, 1);
         INSERT INTO pane_branches VALUES (1, 2, 1);
         INSERT INTO pane_leaves VALUES (1, 'terminal', 1, NULL), (3, 'terminal', 0, NULL), (4, 'code', 1, NULL);
     """)
-    con.execute("INSERT INTO terminal_panes VALUES (1, 'terminal', ?), (3, 'terminal', ?)", (str(path.parents[6] / "tides"), str(path.parents[6])))
+    con.execute("INSERT INTO terminal_panes VALUES (1, 'terminal', ?, ?), (3, 'terminal', ?, ?)",
+                (bytes.fromhex("11" * 16), str(path.parents[6] / "tides"), bytes.fromhex(WARP_PANE), str(path.parents[6])))
     con.commit()
     con.close()
 
 
 class SetupTests(unittest.TestCase):
+    may_script = "yes"
+
     def setUp(self):
         t = tempfile.TemporaryDirectory()
         self.addCleanup(t.cleanup)
@@ -66,8 +121,28 @@ class SetupTests(unittest.TestCase):
             <key>Label</key><string>com.ada.sync</string><key>ProgramArguments</key><array><string>/usr/bin/true</string></array>
             <key>StartInterval</key><integer>3600</integer></dict></plist>""")
         warp_db(self.home / WARP)
+        agent_files(self.home)
+        procs = processes(self.home)
+        (self.root / "ps.json").write_text(json.dumps(procs))
+        # ps: the list, one's environment (macOS's -E: the command, then it), or when it started
+        self.tool("ps", f"""exec {sys.executable} - "$@" <<'X'
+import json, sys, time
+a = sys.argv[1:]
+procs = json.load(open("{self.root}/ps.json"))
+if "-axwwo" in a:
+    for p, pp, tty, args, env in procs:
+        print(p, pp, tty, args)
+elif "-E" in a:
+    p = int(a[a.index("-p") + 1])
+    print(next(args + "".join(" " + k + "=" + v for k, v in env.items()) for q, _, _, args, env in procs if q == p))
+elif "lstart=" in a:
+    print(time.strftime("%a %b %d %H:%M:%S %Y", time.localtime({STARTED})))
+X""")
+        self.tool("lsof", '[ "$5" = 402 ] && echo "n$HOME/tides"; [ "$5" = 204 ] && echo "n$HOME"; exit 0')
+        self.ghostty("✳ Fix the tide chart", "◐ Moon phases")
+        self.tool("osascript", f'cat "{self.root}/ghostty.txt"')
         self.tool("defaults", f"""case "$2" in com.apple.dock) cat <<'X'\n{DOCK}\nX\n;; com.knollsoft.Rectangle) cat <<'X'\n{RECTANGLE}\nX\n;; *) exit 1;; esac""")
-        self.tool("tmux", "printf 'work\\t0\\teditor\\t5d1e,200x50,0,0\\t0\\t%s/tides\\tnvim\\n' \"$HOME\"")
+        self.tool("tmux", "printf 'work\\t0\\teditor\\t5d1e,200x50,0,0\\t0\\t%s/tides\\tnode\\t%%0\\n' \"$HOME\"")
         self.tool("aerospace", "printf '1\\tGhostty\\n1\\tGhostty\\n2\\tFirefox\\n'")
         self.tool("brew", '[ "$1" = leaves ] && echo ripgrep || echo ghostty')
         self.tool("tailscale", """echo '{"Self": {"HostName": "laptop"}, "Peer": {"a": {"HostName": "box", "OS": "linux", "Online": true}, "b": {"HostName": "funnel-ingress-node"}}}'""")
@@ -83,6 +158,11 @@ class SetupTests(unittest.TestCase):
         self.tool("ssh", f'host=""; for a; do case "$a" in -o) skip=1;; --) ;; *) [ -n "$skip" ] && skip="" && continue; [ -z "$host" ] && host="$a" && continue; cmd="$a";; esac; done\n'
                          f'[ "$host" = box ] || exit 255\nHOME="{self.root}/remote" PATH=/usr/bin:/bin sh -c "{sys.executable} ${{cmd#python3}}"')
 
+    def ghostty(self, mark1, mark2):
+        """What Ghostty answers: one window, a tab of two terminals, titled by the agents in them (with their marks)."""
+        (self.root / "ghostty.txt").write_text(f"1\t1\t{mark1}\t{mark1}\t{self.home}\n1\t1\t{mark1}\t◐ zsh\t{self.home}/tides\n"
+                                               f"1\t2\tMoon tables | home\tMoon tables | home\t{self.home}\n")
+
     def write(self, rel, text):
         p = self.home / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +176,8 @@ class SetupTests(unittest.TestCase):
 
     def run_setup(self, hosts=""):
         env = {k: v for k, v in os.environ.items() if k != "UMP_SETUP_HOSTS"}
-        env.update(HOME=str(self.home), CORPUS_DIR=str(self.corpus), PATH=f"{self.bin}:/usr/bin:/bin", UMP_SETUP_HOSTS=hosts)
+        env.update(HOME=str(self.home), CORPUS_DIR=str(self.corpus), PATH=f"{self.bin}:/usr/bin:/bin", UMP_SETUP_HOSTS=hosts,
+                   UMP_MAY_SCRIPT=json.dumps({"com.mitchellh.ghostty": self.may_script}))
         r = subprocess.run([sys.executable, "-c", "import setup; setup.main()"], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
         recs = [json.loads(l) for l in (self.corpus / "normalized/setup.jsonl").read_text().splitlines()]
@@ -127,8 +208,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(by["defaults:com.knollsoft.Rectangle"]["text"], "gapSize = 8", "an app's choices, not its update checks")
         warp = by["layout:Warp"]
         self.assertEqual(warp["text"], "Window 1: 1440x900, 2 tabs\n  Tab 1\n    terminal ~/tides\n  servers (pinned)\n"
-                                       "    side by side:\n      25% terminal ~\n      75% code")
-        self.assertIn("work:0 editor  [5d1e,200x50,0,0]\n    pane 0: nvim in ~/tides", by["layout:tmux"]["text"])
+                                       "    side by side:\n      25% terminal ~  claude 4ccc0001 \"Fix the tide chart\"\n      75% code")
+        self.assertIn("work:0 editor  [5d1e,200x50,0,0]\n    pane 0: claude in ~/tides", by["layout:tmux"]["text"], "tmux's pane %0: the agent there")
         self.assertEqual(by["layout:AeroSpace"]["text"], "1: Ghostty\n2: Firefox")
         self.assertIn("com.ada.sync: /usr/bin/true (every 3600s)", by["installed:launch_agents"]["text"])
         self.assertEqual(by["installed:brew"]["text"], "Formulae:\nripgrep\nCasks:\nghostty")
@@ -233,6 +314,43 @@ class SetupTests(unittest.TestCase):
         self.write(".ssh/config.d/work", "Host=build\n  HostName build.example.com\n  User ci\n")
         by, _, _ = self.run_setup()
         self.assertEqual(by["machines:ssh"]["text"], "build hostname=build.example.com user=ci\nbox, lab hostname=100.64.0.9")
+
+    def test_the_agent_sessions_in_each_pane(self):
+        by, recs, manifest = self.run_setup()
+        everything = json.dumps(recs)
+        self.assertNotIn("KEYFILE-NEVER-READ", everything)
+        # every agent running in a terminal, once: not the one an agent started, nor a server in no terminal
+        sessions = by["layout:agents"]["meta"]["sessions"]
+        self.assertEqual(sorted((a["terminal"], a.get("session")) for a in sessions), sorted([
+            ("WarpTerminal", S1), ("ghostty", S2), ("ghostty", S3), ("tmux", None), ("iTerm.app", C1), ("iTerm.app", C3), ("ghostty", C4), ("lane-runner", None)]))
+        by_session = {a.get("session"): a for a in sessions}
+        self.assertEqual(by_session[S1]["title"], "Fix the tide chart", "the last custom title, over the AI's")
+        self.assertEqual(by_session[S2]["title"], "Moon phases", "a title's first line")
+        self.assertEqual((by_session[C1]["title"], by_session[C1]["pane"]), ("Port the tide tables", "w0t0p0:ABC"), "codex resume <id>")
+        self.assertEqual(by_session[C3]["title"], "Tide alerts", "a new codex: its terminal conversation (by name), not `codex exec`'s")
+        self.assertNotIn("pane", by_session[S2], "an inherited iTerm id isn't Ghostty's pane")
+        # Warp's split, for a program to rebuild: direction, shares, each pane's folder and agent
+        tab = by["layout:Warp"]["meta"]["layout"][1]
+        self.assertEqual((tab["title"], tab["split"], [c["share"] for c in tab["children"]]), ("servers", "side by side", [0.25, 0.75]))
+        self.assertEqual(tab["children"][0]["agent"], {"tool": "claude", "session": S1, "title": "Fix the tide chart"})
+        # Ghostty: by title (after its mark), then the one left in that folder
+        g = by["layout:Ghostty"]
+        self.assertEqual(g["text"], f'Window 1: 2 tabs\n  Fix the tide chart\n    pane ~  claude 4ccc0002 "Moon phases"\n'
+                                    f'    pane ~/tides  claude 4ccc0003\n  Moon tables | home\n    pane ~  codex 01a10004 "Moon tables"', g["text"])
+
+    def test_an_agent_going_from_idle_to_working_isnt_a_new_layout(self):
+        self.run_setup()
+        self.ghostty("◐ Fix the tide chart", "✳ Moon phases")
+        _, recs, _ = self.run_setup()
+        self.assertEqual(sum(1 for r in recs if r["meta"]["what"] == "layout:Ghostty"), 1)
+
+    def test_ghostty_isnt_asked_when_it_would_put_up_a_dialog(self):
+        self.may_script = "ask"
+        (self.bin / "osascript").write_text(f"#!/bin/sh\ntouch {self.root}/asked\n")
+        by, _, manifest = self.run_setup()
+        self.assertNotIn("layout:Ghostty", by)
+        self.assertFalse((self.root / "asked").exists())
+        self.assertIn("Automation", manifest["notes"]["ghostty"])
 
     def test_one_odd_thing_stops_nothing_else(self):
         (self.home / ".bashrc").write_bytes(b"alias ll='ls -l'\n\xff\xfe not utf-8\n")

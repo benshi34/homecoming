@@ -182,7 +182,7 @@ export const CATALOG: Source[] = [
   { id: 'shell_history', name: 'Terminal history', group: 'mac', connector: 'shell_history', produces: ['shell_history'],
     blurb: 'The commands you typed in Terminal. Passwords, tokens and keys in them are replaced with [redacted].' },
   { id: 'setup', name: 'Your setup', group: 'mac', connector: 'setup', produces: ['setup'],
-    blurb: 'How you have set up this Mac and the tools you work in: terminal, shell, editor, window manager and coding agent configs, the Dock, keyboard and trackpad settings, your Warp, tmux and AeroSpace layouts, the apps and background jobs you installed, and the machines you reach. Each change is kept, with what changed. Keys and tokens in configs are replaced with [redacted].' },
+    blurb: 'How you have set up this Mac and the tools you work in: terminal, shell, editor, window manager and coding agent configs, the Dock, keyboard and trackpad settings, your Warp, Ghostty, tmux and AeroSpace layouts with the Claude Code or Codex session open in each pane, the apps and background jobs you installed, and the machines you reach. Each change is kept, with what changed. Keys and tokens in configs are replaced with [redacted].' },
   { id: 'podcasts', name: 'Podcasts', group: 'mac', connector: 'podcasts', produces: ['podcasts'],
     blurb: 'The shows you follow and the episodes you played in Apple Podcasts.' },
   { id: 'books', name: 'Books', group: 'mac', connector: 'books', produces: ['books'],
