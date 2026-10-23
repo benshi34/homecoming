@@ -7,7 +7,17 @@ python3 connectors/run_all.py            # every Mac connector and export, then 
 python3 connectors/run_all.py imports    # just the exports in corpus/imports/
 python3 connectors/iphone.py             # the iPhone: decrypt the latest Finder backup, our phone parsers, iLEAPP, index
 python3 connectors/rebuild.py            # recompute every source from what's on disk (no downloads/decryption), then index
+python3 connectors/setup.py --layouts    # just the terminal layouts and the agent session in each pane (seconds)
+python3 connectors/schedule.py install   # read on a schedule without the app: layouts every 10m, everything daily
+                                         #   (--layouts-every 5m --all-every 6h, either "off"; status; uninstall)
 ```
+
+`schedule.py` installs a LaunchAgent on a Mac, a systemd user timer on Linux (crontab without systemd), running this
+Python and these connectors on the corpus set at install time. Installing again replaces it. A job skips a run while
+its last is still going or with under 2 GB free where the corpus is, and logs to `raw/schedule/<job>.log`. The
+layouts job doesn't rebuild the index (minutes on a large corpus): its records are in `normalized/setup.jsonl` at once,
+and searchable after the next full read. `setup.py` takes a lock on the corpus, so the two jobs and the app never write
+its file at once.
 
 **What stays out of the corpus, and only this:** data that would compromise privacy or security (passwords, keychain,
 cookies, tokens, SIM and subscriber identifiers, Siri voice samples, Wallet barcodes), other people's data (Venmo's

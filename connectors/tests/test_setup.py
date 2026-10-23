@@ -51,8 +51,9 @@ def processes(home):
         (402, 1, "ttys006", "codex", {"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t1p0:DEF"}),
         (204, 200, "ttys007", "codex", {"TERM_PROGRAM": "ghostty"}),
         (500, 1, "??", "/opt/lanes/bin/lane-runner --all", {}),
-        (501, 500, "ttys008", "bash", {}),
-        (502, 501, "ttys008", "claude", {}),  # a runner's agent: no terminal says where it is
+        (501, 500, "ttys008", "zsh (a shell integration's own terminal)", {}),
+        (503, 501, "ttys009", "bash", {}),
+        (502, 503, "ttys009", "claude", {}),  # a runner's agent: no terminal says where it is
     ]
 
 

@@ -470,10 +470,11 @@ def codex_session(pid, args, cwd, taken):
 
 def owner(pid, rows, ttys):
     """What a process's terminal belongs to when it doesn't say (no TERM_PROGRAM: a multiplexer, a runner of
-    agents): the first ancestor outside that terminal, which made it."""
+    agents): the first ancestor in no terminal, which made the terminals below it (a shell wrapped in a terminal of
+    its own on the way, as some shell integrations do, is passed)."""
     p, seen = rows.get(pid, (0,))[0], 0
-    while p in rows and seen < 50:
-        if ttys.get(p) != ttys.get(pid):
+    while p in rows and p > 1 and seen < 50:
+        if ttys.get(p, "?").strip("?-") == "":
             return os.path.basename(rows[p][1].split()[0]) or "?"
         p, seen = rows[p][0], seen + 1
     return "?"
@@ -956,10 +957,22 @@ def system(w, v):
         v.add(w, "machines:system", "inventory", "This machine", text, None, {"group": "machines", "tool": "system"})
 
 
-def main():
-    with Writer("setup", AVENUE, forget=lambda old: bool((old.get("meta") or {}).get("generated"))) as w:
+def main(parts=None):
+    """Every part, or some (`setup.py --layouts`: the layouts and the agent sessions in them, every few minutes).
+    One at a time per corpus: a frequent read, a full one and the app's never write this file at once."""
+    import fcntl
+    NORM.mkdir(parents=True, exist_ok=True)
+    with open(NORM.parent / ".setup.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _main(parts)
+
+
+def _main(parts):
+    some = parts is not None
+    # a generated file not read again is gone, unless this read didn't look (only the layouts)
+    with Writer("setup", AVENUE, forget=lambda old: not some and bool((old.get("meta") or {}).get("generated"))) as w:
         v = Versions()
-        for part in (configs, domains, warp, ghostty, tmux, agents_open, aerospace, apps, brew, launch_agents, scripts, tailscale, ssh_hosts, vms, devices, scheduled, system):
+        for part in parts or PARTS:
             try:
                 part(w, v)
             except Exception as e:  # one tool's odd file stops nothing else
@@ -967,5 +980,8 @@ def main():
         v.finish(w)
 
 
+PARTS = (configs, domains, warp, ghostty, tmux, agents_open, aerospace, apps, brew, launch_agents, scripts, tailscale, ssh_hosts, vms, devices, scheduled, system)
+LAYOUTS = (warp, ghostty, tmux, agents_open, aerospace)
+
 if __name__ == "__main__":
-    main()
+    main(LAYOUTS if "--layouts" in sys.argv else None)
