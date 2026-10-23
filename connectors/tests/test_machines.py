@@ -38,11 +38,11 @@ host=""; skip=""; for a; do
 done
 echo "$host" >> "{self.root}/ssh.log"
 case "$host" in
-  box) HOME="{self.box}" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" sh -c "$last";;
+  box|theirs|coworker) HOME="{self.box}" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" sh -c "$last";;
   nopython) exit 127;;
   *) echo "Permission denied (publickey)." >&2; exit 255;;
 esac""")
-        self.tool("tailscale", """echo '{"Self": {"HostName": "laptop"}, "Peer": {"a": {"HostName": "box", "DNSName": "box.tail.ts.net.", "OS": "linux", "Online": true, "TailscaleIPs": ["100.64.0.9"]}, "b": {"HostName": "phone", "DNSName": "phone.tail.ts.net.", "OS": "iOS"}, "c": {"HostName": "funnel-ingress-node"}}}'""")
+        self.tool("tailscale", """echo '{"Self": {"HostName": "laptop", "UserID": 1}, "Peer": {"a": {"HostName": "box", "DNSName": "box.tail.ts.net.", "OS": "linux", "Online": true, "TailscaleIPs": ["100.64.0.9"], "UserID": 1}, "b": {"HostName": "phone", "DNSName": "phone.tail.ts.net.", "OS": "iOS", "UserID": 1}, "c": {"HostName": "funnel-ingress-node"}, "d": {"HostName": "box", "DNSName": "theirs.tail.ts.net.", "OS": "linux", "Online": true, "TailscaleIPs": ["100.64.0.20"], "UserID": 2, "ShareeNode": true}, "e": {"HostName": "box", "DNSName": "coworker.tail.ts.net.", "OS": "macOS", "Online": true, "TailscaleIPs": ["100.64.0.21"], "UserID": 3}, "f": {"HostName": "old", "DNSName": "old.tail.ts.net.", "OS": "linux", "Online": false, "UserID": 1}}}'""")
 
     def tool(self, name, body):
         p = self.bin / name
@@ -147,11 +147,33 @@ esac""")
         self.assertIn("ubuntu@orb", log)
         self.assertNotIn("lima-old", log, "a stopped VM isn't started")
 
+    def test_machines_are_read_by_themselves_and_only_yours(self):
+        env = {k: v for k, v in self.env().items() if k != "UMP_MACHINES"}
+        run = lambda: subprocess.run([sys.executable, "-c", "import machines; machines.main()"], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=300)
+        self.assertEqual(run().returncode, 0)
+        read = json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]
+        self.assertEqual(sorted(read), ["box"], "your own machine, not one shared with you, a coworker's, one offline, nor an ssh host")
+        self.assertEqual([r["text"] for r in self.records("shell_history@box")], ["git status", "make train"])
+        self.assertNotIn("lab", (self.root / "ssh.log").read_text())
+        # machines.json adds one, takes one out, or turns it off
+        (self.corpus / "machines.json").write_text(json.dumps({"read": ["lab"], "skip": ["box"]}))
+        boxes = (self.root / "ssh.log").read_text().split().count("box")
+        run()
+        log = (self.root / "ssh.log").read_text().split()
+        self.assertIn("lab", log)
+        self.assertEqual(log.count("box"), boxes + 1, "found (one check), but skipped: not read")
+        self.assertEqual(json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]["lab"], {"not_read": "couldn't sign in without asking"})
+        (self.corpus / "machines.json").write_text(json.dumps({"auto": False}))
+        before = len(log)
+        run()
+        self.assertEqual(len((self.root / "ssh.log").read_text().split()), before, "auto off: not even looked for")
+
     def test_finding_machines_asks_nothing_of_ssh_hosts_unless_told(self):
         out = self.py(None, "machines.py", "--find", UMP_MACHINES="box")
         lines = {l[2:].split()[0]: l for l in out.splitlines() if l.strip()}
         self.assertIn("tailscale   darwin, python3", lines["box"].lower())
         self.assertNotIn("phone", out, "a phone on the network isn't a machine to read")
+        self.assertRegex(out, r"old .*offline")
         self.assertIn("not checked", lines["lab"], "an ssh host isn't signed in to (it may send a phone prompt)")
         self.assertNotIn("*.corp", out)
         self.assertNotIn("lab", (self.root / "ssh.log").read_text())

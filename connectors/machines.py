@@ -1,13 +1,14 @@
 """Your other machines: what the same connectors find on the Macs and Linux machines you reach over ssh (a Mac mini,
 a cloud workstation, a server), kept beside this Mac's and marked with the machine each came from.
 
-Which machines: Macs and Linux machines on your Tailscale network or in ~/.ssh/config, and the Linux VMs on this Mac
-(Lima's as "lima:<vm>", OrbStack's as "<vm>@orb"); none until you choose them, as `UMP_MACHINES` (ssh names, space-separated) or corpus/machines.json
-({"read": ["mini", "devbox"], "sources": {"devbox": ["ai_coding", "shell_history"]}}: what to read on one, else all but
-NOT_THERE's). `python3 machines.py --find` lists the machines you could choose: your Tailscale
-network's, and the hosts in ~/.ssh/config, each checked with one ssh call that never asks for anything (BatchMode).
-ssh config hosts aren't checked unless asked (`--find --ssh`): signing in to some (a university cluster) sends a
-phone prompt.
+Which machines, by themselves: your own Macs and Linux machines on Tailscale (not one shared with you, nor a
+coworker's on a work network) and this Mac's running Linux VMs (Lima's as "lima:<vm>", OrbStack's as "<vm>@orb"),
+each that one ssh call that never asks for anything (BatchMode) signs in to and that has python3. A host only in
+~/.ssh/config isn't tried by itself (signing in to some, a university cluster, sends a phone prompt): name it in
+corpus/machines.json, which can also take one out or turn this off ({"read": ["devbox"], "skip": ["nas"],
+"auto": false, "sources": {"devbox": ["ai_coding", "shell_history"]}}: what to read on one, else all but
+NOT_THERE's). `UMP_MACHINES` (ssh names, space-separated) reads only those. `python3 machines.py --find` lists them
+all, a "*" by the ones read (`--ssh` tries the ssh config hosts too).
 
 Reading one: these connectors go to a new temporary folder there over ssh, run with python3 there, reading that
 machine's files in place (no copies on its disk), and come back as their normalized files; the folder is then
@@ -39,13 +40,36 @@ SSH = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "Ser
 TIMEOUT = int(os.environ.get("UMP_MACHINE_TIMEOUT") or 3600)
 
 
+def config():
+    try:
+        c = json.loads(CONFIG.read_text())
+        return c if isinstance(c, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+_chosen = None
+
+
 def chosen():
+    """The machines read: UMP_MACHINES if set (and only those); else the ones found by themselves (auto: your own
+    Tailscale machines and this Mac's running VMs that sign in without asking and have python3), with machines.json's
+    "read" added (an ssh config host, which isn't tried by itself) and its "skip" taken out; "auto": false for only
+    "read"'s."""
+    global _chosen
     if os.environ.get("UMP_MACHINES") is not None:
         return os.environ["UMP_MACHINES"].split()
-    try:
-        return [str(h) for h in json.loads(CONFIG.read_text()).get("read") or []]
-    except (OSError, ValueError, AttributeError):
-        return []
+    if _chosen is None:
+        c = config()
+        named = [str(h) for h in c.get("read") or []]
+        found = auto() if c.get("auto", True) is not False else []
+        skip = {str(h) for h in c.get("skip") or []}
+        _chosen = [m for m in dict.fromkeys([*named, *found]) if m not in skip]
+    return _chosen
+
+
+def auto():
+    return [m["name"] for m in find() if m.get("mine") and m.get("reachable") and m.get("python")]
 
 
 def target(machine):
@@ -78,8 +102,10 @@ def tailscale_peers():
             for p in (d.get("Peer") or {}).values():
                 name = (p.get("DNSName") or "").split(".")[0] or p.get("HostName")
                 if name and p.get("HostName") != "funnel-ingress-node" and (p.get("OS") or "") in ("macOS", "linux", ""):
+                    # yours: signed in as you, not shared into your network by someone else (nor a coworker's)
+                    mine = not p.get("ShareeNode") and p.get("UserID") is not None and p.get("UserID") == (d.get("Self") or {}).get("UserID")
                     out.append({"name": name, "via": "tailscale", "os": p.get("OS"), "online": bool(p.get("Online")),
-                                "addresses": p.get("TailscaleIPs") or []})
+                                "addresses": p.get("TailscaleIPs") or [], "mine": mine})
             return out
     return []
 
@@ -101,7 +127,7 @@ def vms():
                 name, running = parse(d)
             except (KeyError, TypeError):
                 continue
-            out.append({"name": name, "via": "VM on this Mac", "online": running, **({} if running else {"why": "stopped"})})
+            out.append({"name": name, "via": "VM on this Mac", "online": running, "mine": True, **({} if running else {"why": "stopped"})})
     return out
 
 
@@ -139,7 +165,7 @@ def resolved(name):
     return dict(l.split(" ", 1) for l in r.stdout.splitlines() if " " in l and l.split(" ", 1)[0] in ("hostname", "user", "proxycommand"))
 
 
-def find(with_ssh=False):
+def find(with_ssh=False, also=()):
     peers = tailscale_peers()
     found = {}
     hosts = ssh_hosts()
@@ -158,7 +184,10 @@ def find(with_ssh=False):
         if m["name"] not in found and not (key and key in listed):
             listed.add(key)
             found[m["name"]] = {**m, **({"via": "ssh config (a command)"} if where.get(m["name"], {}).get("proxycommand") else {})}
-    to_check = [n for n, m in found.items() if (m["via"] in ("tailscale", "VM on this Mac") and m.get("online", True)) or with_ssh or n in chosen()]
+    for m in found.values():
+        if m["via"] == "tailscale" and not m.get("online"):
+            m["why"] = "offline"
+    to_check = [n for n, m in found.items() if (m["via"] in ("tailscale", "VM on this Mac") and m.get("online", True)) or with_ssh or n in also]
     with concurrent.futures.ThreadPoolExecutor(16) as pool:
         for name, res in zip(to_check, pool.map(check, to_check)):
             found[name].update(res)
@@ -340,7 +369,7 @@ def main():
 
 if __name__ == "__main__":
     if "--find" in sys.argv:
-        for m in find(with_ssh="--ssh" in sys.argv):
+        for m in find(with_ssh="--ssh" in sys.argv, also=[str(h) for h in config().get("read") or []]):
             state = (f"{m.get('system')}, {'python3' if m.get('python') else 'no python3'}" if m.get("reachable")
                      else m.get("why") or "not checked")
             print(f"{'*' if m['name'] in chosen() else ' '} {m['name']:40s} {m['via']:11s} {state}")
