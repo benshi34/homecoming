@@ -84,6 +84,46 @@ class Base(unittest.TestCase):
         return {x for g in self.manifest.get("_imports_unclaimed", []) for x in g["examples"]}
 
 
+# ---------------------------------------------------------------- Telegram
+
+class TelegramTests(Base):
+    def export(self):
+        U = 1767600000
+        chat = {"name": "Theo Laurent", "type": "personal_chat", "id": 4401, "messages": [
+            {"id": 1, "type": "message", "date": "2026-01-05T08:00:00", "date_unixtime": str(U), "from": "Theo Laurent", "from_id": "user77",
+             "text": ["Tide at ", {"type": "bold", "text": "six"}, "?"],
+             "reactions": [{"type": "emoji", "count": 3, "emoji": "👍", "recent": [{"from": "Ada Lovelace", "from_id": "user11", "date": "2026-01-05T08:01:00"}]}]},
+            {"id": 2, "type": "message", "date_unixtime": str(U + 60), "from": "Ada Lovelace", "from_id": "user11", "text": "yes, at the pier",
+             "reply_to_message_id": 1, "edited_unixtime": str(U + 90)},
+            {"id": 3, "type": "message", "date_unixtime": str(U + 120), "from": "Theo Laurent", "from_id": "user77", "text": "",
+             "photo": "photos/photo_1@05-01-2026_08-02-00.jpg", "width": 800, "height": 600},
+            {"id": 4, "type": "service", "date_unixtime": str(U + 180), "actor": "Theo Laurent", "actor_id": "user77", "action": "phone_call", "text": ""}]}
+        group = {"name": "Pier club", "type": "private_supergroup", "id": 5502, "messages": [
+            {"id": 9, "type": "message", "date_unixtime": str(U + 300), "from": "Mo Reyes", "from_id": "user88", "text": "who's in?",
+             "reply_to_message_id": 1, "reply_to_peer_id": "channel999"}]}
+        self.files("Telegram Desktop/DataExport_2026-01-06", {
+            "result.json": {"personal_information": {"user_id": 11, "first_name": "Ada"}, "chats": {"list": [chat, group]}},
+            "photos/photo_1@05-01-2026_08-02-00.jpg": b"\xff\xd8\xff\xe0 a made-up jpeg"})
+
+    def test_chats_replies_reactions_edits_and_files(self):
+        self.export()
+        self.run_import()
+        msgs = {r["id"]: r for r in self.of("telegram")}
+        one, two, three = msgs["4401:1"], msgs["4401:2"], msgs["4401:3"]
+        self.assertEqual((one["text"], one["author"], one["thread_name"], one["participants"]), ("Tide at six?", "Theo Laurent", "Theo Laurent", ["Theo Laurent"]))
+        self.assertEqual(one["meta"]["reactions"], [{"who": "me", "reaction": "👍", "ts": "2026-01-05T08:01:00"}, {"reaction": "👍"}, {"reaction": "👍"}],
+                         "each person listed, the rest by count")
+        self.assertEqual((two["author"], two["is_me"], two["meta"]["reply_to"], two["meta"]["reply_text"]), ("me", True, "4401:1", "Tide at six?"))
+        self.assertEqual(two["meta"]["edited"], "2026-01-05T08:01:30Z")
+        self.assertEqual(three["text"], "[photo: photo_1@05-01-2026_08-02-00.jpg]")
+        self.assertTrue((self.corpus / three["meta"]["files"][0]).exists() if not three["meta"]["files"][0].startswith("/") else Path(three["meta"]["files"][0]).exists())
+        self.assertEqual(msgs["4401:4"]["kind"], "event")
+        g = msgs["5502:9"]
+        self.assertEqual((g["meta"]["group"], g.get("participants")), (True, None))
+        self.assertNotIn("reply_to", g["meta"], "a reply to another chat's message isn't one to this chat's")
+        self.assertNotIn("photos/photo_1@05-01-2026_08-02-00.jpg", self.unclaimed())
+
+
 # ---------------------------------------------------------------- Slack
 
 T = 1767600000  # 2026-01-05T08:00:00Z
@@ -136,8 +176,8 @@ class SlackTests(Base):
         self.assertEqual((say_(0)["author"], say_(0)["text"], say_(0)["ts"]), ("me", "standup in 5", "2026-01-05T08:00:00Z"))
         self.assertNotIn(ts(1), got, "who joined isn't a message")
         self.assertEqual(say_(2)["text"], "Plan for #random? See the doc (https://example.com/doc) & @here")
-        self.assertEqual((say_(2)["author"], say_(2)["thread_name"], say_(2)["meta"]["reactions"]), ("Theo Laurent", "#general", {"thumbsup": 1}))
-        self.assertEqual((say_(3)["text"], say_(3)["meta"]["reply_to"]), ("Yes, @Theo Laurent, and @U09", ts(2)))
+        self.assertEqual((say_(2)["author"], say_(2)["thread_name"], say_(2)["meta"]["reactions"]), ("Theo Laurent", "#general", [{"who": "me", "reaction": "👍"}]))
+        self.assertEqual((say_(3)["text"], say_(3)["meta"]["reply_to"]), ("Yes, @Theo Laurent, and @U09", f"general:{ts(2)}"), "a reply names its parent's record")
         self.assertTrue(say_(4)["meta"]["edited"].startswith("2026-01-05T08:05"))
         self.assertEqual(say_(5)["text"], "Also here")
         self.assertEqual((say_(6)["author"], say_(6)["text"], say_(6)["meta"]["bot"], say_(6).get("is_me")),

@@ -262,6 +262,23 @@ class WhatsAppTests(Base):
         self.assertEqual((recs["S3"]["meta"]["reply_to"], recs["S3"]["meta"]["reply_text"]), ("GONE", "see https://allotment.example"),
                          "a quote of a message not here: what it said, from the quote")
 
+    def test_the_iphone_backups_reactions_and_replies_for_phone_whatsapp(self):
+        T = self.T
+        rows = [(1, 2, 0, T, "Who has the shed key?", "S1", 0, 1, 2, "120363000000000001@g.us", None, 0),
+                (2, 2, 1, T + 60, "I do", "S2", 0, None, 2, None, "120363000000000001@g.us", 0)]
+        info = [(1, pb((7, pb((1, pb((1, "R1"), (6, 1), (3, "🙏"), (4, 1758307300000)))))))]
+        media = [(1, 2, None, None, None, None, None, None, pb((5, "S1"), (19, pb((1, "Who has the shed key?")))))]
+        chat_storage(self.corpus / "raw/iphone/files/AppDomainGroup-group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite",
+                     rows, self.CHATS, self.MEMBERS, media=media, info=info)
+        r = subprocess.run([sys.executable, "-c", "import json, whatsapp; print(json.dumps({'|'.join(k): v for k, v in whatsapp.phone_extras().items()}))"],
+                           cwd=CONNECTORS, env={**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus)},
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = json.loads(r.stdout)
+        jid = "120363000000000001@g.us"
+        self.assertEqual(got[f"{jid}|Who has the shed key?"], [[T + 978307200, {"reactions": [{"who": "me", "reaction": "🙏", "ts": "2025-09-19T18:41:40Z"}]}]])
+        self.assertEqual(got[f"{jid}|I do"], [[T + 60 + 978307200, {"reply_text": "Who has the shed key?"}]])
+
     def test_messages_the_iphone_backup_has_are_counted_there(self):
         self.mac(self.ROWS[:3])
         phone = self.corpus / "raw/iphone/files/AppDomainGroup-group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite"

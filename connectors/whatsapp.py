@@ -110,6 +110,59 @@ def reactions_of(blob):
     return out
 
 
+def standing(entries, name):
+    """A message's reactions as they stand, from reactions_of: each person's newest, {who, reaction, ts} (yours, "me"),
+    and the ones taken back, {who, ts}."""
+    latest = {}
+    for jid, emoji, at in sorted(entries, key=lambda x: x[2]):
+        latest[jid] = (emoji, at)
+    out = ([], [])
+    for j, (e, at) in latest.items():
+        x = {"who": "me" if j is None else name(j), "reaction": e, "ts": from_unix(at, "ms")}
+        out[0 if e else 1].append({k: v for k, v in x.items() if v})
+    return out
+
+
+def phone_extras():
+    """What the iPhone backup's WhatsApp says of each message beyond what iLEAPP reads: its reactions (as they stand,
+    and the ones taken back) and what the message it replies to said. (chat jid, text) -> [(Unix time, meta)], for
+    ileapp.py to find a phone_whatsapp message's by its chat, text and time, as it finds a group message's sender."""
+    db = phone(*PHONE_DB)
+    if not db.exists():
+        return {}
+    out = {}
+    try:
+        con = connect(db)
+        tables = {r[0] for r in con.execute("select name from sqlite_master where type = 'table'")}
+        if not {"ZWAMESSAGE", "ZWACHATSESSION"} <= tables:
+            return {}
+        who = namer(con, Resolver())
+        by_jid = {r[0]: r[1] for r in con.execute("select ZMEMBERJID, ZCONTACTNAME from ZWAGROUPMEMBER where ZCONTACTNAME is not null")} \
+            if "ZWAGROUPMEMBER" in tables else {}
+        reacted = {r[0]: reactions_of(r[1]) for r in con.execute(
+            f"select {pick(con, 'ZWAMESSAGEINFO', ('ZMESSAGE', 'ZRECEIPTINFO'))} from ZWAMESSAGEINFO") if r[0] and r[1]} \
+            if "ZWAMESSAGEINFO" in tables else {}
+        quotes = {r[0]: protobuf(r[1]) for r in con.execute(
+            f"select {pick(con, 'ZWAMEDIAITEM', ('ZMESSAGE', 'ZMETADATA'))} from ZWAMEDIAITEM") if r[0] and r[1]} \
+            if "ZWAMEDIAITEM" in tables else {}
+        jids = {r[0]: r[1] or "" for r in con.execute("select Z_PK, ZCONTACTJID from ZWACHATSESSION")}
+        said = {}
+        for pk, chat, text, t, stanza in con.execute("select Z_PK, ZCHATSESSION, ZTEXT, ZMESSAGEDATE, ZSTANZAID from ZWAMESSAGE order by ZMESSAGEDATE"):
+            if stanza and text:
+                said[stanza] = text
+            q = quotes.get(pk) or []
+            quoted = first(q, 5).decode("utf-8", "replace") if isinstance(first(q, 5), bytes) else None
+            reactions, taken_back = standing(reacted.get(pk, []), lambda j: by_jid.get(j) or who(j))
+            meta = {k: v for k, v in (("reply_text", ((said.get(quoted) or text_of(first(q, 19)) or "")[:200] or None) if quoted else None),
+                                      ("reactions", reactions), ("reactions_taken_back", taken_back)) if v}
+            if meta and t is not None:
+                out.setdefault((jids.get(chat, ""), text or ""), []).append((t + APPLE, meta))
+        con.close()
+    except (sqlite3.Error, OSError):
+        return out
+    return out
+
+
 def pick(con, table, wanted):
     """The columns of `table` this copy of the schema has, the rest as nulls."""
     have = columns(con, table)
@@ -290,23 +343,14 @@ def main():
             q = protobuf(m["ZMETADATA"]) if m and m["ZMETADATA"] else []
             quoted = first(q, 5).decode("utf-8", "replace") if isinstance(first(q, 5), bytes) else None
             reply_text = (said.get(quoted) or text_of(first(q, 19))) if quoted else None
-            # its reactions now: each person's newest, and the ones taken back
-            latest = {}
-            for jid, emoji, at in sorted(reacted.get(r["Z_PK"], []), key=lambda x: x[2]):
-                latest[jid] = (emoji, at)
-            mine_ = lambda jid: jid is None
-            reactions = [{"who": "me" if mine_(j) else by_jid.get(j) or who(j), "reaction": e, "ts": from_unix(at, "ms")}
-                         for j, (e, at) in latest.items() if e]
-            taken_back = [{"who": "me" if mine_(j) else by_jid.get(j) or who(j), "ts": from_unix(at, "ms")}
-                          for j, (e, at) in latest.items() if not e]
+            reactions, taken_back = standing(reacted.get(r["Z_PK"], []), lambda j: by_jid.get(j) or who(j))
             meta = {"group": chat["group"] or None, "type": attachment, "tier": "deleted" if kind_no == DELETED else None,
                     "starred": bool(r["ZSTARRED"]) or None, "chat": chat["jid"],
                     "lat": m["ZLATITUDE"] if m and kind_no == 5 else None, "lon": m["ZLONGITUDE"] if m and kind_no == 5 else None,
                     "attachment": m["ZMEDIALOCALPATH"] if m else None, "bytes": m["ZFILESIZE"] if m else None,
                     "files": files or None, "group_event": (r["ZGROUPEVENTTYPE"] or None) if kind_no == SYSTEM else None,
                     "reply_to": ids.get(quoted, quoted) if quoted else None, "reply_text": (reply_text or "")[:200] or None,
-                    "reactions": [{k: v for k, v in x.items() if v} for x in reactions] or None,
-                    "reactions_taken_back": [{k: v for k, v in x.items() if v} for x in taken_back] or None}
+                    "reactions": reactions or None, "reactions_taken_back": taken_back or None}
             w.add(id=rid, kind=kind, ts=from_apple(r["ZMESSAGEDATE"]), author=author, is_me=me, thread=chat["jid"],
                   thread_name=chat["name"], participants=chat["people"], text=text,
                   meta={k: v for k, v in meta.items() if v is not None})
