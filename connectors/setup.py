@@ -401,15 +401,25 @@ PANE_VAR = {"WarpTerminal": "WARP_TERMINAL_SESSION_UUID", "tmux": "TMUX_PANE", "
 _agents = None
 
 
-def environ(pid, names):
-    """Some of a process's environment variables (your own processes only)."""
+def environ(pid, names, pids=None):
+    """Some of a process's environment variables (your own processes only). With pids, every one of them is read
+    at once on a Mac (one `ps -E`, not one each) and kept for the calls after."""
     try:
         raw = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
         env = dict(x.decode("utf-8", "replace").split("=", 1) for x in raw if b"=" in x)
     except OSError:
-        out = run(["ps", "-E", "-wwo", "command=", "-p", str(pid)]) or ""  # macOS: the command, then its environment
-        env = {k: v for k, v in re.findall(r"(?:^|\s)([A-Z][A-Z0-9_]*)=(\S*)", out)}
+        if pid not in _environs:  # macOS: the command, then its environment
+            want = sorted(set(pids or ()) | {pid})
+            out = run(["ps", "-E", "-wwo", "pid=,command=", "-p", ",".join(map(str, want))], timeout=60) or ""
+            for line in out.splitlines():
+                p, _, rest = line.strip().partition(" ")
+                if p.isdigit():
+                    _environs[int(p)] = {k: v for k, v in re.findall(r"(?:^|\s)([A-Z][A-Z0-9_]*)=(\S*)", rest)}
+        env = _environs.get(pid, {})
     return {k: env[k] for k in names if env.get(k)}
+
+
+_environs = {}
 
 
 def open_files(pid):
@@ -517,6 +527,7 @@ def agents():
         return None
 
     out = []
+    candidates = [pid for pid, (_, args) in rows.items() if tool(args)]
     for pid, (ppid, args) in sorted(rows.items()):
         t = tool(args)
         if not t:
@@ -531,7 +542,7 @@ def agents():
             continue
         if ttys.get(pid, "?").strip("?-") == "":  # not in a terminal: a background server (Codex's app server)
             continue
-        env = environ(pid, ["TERM_PROGRAM", *PANE_VAR.values(), "HERDR_SESSION", "HERDR_PANE_ID"])
+        env = environ(pid, ["TERM_PROGRAM", *PANE_VAR.values(), "HERDR_SESSION", "HERDR_PANE_ID"], candidates)
         a = {"tool": t, "terminal": env.get("TERM_PROGRAM") or owner(pid, rows, ttys)}
         if env.get("HERDR_PANE_ID"):  # herdr sets no TERM_PROGRAM; its pane is "<session>/w19:p9P"
             a["terminal"], a["pane"] = "herdr", f"{env.get('HERDR_SESSION') or 'default'}/{env['HERDR_PANE_ID']}"

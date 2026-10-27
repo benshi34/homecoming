@@ -136,9 +136,11 @@ procs = json.load(open("{self.root}/ps.json"))
 if "-axwwo" in a:
     for p, pp, tty, args, env in procs:
         print(p, pp, tty, args)
-elif "-E" in a:
-    p = int(a[a.index("-p") + 1])
-    print(next(args + "".join(" " + k + "=" + v for k, v in env.items()) for q, _, _, args, env in procs if q == p))
+elif "-E" in a:  # pid=,command= for the pids asked, each with its environment after
+    want = {{int(x) for x in a[a.index("-p") + 1].split(",")}}
+    for q, _, _, args, env in procs:
+        if q in want:
+            print(q, args + "".join(" " + k + "=" + v for k, v in env.items()))
 elif "lstart=" in a:
     print(time.strftime("%a %b %d %H:%M:%S %Y", time.localtime({STARTED})))
 X""")
