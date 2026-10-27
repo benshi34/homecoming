@@ -4,6 +4,7 @@ aerospace, brew, tailscale and ssh. Everyone and everything is made up.
 Run: python3 -m unittest discover -s connectors/tests -p 'test_*.py'
 """
 import json
+import plistlib
 import os
 import sqlite3
 import subprocess
@@ -54,6 +55,8 @@ def processes(home):
         (501, 500, "ttys008", "zsh (a shell integration's own terminal)", {}),
         (503, 501, "ttys009", "bash", {}),
         (502, 503, "ttys009", "claude", {}),  # a runner's agent: no terminal says where it is
+        (600, 1, "??", "herdr server", {}),
+        (601, 600, "ttys010", "claude", {"HERDR_ENV": "1", "HERDR_SESSION": "work", "HERDR_PANE_ID": "w1:pA"}),  # herdr's pane 10
     ]
 
 
@@ -141,7 +144,21 @@ elif "lstart=" in a:
 X""")
         self.tool("lsof", '[ "$5" = 402 ] && echo "n$HOME/tides"; [ "$5" = 204 ] && echo "n$HOME"; exit 0')
         self.ghostty("✳ Fix the tide chart", "◐ Moon phases")
-        self.tool("osascript", f'cat "{self.root}/ghostty.txt"')
+        self.tool("osascript", f'[ "$1" = -l ] && cat "{self.root}/windows.json" || cat "{self.root}/ghostty.txt"')
+        # the window server's list: two apps' windows, AppKit's hidden one in three apps (all at one frame), a tiny one
+        (self.root / "windows.json").write_text(json.dumps({"screens": [["Studio Display", 0, 0, 2560, 1440]], "windows": [
+            ["Ghostty", 1, 0, 25, 1280, 1415], ["Ghostty", 0, 0, 25, 1280, 1415], ["Firefox", 1, 1280, 25, 1280, 1415], ["Firefox", 0, 0, 617, 500, 500],
+            ["Mail", 0, 0, 617, 500, 500], ["Ghostty", 0, 0, 617, 500, 500], ["Mail", 0, 300, 200, 900, 700]]}))
+        self.write(".config/herdr/sessions/work/session.json", json.dumps({"version": 1, "workspaces": [{"id": "w1", "custom_name": "tides",
+            "identity_cwd": f"{self.home}/tides", "tabs": [{"custom_name": "charts", "layout": {"Split": {"direction": "Vertical", "ratio": 0.5,
+            "first": {"Pane": 10}, "second": {"Pane": 11}}}, "panes": {"10": {"cwd": f"{self.home}/tides"}, "11": {"cwd": str(self.home)}}}]}]}))
+        self.write("Library/Application Support/taiku/tui-layout.json", json.dumps({"version": 1, "workspaces": {str(self.home): {"snapshot": {
+            "tabs": [{"layout": {"kind": "split", "direction": "horizontal", "ratio": 0.4, "first": {"kind": "leaf", "tiles": [1]},
+                                 "second": {"kind": "leaf", "tiles": [2]}}}], "tile_names": {"2": "logs"}}}}}))
+        app = self.write("sims/A/data/Containers/Bundle/Application/X/Tides.app/Info.plist", "")
+        app.write_bytes(plistlib.dumps({"CFBundleDisplayName": "Tides", "CFBundleShortVersionString": "0.3", "CFBundleIdentifier": "org.ada.tides"}))
+        self.write(".android/avd/Tide_Pixel.avd/config.ini", "avd.ini.displayname=Tide Pixel\nhw.device.name=pixel_8\nabi.type=arm64-v8a\n")
+        self.tool("pmset", "printf 'AC Power:\\n sleep 10\\n displaysleep 5\\n'")
         self.tool("defaults", f"""case "$2" in com.apple.dock) cat <<'X'\n{DOCK}\nX\n;; com.knollsoft.Rectangle) cat <<'X'\n{RECTANGLE}\nX\n;; *) exit 1;; esac""")
         self.tool("tmux", "printf 'work\\t0\\teditor\\t5d1e,200x50,0,0\\t0\\t%s/tides\\tnode\\t%%0\\n' \"$HOME\"")
         self.tool("aerospace", "printf '1\\tGhostty\\n1\\tGhostty\\n2\\tFirefox\\n'")
@@ -149,8 +166,20 @@ X""")
         self.tool("tailscale", """echo '{"Self": {"HostName": "laptop"}, "Peer": {"a": {"HostName": "box", "OS": "linux", "Online": true}, "b": {"HostName": "funnel-ingress-node"}}}'""")
         self.tool("prlctl", "printf 'NAME STATUS\\nWin11 stopped\\n'")
         self.tool("colima", "exit 1")
-        self.tool("xcrun", """[ "$1" = devicectl ] || exit 1; echo 'Devices:'; echo '{"result": {"devices": [{"deviceProperties": {"name": "Ada iPhone", "osVersionNumber": "26.1", "developerModeStatus": "enabled"}, "hardwareProperties": {"marketingName": "iPhone 16", "deviceType": "iPhone", "platform": "iOS"}, "connectionProperties": {"pairingState": "paired", "tunnelState": "connected", "lastConnectionDate": "2026-10-01T10:00:00Z"}}]}}'""")
-        self.tool("adb", "printf 'List of devices attached\\nR5CT1 device usb:1-1 product:tide model:Pixel_9 device:tide\\nX1 unauthorized\\n'")
+        self.tool("xcrun", f"""case "$1 $2 $3" in
+"simctl list devices") echo '{{"devices": {{"com.apple.CoreSimulator.SimRuntime.iOS-26-4": [{{"name": "iPhone 17", "udid": "5111A000-0000-4000-8000-000000000000", "isAvailable": true, "state": "Shutdown", "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "dataPath": "{self.home}/sims/A/data"}}]}}}}';;
+"devicectl device info") echo '{{"result": {{"apps": [{{"name": "Tides", "version": "0.3", "bundleIdentifier": "org.ada.tides", "builtByDeveloper": true, "removable": true}}, {{"name": "Moonwatch", "version": "2.1", "bundleIdentifier": "com.moon.watch", "removable": true}}, {{"name": "Safari", "defaultApp": true}}, {{"name": "Hidden", "hidden": true}}]}}}}';;
+"devicectl list devices") echo 'Devices:'; echo '{{"result": {{"devices": [{{"identifier": "D1", "deviceProperties": {{"name": "Ada iPhone", "osVersionNumber": "26.1", "developerModeStatus": "enabled"}}, "hardwareProperties": {{"marketingName": "iPhone 16", "deviceType": "iPhone", "platform": "iOS"}}, "connectionProperties": {{"pairingState": "paired", "tunnelState": "connected", "lastConnectionDate": "2026-10-01T10:00:00Z"}}}}]}}}}';;
+*) exit 1;; esac""")
+        # adb: the phone, its OS, the apps you installed and its settings (some the phone's own or naming it)
+        self.tool("adb", """case "$*" in
+"devices -l") printf 'List of devices attached\\nR5CT1 device usb:1-1 product:tide model:Pixel_9 device:tide\\nX1 unauthorized\\n';;
+*getprop*) echo 15;;
+*"pm list packages -3") printf 'package:org.ada.tides\\npackage:com.moon.watch\\n';;
+*"settings list system") printf 'font_scale=1.15\\nscreen_off_timeout=60000\\nbluetooth_name=Ada Pixel\\nwallpaper_finish_drawing=1792801435669\\n';;
+*"settings list secure") printf 'android_id=9f8e7d6c5b4a3921\\nlocation_mode=3\\nlast_setup_shown=1\\n';;
+*"settings list global") printf 'stay_on_while_plugged_in=3\\nboot_count=41\\n';;
+*) exit 1;; esac""")
         self.tool("system_profiler", """echo '{"SPBluetoothDataType": [{"device_connected": [{"Ada AirPods": {"device_address": "AA:BB:CC:DD:EE:FF", "device_serialNumber": "SERIAL123", "device_minorType": "Headphones", "device_vendorID": "0x004C"}}]}], "SPDisplaysDataType": [{"spdisplays_ndrvs": [{"_name": "Studio Display", "_spdisplays_resolution": "2560 x 1440 @ 60.00Hz", "spdisplays_connection_type": "spdisplays_thunderbolt", "spdisplays_main": "spdisplays_yes", "_spdisplays_display-serial-number": "DSERIAL"}]}], "SPUSBHostDataType": [{"_name": "USB 3.1 Bus", "_items": [{"_name": "Tide Keyboard", "USBDeviceKeyVendorName": "Tide Co", "USBKeyHardwareType": "Removable", "USBDeviceKeySerialNumber": "USERIAL"}]}]}'""")
         # ssh runs the probe locally with HOME set to a second made-up home, as if it were the host's
         (self.root / "remote/.config/sway").mkdir(parents=True)
@@ -221,7 +250,7 @@ X""")
     def test_devices_without_addresses_or_serials(self):
         by, recs, _ = self.run_setup()
         self.assertEqual(by["device:phone:Ada iPhone"]["text"], "Ada iPhone\nmodel: iPhone 16\ntype: iPhone\nos: iOS 26.1\npaired: paired\ndeveloper mode: on")
-        self.assertEqual(by["device:phone:Pixel 9"]["text"], "Pixel 9\ntype: Android\nproduct: tide", "an unauthorized phone isn't listed")
+        self.assertEqual(by["device:phone:Pixel 9"]["text"], "Pixel 9\ntype: Android\nproduct: tide\nos: Android 15", "an unauthorized phone isn't listed")
         self.assertNotIn("device:phone:X1", by)
         self.assertEqual(by["device:bluetooth:Ada AirPods"]["text"], "Ada AirPods\ntype: Headphones\nvendor: Apple")
         self.assertIn("resolution: 2560 x 1440 @ 60.00Hz\nconnection: thunderbolt\nmain: yes", by["device:display:Studio Display"]["text"])
@@ -323,7 +352,8 @@ X""")
         # every agent running in a terminal, once: not the one an agent started, nor a server in no terminal
         sessions = by["layout:agents"]["meta"]["sessions"]
         self.assertEqual(sorted((a["terminal"], a.get("session")) for a in sessions), sorted([
-            ("WarpTerminal", S1), ("ghostty", S2), ("ghostty", S3), ("tmux", None), ("iTerm.app", C1), ("iTerm.app", C3), ("ghostty", C4), ("lane-runner", None)]))
+            ("WarpTerminal", S1), ("ghostty", S2), ("ghostty", S3), ("tmux", None), ("iTerm.app", C1), ("iTerm.app", C3), ("ghostty", C4), ("lane-runner", None),
+            ("herdr", None)]))
         by_session = {a.get("session"): a for a in sessions}
         self.assertEqual(by_session[S1]["title"], "Fix the tide chart", "the last custom title, over the AI's")
         self.assertEqual(by_session[S2]["title"], "Moon phases", "a title's first line")
@@ -339,6 +369,40 @@ X""")
         self.assertEqual(g["text"], f'Window 1: 2 tabs\n  Fix the tide chart\n    pane ~  claude 4ccc0002 "Moon phases"\n'
                                     f'    pane ~/tides  claude 4ccc0003\n  Moon tables | home\n    pane ~  codex 01a10004 "Moon tables"', g["text"])
 
+    def test_multiplexers_windows_simulators_and_phones(self):
+        by, recs, _ = self.run_setup()
+        everything = json.dumps(recs)
+        # herdr: the split, each pane's folder, and the agent its pane variable names
+        h = by["layout:herdr:work"]
+        tab = h["meta"]["layout"][0]
+        self.assertEqual((tab["window"], tab["title"], tab["split"], tab["ratio"]), ("tides", "charts", "vertical", 0.5))
+        self.assertEqual([c["cwd"] for c in tab["children"]], [f"{self.home}/tides", str(self.home)])
+        self.assertEqual(tab["children"][0]["agent"], {"tool": "claude"})
+        self.assertNotIn("agent", tab["children"][1])
+        t = by["layout:taiku"]["meta"]["layout"][0]
+        self.assertEqual((t["split"], t["ratio"], t["children"]), ("horizontal", 0.4, [{"tile": 1}, {"tile": 2, "name": "logs"}]))
+        # every app's windows: on screen or not, the same frame once, not AppKit's hidden ones
+        win = by["layout:windows"]
+        self.assertEqual(win["text"], "display Studio Display: 2560x1440 at 0,0\nFirefox: 1280x1415 at 1280,25 (on screen)\n"
+                                      "Ghostty: 1280x1415 at 0,25 x2 (on screen)\nMail: 900x700 at 300,200", win["text"])
+        # a simulator's apps, read from its bundles while it's shut down; an emulator
+        self.assertIn("Tides 0.3  org.ada.tides", by["device:simulator:5111A000-0000-4000-8000-000000000000"]["text"])
+        self.assertEqual(by["device:emulator:Tide Pixel"]["title"], "emulator: Tide Pixel")
+        # the iPhone's apps by where they came from; not a hidden one
+        self.assertEqual(by["apps:phone:Ada iPhone"]["text"], "installed (1):\n  Moonwatch 2.1  com.moon.watch\nbuilt by you (1):\n  Tides 0.3  org.ada.tides\n"
+                                                             "Apple's (1):\n  Safari", by["apps:phone:Ada iPhone"]["text"])
+        # Android: the apps, and the settings chosen; not ids, the phone's name, counters or a time under another name
+        self.assertEqual(by["apps:phone:Pixel 9"]["text"], "com.moon.watch\norg.ada.tides")
+        self.assertEqual(by["settings:phone:Pixel 9"]["text"], "system:\n  font_scale = 1.15\n  screen_off_timeout = 60000\nsecure:\n  location_mode = 3\n"
+                                                              "global:\n  stay_on_while_plugged_in = 3")
+        for leak in ("9f8e7d6c5b4a3921", "Ada Pixel", "1792801435669", "boot_count"):
+            self.assertNotIn(leak, everything)
+        self.assertIn("os: Android 15", by["device:phone:Pixel 9"]["text"])
+        self.assertIn("displaysleep 5", by["pmset:custom"]["text"])
+        # and nothing of it is a new version when nothing changed
+        _, again, _ = self.run_setup()
+        self.assertEqual(len(again), len(recs))
+
     def test_an_agent_going_from_idle_to_working_isnt_a_new_layout(self):
         self.run_setup()
         self.ghostty("◐ Fix the tide chart", "✳ Moon phases")
@@ -347,7 +411,7 @@ X""")
 
     def test_ghostty_isnt_asked_when_it_would_put_up_a_dialog(self):
         self.may_script = "ask"
-        (self.bin / "osascript").write_text(f"#!/bin/sh\ntouch {self.root}/asked\n")
+        (self.bin / "osascript").write_text(f"#!/bin/sh\n[ \"$1\" = -l ] && exit 0\ntouch {self.root}/asked\n")  # the window list asks nothing
         by, _, manifest = self.run_setup()
         self.assertNotIn("layout:Ghostty", by)
         self.assertFalse((self.root / "asked").exists())
