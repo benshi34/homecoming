@@ -292,7 +292,12 @@ def cited_corpus(corpus):
     g("2026-03-01T10:02:00Z", "[attachment: IMG_0002.png (image/png)]", meta={"files": [str(png)]})
     g("2026-03-01T10:03:00Z", "wow")
     g("2026-03-02T18:04:00Z", "Are we still on for dinner at Tasca on Friday?")
-    g("2026-03-02T18:06:00Z", "Yes! 7:30, I booked a table.", me=True)
+    g("2026-03-02T18:06:00Z", "Yes! 7:30, I booked a table.", me=True,
+      meta={"reply_text": "Are we still on for dinner at Tasca on Friday?", "reactions": [{"who": "Grace Hopper", "reaction": "‼️"}]})
+    # a tapback the message shows (it's on a message here), and the one it replaced
+    g("2026-03-02T18:06:30Z", "Liked “Yes! 7:30, I booked a table.”", kind="reaction",
+      meta={"reaction": "liked", "on_message": True, "withdrawn": "2026-03-02T18:06:40Z"})
+    g("2026-03-02T18:06:40Z", "Emphasized “Yes! 7:30, I booked a table.”", kind="reaction", meta={"reaction": "emphasized", "on_message": True})
     g("2026-03-02T18:07:00Z", "Loved “Yes! 7:30, I booked a table.”", kind="reaction", meta={"reaction": "loved"})
     g("2026-03-02T18:09:00Z", "Should I bring the wine?", me=True,
       meta={"edited": "2026-03-02T18:10:00Z", "edits": [{"at": "2026-03-02T18:09:00Z", "text": "Should I bring wine"}]})

@@ -5,6 +5,7 @@ without who is in each chat, or without chats at all, is read all the same (the 
 module makes them); one that can't be read is noted (notes.unreadable), and the other copy is read."""
 
 import plistlib
+import re
 import sqlite3
 from pathlib import Path
 
@@ -18,6 +19,16 @@ AVENUE = ("Local SQLite: ~/Library/Messages/chat.db (synced from iPhone via iClo
 TAPBACKS = {2000: "loved", 2001: "liked", 2002: "disliked", 2003: "laughed at",
             2004: "emphasized", 2005: "questioned", 2006: "reacted to", 2007: "stickered",
             1000: "stickered"}  # 1000: a sticker placed on a message (iOS 10-16); 3000-3007 take a tapback back
+# How each tapback shows on a message
+SYMBOLS = {"loved": "❤️", "liked": "👍", "disliked": "👎", "laughed at": "😂", "emphasized": "‼️", "questioned": "❓",
+           "stickered": "sticker"}
+# A tapback a phone that isn't an Apple one sent (or one Messages kept as text): "Liked “…”", "Reacted 😂 to “…”",
+# "Removed a heart from “…”". The quoted text is the message it's on, cut with … when long.
+TEXT_TAPBACK = re.compile(r'^(?P<verb>Loved|Liked|Disliked|Laughed at|Emphasized|Questioned|Reacted (?P<emoji>\S+) to|'
+                          r'Removed (?:a|an) (?P<what>heart|like|dislike|laugh|exclamation|question mark|\S+) from)\s+'
+                          r'[“"](?P<quoted>.+)[”"]$', re.S)
+REMOVED = {"heart": "loved", "like": "liked", "dislike": "disliked", "laugh": "laughed at", "exclamation": "emphasized",
+           "question mark": "questioned"}
 # Send with effect, by the end of its id (com.apple.MobileSMS.expressivesend.impact, com.apple.messages.effect.CKLasersEffect).
 EFFECTS = {"impact": "slam", "loud": "loud", "gentle": "gentle", "invisibleink": "invisible ink", "CKConfettiEffect": "confetti",
            "CKEchoEffect": "echo", "CKFireworksEffect": "fireworks", "CKLasersEffect": "lasers", "CKHappyBirthdayEffect": "balloons",
@@ -165,6 +176,7 @@ def messages(con, names, copy):
         "is_audio_message", "balloon_bundle_id", "date_edited", "date_retracted", "message_summary_info", "group_action_type",
         "group_title", "other_handle", "date_read", "date_delivered", "associated_message_emoji", "expressive_send_style_id", "subject"))
 
+    said, recent = {}, {}  # guid -> what it said; chat -> its last messages, (guid, text): a text tapback quotes one
     for r in con.execute(f"select ROWID, guid, text, handle_id, is_from_me, date, {more} from message order by date"):
         info = summary_info(r["message_summary_info"])
         text = (r["text"] or decode_attributed_body(r["attributedBody"]) or "").replace("\ufffc", "").strip()
@@ -193,17 +205,36 @@ def messages(con, names, copy):
         me = bool(r["is_from_me"])
         amt = r["associated_message_type"] or 0
         kind = "reaction" if 2000 <= amt < 4000 or amt == 1000 else "message"
+        reaction = TAPBACKS.get(amt) or (f"removed {TAPBACKS.get(amt - 1000, '')}".strip() if 3000 <= amt < 4000 else None)
+        reacts_to, emoji = reacted_to(r["associated_message_guid"]) if kind == "reaction" else None, r["associated_message_emoji"]
+        tapped = TEXT_TAPBACK.match(text) if kind == "message" and not atts else None
+        if tapped:  # a tapback sent as text: on the newest message in this chat that it quotes
+            q = tapped["quoted"].strip()
+            cut = q.endswith("…")
+            target = next((g for g, t in reversed(recent.get(chat.get("guid"), [])) if t == q or (cut and t.startswith(q[:-1].rstrip()))), None)
+            if target:
+                verb = tapped["verb"]
+                reaction = (f"removed {REMOVED.get(tapped['what'], tapped['what'])}" if tapped["what"] else
+                            "reacted to" if tapped["emoji"] else verb.lower())
+                kind, reacts_to, emoji = "reaction", target, tapped["emoji"] or emoji
+        if kind == "message" and text:
+            said[r["guid"]] = text
+            recent.setdefault(chat.get("guid"), []).append((r["guid"], text))
+            del recent[chat.get("guid")][:-400]
+        root = r["thread_originator_guid"]
         meta = {"service": r["service"], "group": chat.get("group"),
-                "reply_to": r["thread_originator_guid"],
-                "reaction": TAPBACKS.get(amt) or (f"removed {TAPBACKS.get(amt - 1000, '')}".strip()
-                                                  if 3000 <= amt < 4000 else None),
-                "reacts_to": reacted_to(r["associated_message_guid"]) if kind == "reaction" else None,
+                # a reply is in the thread its first message started (Messages keeps no nearer parent)
+                "reply_to": root if kind == "message" else None,
+                "reply_text": (said.get(root) or "")[:200] or None if root and kind == "message" else None,
+                "in_thread": root if kind == "reaction" else None, "text_tapback": bool(tapped and kind == "reaction") or None,
+                "reaction": reaction if kind == "reaction" else None,
+                "reacts_to": reacts_to,
                 "audio": bool(r["is_audio_message"]) or None, "app": r["balloon_bundle_id"],
                 "edited": None if unsent else from_apple(r["date_edited"]), "unsent": unsent,
                 "edits": [{"at": from_apple(d), "text": t} for part in edits for d, t in part[:-1]] or None,
                 "unsent_parts": len(unsent_parts) if unsent_parts and not unsent else None,
                 "read": from_apple(r["date_read"]), "delivered": from_apple(r["date_delivered"]),
-                "emoji": r["associated_message_emoji"] if kind == "reaction" else None,
+                "emoji": emoji if kind == "reaction" else None,
                 "effect": effect(r["expressive_send_style_id"]), "subject": r["subject"] or None,
                 "filtered": chat.get("filtered"),
                 "attachments": [{k: a[k] for k in ("name", "mime", "path", "bytes")} for a in atts] or None,
@@ -215,10 +246,44 @@ def messages(con, names, copy):
                    text=text, meta={k: v for k, v in meta.items() if v is not None})
 
 
+def settle(recs):
+    """Each person's tapbacks as they stand: on a message, one each (a newer one replaces theirs; a removal, 3000-3007
+    or "Removed a heart from", takes it away). The message gets the standing ones (meta.reactions, as every chat
+    source keeps them); a tapback replaced or taken back, when (meta.withdrawn); a removal, the one it took back
+    (meta.cancels); each on a message here, meta.on_message (it shows on it, not as a line of its own)."""
+    by_id = {r["id"]: r for r in recs}
+    standing, notes = {}, {"tapbacks_withdrawn": 0, "tapbacks_on_nothing": 0}
+    for r in sorted((r for r in recs if r["kind"] == "reaction"), key=lambda r: r.get("ts") or ""):
+        m = r["meta"]
+        target = m.get("reacts_to")
+        if not target or target not in by_id:
+            notes["tapbacks_on_nothing"] += 1
+            continue
+        m["on_message"] = True
+        k = (r.get("author"), target)
+        before = standing.get(k)
+        if before:
+            before["meta"]["withdrawn"] = r.get("ts") or True
+            notes["tapbacks_withdrawn"] += 1
+        if (m.get("reaction") or "").startswith("removed"):
+            if before:
+                m["cancels"] = before["id"]
+            standing[k] = None
+        else:
+            standing[k] = r
+    for (who, target), r in standing.items():
+        if r:
+            m = r["meta"]
+            shown = m.get("emoji") if m.get("reaction") == "reacted to" else SYMBOLS.get(m.get("reaction"), m.get("emoji") or m.get("reaction"))
+            by_id[target]["meta"].setdefault("reactions", []).append({"who": who, "reaction": shown, "ts": r.get("ts")})
+    return notes
+
+
 def main():
     names = Resolver()
     sources = [("iphone", phone("HomeDomain", "Library/SMS/sms.db")), ("mac", snapshot_sqlite(LIB / "Messages/chat.db", "imessage/chat.db"))]
     with Writer("imessage", AVENUE) as w:
+        kept = []
         for copy, db in sources:  # phone first: it has the most history; the Mac adds anything newer
             if not db.exists():
                 continue
@@ -228,9 +293,11 @@ def main():
                 if "message" not in tables(con):  # made, never written to
                     w.notes.setdefault("empty", []).append(copy)
                     continue
+                seen = {r["id"] for r in kept}
                 for rec in messages(con, names, copy):
-                    if not w.has(rec["id"]):
-                        w.add(**rec)
+                    if rec["id"] not in seen:
+                        seen.add(rec["id"])
+                        kept.append(rec)
                         added += 1
             except sqlite3.DatabaseError as e:
                 print(f"[imessage] the {copy} copy can't be read ({e}); the other is read all the same")
@@ -238,6 +305,10 @@ def main():
             finally:
                 con.close()
             print(f"[imessage] {added:,} messages from the {copy} copy")
+        w.notes.update(settle(kept))
+        for rec in kept:
+            if not w.has(rec["id"]):
+                w.add(**rec)
 
 
 if __name__ == "__main__":

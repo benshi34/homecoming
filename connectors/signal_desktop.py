@@ -218,9 +218,12 @@ def main():
                 pick_ = [x for x in same if by and x[1] == by] or [x for x in same if x[1] is None] or same
                 reply_to = pick_[0][0] if pick_ and pick_[0][0] != r["id"] else None
             # A reaction's fromId is the reacting person's own conversation; yours is Note to Self.
-            reactions = [{"emoji": x.get("emoji"), "from": "me" if x.get("fromId") == mine_conv else
-                          name_of(convs[x["fromId"]]) if x.get("fromId") in convs else None}
-                         for x in j.get("reactions") or [] if isinstance(x, dict)]
+            # as every chat source keeps them, {who, reaction, at}: Signal keeps only the ones that stand (one taken
+            # back is gone from the list)
+            reactions = [{k: v for k, v in {"who": "me" if x.get("fromId") == mine_conv else
+                                            name_of(convs[x["fromId"]]) if x.get("fromId") in convs else None,
+                                            "reaction": x.get("emoji"), "ts": from_unix(x.get("timestamp"), "ms")}.items() if v}
+                         for x in j.get("reactions") or [] if isinstance(x, dict) and x.get("emoji")]
             meta = {"group": chat["group"] or None, "tier": "deleted" if deleted else None,
                     "edits": len(j["editHistory"]) - 1 if isinstance(j.get("editHistory"), list) and len(j["editHistory"]) > 1 else None,
                     "reply_to": reply_to,

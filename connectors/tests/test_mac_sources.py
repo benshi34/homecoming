@@ -151,7 +151,26 @@ class CloudDriveTests(Base):
         self.assertEqual(notes, {"in_cloud_drive_only": 1, "vaults_on_other_disks": 1})
 
 
-def chat_storage(path, rows, chats, members=(), push=(), media=()):
+def pb(*fields):
+    """A protobuf message: (number, int) as a varint, (number, bytes or str) length-delimited."""
+    def varint(n):
+        out = b""
+        while True:
+            out += bytes([(n & 0x7F) | (0x80 if n > 0x7F else 0)])
+            n >>= 7
+            if not n:
+                return out
+    out = b""
+    for f, v in fields:
+        if isinstance(v, int):
+            out += varint(f << 3) + varint(v)
+        else:
+            v = v.encode() if isinstance(v, str) else v
+            out += varint(f << 3 | 2) + varint(len(v)) + v
+    return out
+
+
+def chat_storage(path, rows, chats, members=(), push=(), media=(), info=()):
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.executescript("""
@@ -159,14 +178,16 @@ def chat_storage(path, rows, chats, members=(), push=(), media=()):
         create table ZWAGROUPMEMBER (Z_PK integer primary key, ZCHATSESSION int, ZMEMBERJID text, ZCONTACTNAME text);
         create table ZWAPROFILEPUSHNAME (Z_PK integer primary key, ZJID text, ZPUSHNAME text);
         create table ZWAMEDIAITEM (Z_PK integer primary key, ZMESSAGE int, ZMEDIALOCALPATH text, ZTITLE text,
-            ZFILESIZE int, ZLATITUDE real, ZLONGITUDE real, ZVCARDNAME text);
+            ZFILESIZE int, ZLATITUDE real, ZLONGITUDE real, ZVCARDNAME text, ZMETADATA blob);
+        create table ZWAMESSAGEINFO (Z_PK integer primary key, ZMESSAGE int, ZRECEIPTINFO blob);
         create table ZWAMESSAGE (Z_PK integer primary key, ZCHATSESSION int, ZISFROMME int, ZMESSAGEDATE real, ZTEXT text,
             ZSTANZAID text, ZMESSAGETYPE int, ZGROUPMEMBER int, ZGROUPEVENTTYPE int, ZFROMJID text, ZTOJID text, ZSTARRED int);
     """)
     con.executemany("insert into ZWACHATSESSION values (?,?,?,?)", chats)
     con.executemany("insert into ZWAGROUPMEMBER values (?,?,?,?)", members)
     con.executemany("insert into ZWAPROFILEPUSHNAME values (?,?,?)", push)
-    con.executemany("insert into ZWAMEDIAITEM values (?,?,?,?,?,?,?,?)", media)
+    con.executemany("insert into ZWAMEDIAITEM values (?,?,?,?,?,?,?,?,?)", [tuple(m) + (None,) * (9 - len(m)) for m in media])
+    con.executemany("insert into ZWAMESSAGEINFO (ZMESSAGE, ZRECEIPTINFO) values (?,?)", info)
     con.executemany("insert into ZWAMESSAGE values (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     con.commit()
     con.close()
@@ -214,6 +235,32 @@ class WhatsAppTests(Base):
         self.assertEqual(recs["S3"]["kind"], "message", "ZGROUPEVENTTYPE alone isn't an event")
         self.assertEqual((recs["S7"]["text"], recs["S7"]["meta"]["tier"]), ("[deleted message]", "deleted"))
         self.assertEqual(manifest(self.corpus, "whatsapp")["notes"], {"others_status_updates": 1})
+
+    def test_replies_and_reactions_and_ones_taken_back(self):
+        T = self.T
+        rows = [(1, 2, 0, T, "Who has the shed key?", "S1", 0, 1, 2, "120363000000000001@g.us", None, 0),
+                (2, 2, 1, T + 60, "I do", "S2", 0, None, 2, None, "120363000000000001@g.us", 0),
+                (3, 2, 0, T + 120, "Thanks!", "S3", 0, 2, 2, "120363000000000001@g.us", None, 0)]
+        reaction = lambda rid, jid, emoji, ms: (1, pb((1, rid), *([(2, jid)] if jid else [(6, 1)]), *([(3, emoji)] if emoji else []), (4, ms)))
+        info = [(1, pb((7, pb(reaction("R1", "15550002222@s.whatsapp.net", "👍", 1758307300000),
+                               reaction("R2", None, "❤️", 1758307310000),
+                               # Dee's ❤️, then taken back (an entry with no emoji, newer)
+                               reaction("R3", "77000000000003@lid", "❤️", 1758307320000),
+                               reaction("R4", "77000000000003@lid", None, 1758307330000)))))]
+        # S2 quotes S1 (its stanza id, and what it said); S3 quotes a message this copy doesn't have
+        link = pb((6, pb((1, "see https://allotment.example"))))  # a link's message: its text in 6.1
+        media = [(1, 2, None, None, None, None, None, None, pb((5, "S1"), (6, "15550002222@s.whatsapp.net"), (19, pb((1, "Who has the shed key?"))))),
+                 (2, 3, None, None, None, None, None, None, pb((5, "GONE"), (19, link)))]
+        chat_storage(self.home / "Library/Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite", rows,
+                     self.CHATS, self.MEMBERS, push=[(1, "77000000000003@lid", "Dee")], media=media, info=info)
+        recs = {r["id"]: r for r in (run(self.home, self.corpus, "whatsapp") or records(self.corpus, "whatsapp"))}
+        self.assertEqual(recs["S1"]["meta"]["reactions"], [{"who": "Cal Rowan", "reaction": "👍", "ts": "2025-09-19T18:41:40Z"},
+                                                           {"who": "me", "reaction": "❤️", "ts": "2025-09-19T18:41:50Z"}])
+        self.assertEqual(recs["S1"]["meta"]["reactions_taken_back"], [{"who": "Dee", "ts": "2025-09-19T18:42:10Z"}],
+                         "a reaction taken back isn't one, and who took it back is kept")
+        self.assertEqual((recs["S2"]["meta"]["reply_to"], recs["S2"]["meta"]["reply_text"]), ("S1", "Who has the shed key?"))
+        self.assertEqual((recs["S3"]["meta"]["reply_to"], recs["S3"]["meta"]["reply_text"]), ("GONE", "see https://allotment.example"),
+                         "a quote of a message not here: what it said, from the quote")
 
     def test_messages_the_iphone_backup_has_are_counted_there(self):
         self.mac(self.ROWS[:3])
