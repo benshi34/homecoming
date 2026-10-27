@@ -249,6 +249,26 @@ class MessagesTests(unittest.TestCase):
                 self.assertEqual(got[guid]["meta"]["reacts_to"], "m1", "the message's own guid, which is its record's id")
         self.assertEqual(got["m1"]["kind"], "message")
 
+    def test_what_apple_heard_in_an_audio_message(self):
+        def heard(text, raw=None):  # the attribute as Messages writes it after the message's own (empty) string
+            b = raw if raw is not None else text.encode()
+            n = len(b)
+            size = bytes([n]) if n < 0x80 else b"\x81" + n.to_bytes(2, "little")
+            return typedstream("\ufffc")[:-3] + b"\x92\x84\x96\x96\x14IMAudioTranscription\x86\x92\x84\x96\x96" + size + b + b"\x86\x86\x86"
+        long_ = "我们周六在码头见，记得带上三脚架，天气预报说早上会有雾，所以我们可以晚一点出发。" * 2  # over 127 bytes: a two-byte length
+        con = self.chat_db()
+        self.add(con, 1, "long", text=None, is_audio_message=1, attributedBody=heard(long_))
+        self.add(con, 2, "short", text=None, is_audio_message=1, attributedBody=heard("on my way"))
+        self.add(con, 3, "garbled", text=None, is_audio_message=1, attributedBody=heard("", raw=b"\xff\xfe\x00broken"))
+        self.add(con, 4, "plain", text=None, is_audio_message=1, attributedBody=typedstream("\ufffc"))
+        got = self.read(con)
+        self.assertEqual((got["long"]["text"], got["long"]["meta"]["transcribed"]), (long_, True))
+        self.assertEqual(got["short"]["text"], "on my way")
+        for guid in ("garbled", "plain"):
+            with self.subTest(guid):
+                self.assertNotIn("transcribed", got[guid]["meta"], "nothing Apple heard, or nothing readable")
+                self.assertTrue(got[guid]["meta"]["audio"])
+
     def test_replies_group_chats_and_sms_imessage_rcs(self):
         con = self.chat_db()
         self.add(con, 1, "g1", chat=2, text="Who's in?", is_from_me=1)

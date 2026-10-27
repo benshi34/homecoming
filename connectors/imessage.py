@@ -49,6 +49,34 @@ def decode_attributed_body(blob):
     return blob[p:p + n].decode("utf-8", "replace")
 
 
+def audio_transcription(blob):
+    """What Apple's transcription of an audio message says (iOS 17 on): attributedBody's IMAudioTranscription attribute,
+    a string after a few bytes naming its class, its length as message text's is. None when there's none, or it isn't
+    clean text."""
+    i = blob.find(b"IMAudioTranscription") if blob else -1
+    if i < 0:
+        return None
+    p = i + len(b"IMAudioTranscription")
+    for _ in range(8):  # past the object and class bytes (0x83 and up, apart from the two length markers)
+        if p >= len(blob) or blob[p] < 0x83:
+            break
+        p += 1
+    if p >= len(blob) or blob[p] == 0:
+        return None
+    n = blob[p]
+    if n == 0x81:
+        n, p = int.from_bytes(blob[p + 1:p + 3], "little"), p + 3
+    elif n == 0x82:
+        n, p = int.from_bytes(blob[p + 1:p + 5], "little"), p + 5
+    else:
+        p += 1
+    try:
+        text = blob[p:p + n].decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    return text if text and len(blob) >= p + n else None
+
+
 def summary_info(blob):
     """message.message_summary_info (macOS 13 on): a binary plist of what became of each part of a message. "ec": part ->
     its versions as it was edited, oldest first ({"d": Apple seconds, "t": that version's attributedBody}); "rp": the
@@ -175,6 +203,9 @@ def messages(con, names, copy):
                   if not text and not atts and (unsent_parts or r["date_retracted"]) else None)
         edits = [] if unsent else versions(info)
         text = "[unsent message]" if unsent else text or "\n".join(v[-1][1] for v in edits)  # edited: its last version
+        heard = audio_transcription(r["attributedBody"]) if r["is_audio_message"] and not unsent else None
+        if heard:  # an audio message says what Apple heard in it
+            text = (text + "\n" if text else "") + heard
         if atts:
             text = (text + "\n" if text else "") + "\n".join(
                 f"[attachment: {a['name'] or 'file'} ({a['mime'] or '?'})]" for a in atts)
@@ -198,7 +229,7 @@ def messages(con, names, copy):
                 "reaction": TAPBACKS.get(amt) or (f"removed {TAPBACKS.get(amt - 1000, '')}".strip()
                                                   if 3000 <= amt < 4000 else None),
                 "reacts_to": reacted_to(r["associated_message_guid"]) if kind == "reaction" else None,
-                "audio": bool(r["is_audio_message"]) or None, "app": r["balloon_bundle_id"],
+                "audio": bool(r["is_audio_message"]) or None, "transcribed": True if heard else None, "app": r["balloon_bundle_id"],
                 "edited": None if unsent else from_apple(r["date_edited"]), "unsent": unsent,
                 "edits": [{"at": from_apple(d), "text": t} for part in edits for d, t in part[:-1]] or None,
                 "unsent_parts": len(unsent_parts) if unsent_parts and not unsent else None,
