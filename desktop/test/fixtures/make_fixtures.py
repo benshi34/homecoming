@@ -164,6 +164,27 @@ def exports(out):
     (unz / "Takeout/Mail").mkdir(parents=True, exist_ok=True)
     (unz / "Takeout/Mail/All mail Including Spam and Trash.mbox").write_text(MBOX)
     made["google_takeout_folder"] = unz
+    # slackdump's export: a thread, a reply the next day, reactions, a file it downloaded (__uploads/<id>/<name>)
+    t = 1704067200
+    users = [{"id": "U01", "name": "ada", "real_name": "Ada Lovelace"}, {"id": "U02", "name": "charles", "real_name": "Charles Babbage"}]
+    made["slack"] = _zip(out / "slackdump_20250301_120000.zip", {
+        "users.json": users, "channels.json": [{"id": "C01", "name": "engine", "members": ["U01", "U02"]}], "dms.json": [],
+        "engine/2024-01-01.json": [{"type": "message", "user": "U02", "text": "The mill turns at last", "ts": f"{t}.000100",
+                                    "thread_ts": f"{t}.000100", "reply_count": 1, "files": [{"id": "F0FIXTURE1", "name": "mill.jpg"}],
+                                    "reactions": [{"name": "tada", "users": ["U01"], "count": 1}]}],
+        "engine/2024-01-02.json": [{"type": "message", "user": "U01", "text": "Then the notes can run", "ts": f"{t + 86400}.000200",
+                                    "thread_ts": f"{t}.000100", "parent_user_id": "U02"}],
+        "__uploads/F0FIXTURE1/mill.jpg": b"\xff\xd8\xff\xe0 fixture"})
+    # Telegram Desktop's JSON export, as the folder it saves (DataExport_<date>/result.json)
+    tg = out / "Telegram Desktop" / "DataExport_2025-03-01"
+    tg.mkdir(parents=True, exist_ok=True)
+    (tg / "result.json").write_text(json.dumps({"personal_information": {"user_id": 11, "first_name": "Ada"}, "chats": {"list": [
+        {"name": "Charles Babbage", "type": "personal_chat", "id": 4401, "messages": [
+            {"id": 1, "type": "message", "date_unixtime": str(t), "from": "Charles Babbage", "from_id": "user77", "text": "Tea at four?",
+             "reactions": [{"type": "emoji", "emoji": "❤", "count": 1, "recent": [{"from": "Ada Lovelace", "from_id": "user11", "date": "2024-01-01T00:01:00"}]}]},
+            {"id": 2, "type": "message", "date_unixtime": str(t + 60), "from": "Ada Lovelace", "from_id": "user11", "text": "Four it is",
+             "reply_to_message_id": 1}]}]}}))
+    made["telegram"] = tg
     return {k: str(v) for k, v in made.items()}
 
 

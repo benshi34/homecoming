@@ -12,7 +12,7 @@ const PARTIAL = /\.(crdownload|download|part|partial|tmp|opdownload)$|\.partial\
 const STILL_WRITING = ['.part', '.crdownload', '.download'];
 const FILE_EXT = /\.(zip|vcf|mbox|olm|vtt|tgz|tar\.gz)$/i;
 // Folders: what an export's zip is called, or (unzipped by Safari) the folder at its top ("Takeout", "Spotify Account Data").
-const EXPORT_NAMES = /^(takeout\b|takeout-|instagram-|facebook-|export-|twitter-|discord|package|my_spotify_data|spotify (account data|extended streaming history)|mydata$|complete_linkedindataexport|basic_linkedindataexport|export_|whatsapp chat)/i;
+const EXPORT_NAMES = /^(takeout\b|takeout-|instagram-|facebook-|export-|twitter-|discord|package|my_spotify_data|spotify (account data|extended streaming history)|mydata$|complete_linkedindataexport|basic_linkedindataexport|export_|whatsapp chat|dataexport_|chatexport_)/i;
 // What's at the top of an unzipped export whose folder is named after nothing in particular (ChatGPT's "<hash>-<date>", Claude's
 // "data-<date>", a Slack workspace's export): looked for one level down, so other folders cost a directory listing.
 const EXPORT_INSIDE = ['conversations.json', 'your_instagram_activity', 'your_facebook_activity', 'channels.json', 'Takeout', 'StreamingHistory_music_0.json',

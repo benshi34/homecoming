@@ -363,8 +363,16 @@ def sources_present(con):
 
 # ---------------------------------------------------------------- people
 
+def chat_meta(source, meta):
+    """What chat_partner needs of a message's meta: all of it from the apps whose meta says who it's with, else only
+    whether it says it's a group (a Slack channel, a Telegram group): read only when it might."""
+    return meta_of(meta) if source in ("imessage", "discord") or (meta and '"group": true' in meta) else {}
+
+
 def chat_partner(source, thread_name, participants, meta, mine):
     """The one other person in a one-on-one conversation, or None for a group or a server channel."""
+    if meta.get("group") is True:
+        return None
     if source == "imessage":
         return None if meta.get("group") else thread_name
     if source == "discord":
@@ -404,7 +412,7 @@ def identities(con, mine):
     q = (f"select source, thread, thread_name, participants, meta from records where {MESSAGES} "
          f"and source not in ({','.join(repr(s) for s in CONTACT_NAMED)}) group by source, thread")
     for source, thread, thread_name, participants, meta in con.execute(q):
-        who = chat_partner(source, thread_name, participants, meta_of(meta) if source == "discord" else {}, mine)
+        who = chat_partner(source, thread_name, participants, chat_meta(source, meta), mine)
         if who and key(who) not in mine:
             threads[(source, key(who))].add(thread)
     # The names your Contacts give: a first name alone from another app can be one of these.
@@ -434,7 +442,7 @@ def message_rows(con, mine, pg=None, ident=None):
     for i, (rowid, source, ts, is_me, thread, thread_name, participants, meta) in enumerate(con.execute(q)):
         if pg:
             pg.tick(i)
-        m = meta_of(meta) if source in ("imessage", "discord") else {}
+        m = chat_meta(source, meta)
         who = chat_partner(source, thread_name, participants, m, mine)
         if not key(who) or key(who) in mine:
             continue
@@ -653,7 +661,7 @@ def on_this_day(md=None):
                     places[p] += 1
             elif kind == "message" and source in CHATS:
                 # One person once, whichever apps you talked in (the busiest conversation opens); a group as a group.
-                m = meta_of(meta) if source in ("imessage", "discord") else {}
+                m = chat_meta(source, meta)
                 who = chat_partner(source, thread_name, participants, m, mine)
                 pk = ident(source, thread, who, person_meta(meta)) if who else None
                 if pk:
@@ -883,7 +891,7 @@ def trip_people(con, lo, hi, merged=None, ident=None):
     for source, thread, thread_name, participants, meta in con.execute(
             f"select source, thread, thread_name, participants, meta from records where kind = 'message' and source in ({','.join('?' * len(CHATS))}) "
             "and ts >= ? and ts < ?", (*CHATS, lo, hi)):
-        who = chat_partner(source, thread_name, participants, meta_of(meta) if source in ("imessage", "discord") else {}, mine)
+        who = chat_partner(source, thread_name, participants, chat_meta(source, meta), mine)
         k = ident(source, thread, who, person_meta(meta)) if who and key(who) not in mine else None
         if k:
             k, name = merged.get(k, (k, person_meta(meta).get("person_name") or who))
@@ -2379,7 +2387,7 @@ def explore_page(con, source, th, thread_name, participants, meta, rows):
     mine = me_names()
     if not any(r[4] == "message" and parse(r[1]) for r in rows):
         return None  # neither page counts a message with no time that can be right
-    who = chat_partner(source, thread_name, participants, meta_of(meta) if source in ("imessage", "discord") else {}, mine)
+    who = chat_partner(source, thread_name, participants, chat_meta(source, meta), mine)
     if who:
         if source not in CHATS or not key(who) or key(who) in mine:
             return None
@@ -2443,7 +2451,7 @@ def _messages(rows, anchors=()):
 
 def _who(con, source, th, thread_name, participants, meta):
     """Which app a conversation is in, who it's with (no one name for a group), and whether only your side is kept."""
-    m = meta_of(meta) if source in ("imessage", "discord") else {}
+    m = chat_meta(source, meta)
     who = chat_partner(source, thread_name, participants, m, me_names())
     others = con.execute("select 1 from records where source = ? and thread = ? and kind = 'message' and is_me != '1' limit 1",
                          (source, th)).fetchone()

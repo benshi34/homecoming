@@ -208,7 +208,9 @@ class SlackTests(Base):
         first, reply = got[f"general:{ts(0)}"], got[f"general:{ts(1500)}"]
         self.assertEqual(first["meta"]["reactions"], [{"who": "me", "reaction": "❤️"}, {"who": "Theo Laurent", "reaction": "❤️"}])
         self.assertEqual(first["meta"]["attachments"], ["pier.jpg"], "a file's name, whatever reactions it has")
-        self.assertEqual((reply["meta"]["reply_to"], reply["meta"]["reply_text"]), (f"general:{ts(0)}", "the pier at dawn\n[file: pier.jpg]"))
+        self.assertEqual((first["meta"].get("group"), got[f"D01:{ts(5)}"]["meta"].get("group")), (True, None), "a channel is a group, a DM isn't")
+        self.assertEqual((reply["meta"]["reply_to"], reply["meta"]["reply_text"]), (f"general:{ts(0)}", "the pier at dawn"), "the file's copied: it shows as itself")
+        self.assertEqual(got[f"D01:{ts(5)}"]["text"], "[file: notes]", "nothing but a file: said in words")
         for r, want in ((first, jpeg), (got[f"D01:{ts(5)}"], b"bring the tripod")):
             with self.subTest(r["id"]):
                 f = Path(r["meta"]["files"][0])

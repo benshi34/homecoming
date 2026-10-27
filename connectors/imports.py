@@ -3643,13 +3643,16 @@ def slack_day(e, w, users, convs, names, said=None, uploads=None, used=None, msg
                  if isinstance(a, dict) and (is_bot or not text or a.get("is_share") or a.get("is_msg_unfurl"))]
         files = [f for f in listish(m.get("files")) or ([m["file"]] if isinstance(m.get("file"), dict) else []) if isinstance(f, dict)]
         shown = [f.get("title") or f.get("name") for f in files]
-        saved = []
-        for f in files:
+        saved, copied = [], set()
+        for f, n in zip(files, shown):
             up = (uploads or {}).get((e.origin, f.get("id")))
             if up and (path := save_media(up, MEDIA / "slack" / up.path, from_unix(number(ts)))):
                 used.add(up.path) if used is not None else None
                 saved.append(path)
-        text = "\n".join(x for x in (text, *notes, *(f"[file: {n}]" if n else "[a file Slack no longer keeps]" for n in shown)) if x)
+                copied.add(n)
+        # a file that's here shows as itself; one only named, or a message that's nothing but files, says so in words
+        text = "\n".join(x for x in (text, *notes, *(f"[file: {n}]" if n else "[a file Slack no longer keeps]"
+                                                      for n in shown if not (text and n in copied))) if x)
         thread = m.get("thread_ts")
         edited = m.get("edited") if isinstance(m.get("edited"), dict) else {}
         # each person's, {who, reaction}, as every chat source keeps them; one with no users listed, once per count
@@ -3667,7 +3670,7 @@ def slack_day(e, w, users, convs, names, said=None, uploads=None, used=None, msg
         meta = {"thread_ts": thread, "reply_to": parent, "reply_text": (said or {}).get(parent, "")[:200] or None if parent else None,
                 "replies": m.get("reply_count"), "edited": from_unix(number(edited.get("ts"))), "reactions": reactions or None,
                 "attachments": [n for n in shown if n] or None, "files": saved or None,
-                "bot": True if is_bot else None, "type": sub, "conversation": what,
+                "bot": True if is_bot else None, "type": sub, "conversation": what, "group": True if what and what != "dm" else None,
                 "tier": "deleted" if sub == "tombstone" else None}
         w.add(id=key, kind="event" if sub in SLACK_EVENTS else "message", ts=from_unix(number(ts)), author="me" if me else author,
               is_me=me, thread=folder, thread_name=name, participants=people if what in ("dm", "group dm") else None, text=text,

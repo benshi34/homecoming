@@ -22,7 +22,7 @@ const KNOWN = new Set(CATEGORIES.map((c) => c.id));
 const BUILTIN_CATEGORY: Record<string, string> = {
   google_takeout: 'accounts', google_photos_drive: 'storage', instagram: 'social', facebook: 'social', discord: 'messaging',
   linkedin: 'jobs', notion: 'work', chatgpt: 'ai', claude_ai: 'ai', x: 'social', reddit: 'social', spotify: 'music',
-  other_mail: 'accounts', maps_timeline: 'travel', whatsapp_chats: 'messaging', slack: 'work', zoom: 'work',
+  other_mail: 'accounts', maps_timeline: 'travel', whatsapp_chats: 'messaging', slack: 'work', telegram: 'messaging', zoom: 'work',
 };
 
 export interface HubRow {
