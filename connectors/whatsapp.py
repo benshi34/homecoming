@@ -180,7 +180,8 @@ def main():
                 text = f"[{attachment}] {caption}".strip()
             files = [str(f) for f in (CONTAINER / "Message" / m["ZMEDIALOCALPATH"], CONTAINER / m["ZMEDIALOCALPATH"])
                      if f.is_file()][:1] if m and m["ZMEDIALOCALPATH"] else []
-            if r["ZGROUPEVENTTYPE"] or kind_no == SYSTEM:
+            # a system row is the event; ZGROUPEVENTTYPE is set on ordinary messages too (2 on nearly every one)
+            if kind_no == SYSTEM:
                 kind, text = "event", text or "A change to the group: who is in it, its name or its picture"
             elif chat["jid"] == STATUS:
                 kind, text = "post", text or "[status update]"
@@ -191,7 +192,7 @@ def main():
                     "starred": bool(r["ZSTARRED"]) or None, "chat": chat["jid"],
                     "lat": m["ZLATITUDE"] if m and kind_no == 5 else None, "lon": m["ZLONGITUDE"] if m and kind_no == 5 else None,
                     "attachment": m["ZMEDIALOCALPATH"] if m else None, "bytes": m["ZFILESIZE"] if m else None,
-                    "files": files or None, "group_event": r["ZGROUPEVENTTYPE"] or None}
+                    "files": files or None, "group_event": (r["ZGROUPEVENTTYPE"] or None) if kind_no == SYSTEM else None}
             w.add(id=rid, kind=kind, ts=from_apple(r["ZMESSAGEDATE"]), author=author, is_me=me, thread=chat["jid"],
                   thread_name=chat["name"], participants=chat["people"], text=text,
                   meta={k: v for k, v in meta.items() if v is not None})

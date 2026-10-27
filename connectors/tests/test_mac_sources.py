@@ -185,7 +185,7 @@ class WhatsAppTests(Base):
 
     ROWS = [(1, 1, 0, T, "Are the leeks up yet?", "S1", 0, None, None, "15550001111@s.whatsapp.net", None, 0),
             (2, 1, 1, T + 60, "Not yet, maybe Friday", "S2", 0, None, None, None, "15550001111@s.whatsapp.net", 1),
-            (3, 2, 0, T + 120, "Who has the shed key?", "S3", 0, 2, None, "120363000000000001@g.us", None, 0),
+            (3, 2, 0, T + 120, "Who has the shed key?", "S3", 0, 2, 2, "120363000000000001@g.us", None, 0),  # the app's 2: a message
             (4, 2, 0, T + 180, "Look at these", "S4", 1, 1, None, "120363000000000001@g.us", None, 0),
             (5, 2, 0, T + 240, None, "S5", 6, 1, 2, "120363000000000001@g.us", None, 0),
             (6, 3, 0, T + 300, "my holiday", "S6", 0, None, None, "15550002222@s.whatsapp.net", None, 0),
@@ -211,6 +211,7 @@ class WhatsAppTests(Base):
         self.assertEqual((recs["S4"]["author"], recs["S4"]["text"]), ("Cal Rowan", "[photo] Look at these"))
         self.assertEqual(recs["S4"]["meta"]["attachment"], "Media/120363000000000001@g.us/a/b/leeks.jpg")
         self.assertEqual(recs["S5"]["kind"], "event")
+        self.assertEqual(recs["S3"]["kind"], "message", "ZGROUPEVENTTYPE alone isn't an event")
         self.assertEqual((recs["S7"]["text"], recs["S7"]["meta"]["tier"]), ("[deleted message]", "deleted"))
         self.assertEqual(manifest(self.corpus, "whatsapp")["notes"], {"others_status_updates": 1})
 
