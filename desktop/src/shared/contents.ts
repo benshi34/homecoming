@@ -29,7 +29,7 @@ const KINDS: Record<string, Record<string, string>> = {
 };
 const KIND_WORDS: Record<string, string> = {
   contact: 'Contacts', note: 'Notes', event: 'Events', reminder: 'Reminders', call: 'Calls', document: 'Documents',
-  commit: 'Commits', voice_memo: 'Recordings', command: 'Commands', post: 'Posts', comment: 'Comments', purchase: 'Purchases',
+  commit: 'Commits', voice_memo: 'Recordings', voicemail: 'Voicemails', command: 'Commands', post: 'Posts', comment: 'Comments', purchase: 'Purchases',
   transaction: 'Transactions', trip: 'Trips', media: 'Media', listen: 'Listens', watch: 'Things watched', read: 'Things read',
   review: 'Reviews', follow: 'Follows', like: 'Likes', activity: 'Activity', record: 'Other records', file: 'Files', message: 'Messages', photo: 'Photos', visit: 'Pages visited', search: 'Searches',
   saved: 'Saved items', bookmark: 'Bookmarks', playlist: 'Playlists', subscription: 'Subscriptions', vote: 'Votes', reaction: 'Reactions',

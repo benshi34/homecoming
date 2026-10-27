@@ -511,6 +511,23 @@ def write_artifact(w, module, category, a, con, media, nicknames, names, chosen,
         meta = {k: v for k, v in (("artifact", a["name"]), ("category", category), ("files", files),
                                   ("fields", fields), ("source_file", source_file),
                                   ("tier", tier(category, a["name"]))) if v}
+        if a["artifact_key"] == "voicemail":
+            # A voicemail as one: from whom (named as Contacts names the number), what Apple's transcript says, its
+            # audio beside it, rather than a row of fields
+            if "resolver" not in cache:
+                import contacts
+                cache["resolver"] = contacts.Resolver()
+            number_ = fields.get("Sender")
+            who = cache["resolver"].label(str(number_)) if number_ else "Unknown caller"
+            said = str(fields.get("Transcript") or "").strip()
+            when = next((iso(r[c], plausible=True) for c in times if iso(r[c], plausible=True)), None)
+            meta.update({k: v for k, v in (("handle", number_), ("duration", fields.get("Duration")),
+                                           ("deleted", True if fields.get("Deleted") not in (None, "", "No") else None),  # "Yes", or when
+                                           ("transcript_confidence", fields.get("Transcript confidence"))) if v})
+            w.add(id=rid, kind="voicemail", ts=when, author=who, is_me=False, title=f"Voicemail from {who}",
+                  text=said or f"[voicemail{', ' + str(fields['Duration']) if fields.get('Duration') else ''}, no transcript]", meta=meta)
+            n += 1
+            continue
         if conv:
             sent = str(r.get(conv.get("directionColumn"))) == str(conv.get("directionSentValue"))
             if a["artifact_key"] == "weChatMessages":
