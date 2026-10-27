@@ -189,6 +189,32 @@ class SlackTests(Base):
         self.assertEqual(say_(11)["author"], "Riley Park")
         self.assertEqual(say_(12)["text"], "with a link preview https://example.com/x", "a link's preview is the link's, not the message's")
 
+    def test_slackdumps_export_files_and_a_reply_the_next_day(self):
+        jpeg = b"\xff\xd8\xff\xe0 made-up"
+        pic = {"id": "F0AAAAAAA", "name": "pier.jpg", "title": "pier.jpg", "mimetype": "image/jpeg"}
+        doc = {"id": "F0BBBBBBB", "name": "notes.txt", "title": "notes", "mimetype": "text/plain"}
+        self.zip("slack/slackdump_20260106_120000.zip", {
+            "users.json": USERS, "channels.json": [{"id": "C01", "name": "general", "members": ["U01", "U02"]}],
+            "dms.json": [{"id": "D01", "members": ["U01", "U02"]}],
+            "general/2026-01-05.json": [say(0, "U02", "the pier at dawn", thread_ts=ts(0), reply_count=1, files=[pic],
+                                            reactions=[{"name": "heart", "users": ["U01", "U02"], "count": 2}])],
+            "general/2026-01-06.json": [say(1500, "U01", "worth the early start", thread_ts=ts(0), parent_user_id="U02")],
+            "__uploads/F0AAAAAAA/pier.jpg": jpeg,  # slackdump's default (Mattermost) layout
+            "D01/2026-01-05.json": [say(5, "U01", "", files=[doc])],
+            "D01/attachments/F0BBBBBBB-notes.txt": "bring the tripod",  # its standard layout
+            "__uploads/F0CCCCCCC/stray.bin": b"no message names it"})
+        self.run_import()
+        got = {r["id"]: r for r in self.of("slack")}
+        first, reply = got[f"general:{ts(0)}"], got[f"general:{ts(1500)}"]
+        self.assertEqual(first["meta"]["reactions"], [{"who": "me", "reaction": "❤️"}, {"who": "Theo Laurent", "reaction": "❤️"}])
+        self.assertEqual(first["meta"]["attachments"], ["pier.jpg"], "a file's name, whatever reactions it has")
+        self.assertEqual((reply["meta"]["reply_to"], reply["meta"]["reply_text"]), (f"general:{ts(0)}", "the pier at dawn\n[file: pier.jpg]"))
+        for r, want in ((first, jpeg), (got[f"D01:{ts(5)}"], b"bring the tripod")):
+            with self.subTest(r["id"]):
+                f = Path(r["meta"]["files"][0])
+                self.assertEqual((f if f.is_absolute() else self.corpus / f).read_bytes(), want, "copied out of the export")
+        self.assertNotIn("__uploads/F0AAAAAAA/pier.jpg", self.unclaimed())
+
     def test_every_conversation_private_channels_dms_and_group_dms(self):
         self.files("slack/Lumen Labs export", {
             "users.json": USERS, "channels.json": [{"id": "C01", "name": "general", "members": ["U01", "U02", "U03"]}],

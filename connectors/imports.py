@@ -3439,6 +3439,8 @@ def slack(es, W, used):
     for e in es:
         if e.name in SLACK_USERS or e.name in SLACK_LISTS:
             lists[(e.origin, posixpath.dirname(e.path))][e.name] = e
+    # slackdump's downloaded files: __uploads/<file id>/<name> (its default) or <conversation>/attachments/<file id>-<name>
+    uploads = {(e.origin, m.group(1) or m.group(2)): e for e in es for m in [SLACK_UPLOAD.search(e.path)] if m}
     exports = collections.defaultdict(list)
     for e in es:
         if not SLACK_DAY.search(e.path):
@@ -3454,7 +3456,7 @@ def slack(es, W, used):
             up = posixpath.dirname(up)
             found.update((n, x) for n, x in lists.get((origin, up), {}).items() if n in SLACK_USERS)
         if found or slack_days(days[0]):
-            slack_workspace(found, days, W, used)
+            slack_workspace(found, days, W, used, uploads)
     slack_text(es, W, used)
 
 
@@ -3471,7 +3473,10 @@ def slack_list(e):
     return [x for x in listish(e.json()) if isinstance(x, dict)]
 
 
-def slack_workspace(found, days, W, used):
+SLACK_UPLOAD = re.compile(r"(?:^|/)(?:__uploads/(F[A-Z0-9]{6,})/[^/]+|attachments/(F[A-Z0-9]{6,})-[^/]+)$")
+
+
+def slack_workspace(found, days, W, used, uploads=None):
     users = {"USLACKBOT": "Slackbot"}
     for n in SLACK_USERS:
         if n in found:
@@ -3497,9 +3502,10 @@ def slack_workspace(found, days, W, used):
             if c.get("id"):
                 names[c["id"]] = folder if what != "dm" else name
     w = W("slack")
-    for e in days:
+    said = {}  # a message's record id -> its text, for the replies to it (a thread's first message comes first)
+    for e in sorted(days, key=lambda e: e.path):
         used.add(e.path)
-        guarded(e, used, slack_day, w, users, convs, names)
+        guarded(e, used, slack_day, w, users, convs, names, said, uploads or {}, used)
 
 
 def slack_markup(s, users, names):
@@ -3569,7 +3575,7 @@ def slack_emoji(name):
     return SLACK_EMOJI.get(base, f":{base}:")
 
 
-def slack_day(e, w, users, convs, names):
+def slack_day(e, w, users, convs, names, said=None, uploads=None, used=None):
     """One conversation's day: its messages, threads (thread_ts, and a reply's own), edits, files, reactions and bots'
     posts. Who joined or left isn't kept; a channel's new topic or a pin is an event; a deleted message whose replies
     stay (tombstone) is kept, tagged as deleted mail is."""
@@ -3595,6 +3601,12 @@ def slack_day(e, w, users, convs, names):
                  if isinstance(a, dict) and (is_bot or not text or a.get("is_share") or a.get("is_msg_unfurl"))]
         files = [f for f in listish(m.get("files")) or ([m["file"]] if isinstance(m.get("file"), dict) else []) if isinstance(f, dict)]
         shown = [f.get("title") or f.get("name") for f in files]
+        saved = []
+        for f in files:
+            up = (uploads or {}).get((e.origin, f.get("id")))
+            if up and (path := save_media(up, MEDIA / "slack" / up.path, from_unix(number(ts)))):
+                used.add(up.path) if used is not None else None
+                saved.append(path)
         text = "\n".join(x for x in (text, *notes, *(f"[file: {n}]" if n else "[a file Slack no longer keeps]" for n in shown)) if x)
         thread = m.get("thread_ts")
         edited = m.get("edited") if isinstance(m.get("edited"), dict) else {}
@@ -3602,13 +3614,17 @@ def slack_day(e, w, users, convs, names):
         reactions = []
         for r in listish(m.get("reactions")):
             if isinstance(r, dict) and isinstance(r.get("name"), str):
-                shown = slack_emoji(r["name"])
+                emoji = slack_emoji(r["name"])
                 who = [u for u in listish(r.get("users")) if isinstance(u, str)]
-                reactions += [{"who": "me" if is_me_name(users.get(u)) else users.get(u) or u, "reaction": shown} for u in who] or \
-                    [{"reaction": shown}] * max(1, int(r.get("count") or 1))
+                reactions += [{"who": "me" if is_me_name(users.get(u)) else users.get(u) or u, "reaction": emoji} for u in who] or \
+                    [{"reaction": emoji}] * max(1, int(r.get("count") or 1))
         me = is_me_name(author) and not is_bot
-        meta = {"thread_ts": thread, "reply_to": f"{folder}:{thread}" if thread and thread != ts else None, "replies": m.get("reply_count"),
-                "edited": from_unix(number(edited.get("ts"))), "reactions": reactions or None, "files": [n for n in shown if n] or None,
+        parent = f"{folder}:{thread}" if thread and thread != ts else None
+        if said is not None:
+            said[key] = text
+        meta = {"thread_ts": thread, "reply_to": parent, "reply_text": (said or {}).get(parent, "")[:200] or None if parent else None,
+                "replies": m.get("reply_count"), "edited": from_unix(number(edited.get("ts"))), "reactions": reactions or None,
+                "attachments": [n for n in shown if n] or None, "files": saved or None,
                 "bot": True if is_bot else None, "type": sub, "conversation": what,
                 "tier": "deleted" if sub == "tombstone" else None}
         w.add(id=key, kind="event" if sub in SLACK_EVENTS else "message", ts=from_unix(number(ts)), author="me" if me else author,
