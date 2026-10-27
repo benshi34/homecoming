@@ -3457,7 +3457,49 @@ def slack(es, W, used):
             found.update((n, x) for n, x in lists.get((origin, up), {}).items() if n in SLACK_USERS)
         if found or slack_days(days[0]):
             slack_workspace(found, days, W, used, uploads)
+    slack_dumps(es, W, used, lists, uploads)
     slack_text(es, W, used)
+
+
+def slack_dump(e):
+    """slackdump's dump of one conversation, <id>.json: {channel_id, name, messages}, a thread's replies in its first
+    message's slackdump_thread_replies. None when it isn't one."""
+    d = e.json()
+    if not (isinstance(d, dict) and isinstance(d.get("channel_id"), str) and isinstance(d.get("messages"), list)):
+        return None
+    out = []
+    for m in d["messages"]:
+        if isinstance(m, dict):
+            out.append(m)
+            out += [r for r in listish(m.get("slackdump_thread_replies")) if isinstance(r, dict)]  # its first again: kept once
+    return d, out
+
+
+def slack_dumps(es, W, used, lists, uploads):
+    """slackdump's dump (slackdump dump <channel>): a file a conversation, named by its id, the people named by a
+    users.json beside it when there is one."""
+    for e in es:
+        if e.path in used or not re.fullmatch(r"[CDG][A-Z0-9]{6,}\.json", e.name):
+            continue
+        got = guarded(e, used, slack_dump)
+        if not got:
+            continue
+        used.add(e.path)
+        d, msgs = got
+        found = lists.get((e.origin, posixpath.dirname(e.path)), {})
+        users = {"USLACKBOT": "Slackbot"}
+        for n in SLACK_USERS:
+            if n in found:
+                used.add(found[n].path)
+                for u in guarded(found[n], used, slack_list) or []:
+                    p = u.get("profile") if isinstance(u.get("profile"), dict) else {}
+                    who = u.get("real_name") or p.get("real_name") or p.get("display_name") or u.get("name")
+                    if isinstance(u.get("id"), str) and who:
+                        users.setdefault(u["id"], str(who))
+        cid = d["channel_id"]
+        dm = cid.startswith("D")
+        convs = {cid: (str(d.get("name") or cid) if dm else f"#{d.get('name') or cid}", "dm" if dm else "channel", [])}
+        guarded(e, used, slack_day, W("slack"), users, convs, {cid: d.get("name") or cid}, {}, uploads, used, msgs, cid)
 
 
 def slack_days(e):
@@ -3575,13 +3617,13 @@ def slack_emoji(name):
     return SLACK_EMOJI.get(base, f":{base}:")
 
 
-def slack_day(e, w, users, convs, names, said=None, uploads=None, used=None):
+def slack_day(e, w, users, convs, names, said=None, uploads=None, used=None, msgs=None, folder=None):
     """One conversation's day: its messages, threads (thread_ts, and a reply's own), edits, files, reactions and bots'
     posts. Who joined or left isn't kept; a channel's new topic or a pin is an event; a deleted message whose replies
     stay (tombstone) is kept, tagged as deleted mail is."""
-    folder = PurePosixPath(e.path).parent.name
+    folder = folder or PurePosixPath(e.path).parent.name
     name, what, people = convs.get(folder, (f"#{folder}", None, []))
-    for m in listish(e.json()):
+    for m in listish(e.json()) if msgs is None else msgs:
         if not isinstance(m, dict):
             continue
         sub, ts, uid = (m.get(k) if isinstance(m.get(k), str) else None for k in ("subtype", "ts", "user"))

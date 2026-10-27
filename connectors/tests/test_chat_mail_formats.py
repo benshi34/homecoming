@@ -215,6 +215,17 @@ class SlackTests(Base):
                 self.assertEqual((f if f.is_absolute() else self.corpus / f).read_bytes(), want, "copied out of the export")
         self.assertNotIn("__uploads/F0AAAAAAA/pier.jpg", self.unclaimed())
 
+    def test_slackdumps_dump_a_file_a_conversation(self):
+        first = say(0, "U02", "who's driving?", thread_ts=ts(0), reply_count=1)
+        first["slackdump_thread_replies"] = [dict(first), say(1, "U01", "I can", thread_ts=ts(0))]
+        self.files("slack/dump", {"users.json": USERS, "C0DUMP001.json": {"channel_id": "C0DUMP001", "name": "trips", "messages": [first]},
+                                  "C0NOTONE1.json": {"channel_id": "C0NOTONE1", "rows": []}})
+        self.run_import()
+        got = {r["id"]: r for r in self.of("slack")}
+        self.assertEqual(sorted(got), [f"C0DUMP001:{ts(0)}", f"C0DUMP001:{ts(1)}"], "the first message once, its reply from inside it")
+        reply = got[f"C0DUMP001:{ts(1)}"]
+        self.assertEqual((reply["author"], reply["thread_name"], reply["meta"]["reply_text"]), ("me", "#trips", "who's driving?"))
+
     def test_every_conversation_private_channels_dms_and_group_dms(self):
         self.files("slack/Lumen Labs export", {
             "users.json": USERS, "channels.json": [{"id": "C01", "name": "general", "members": ["U01", "U02", "U03"]}],
