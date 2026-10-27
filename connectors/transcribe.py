@@ -7,7 +7,7 @@ Each file is heard in each language you use (UMP_TRANSCRIBE_LANGS, "en-US,zh-CN"
 and the hearing Apple is surest of is kept. What it heard is kept in raw/transcripts.json, by the file's path, size and
 time; the readers (voice_memos.py, imessage.py, ileapp.py's voicemail) take their text from there when Apple's own is
 missing, the next time they run. A file in which nothing was heard (music, silence) isn't tried again; one that
-couldn't be read is, next time. Newest first, for at most UMP_TRANSCRIBE_SECONDS a run (600): the rest wait for the
+couldn't be read is, next time (three times at most). Newest first, for at most UMP_TRANSCRIBE_SECONDS a run (600): the rest wait for the
 next. main() returns the sources that have new words, for the app to read again (bridge.py)."""
 
 import hashlib
@@ -102,23 +102,23 @@ def main():
     if not todo:
         print(f"[transcribe] nothing new to hear ({len(done)} heard before)")
         return []
-    keys = {p: (k, src) for k, p, src in todo}
     budget = float(os.environ.get("UMP_TRANSCRIBE_SECONDS") or 600)
+    exe, langs = hearer(), languages()
     t, n, empty, failed, worded = time.time(), 0, 0, 0, set()
-    p = subprocess.Popen([hearer(), languages()], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    p.stdin.write("".join(path + "\n" for _, path, _ in todo))
-    p.stdin.close()
-    for line in p.stdout:
-        try:
-            got = json.loads(line)
-        except ValueError:
-            continue
-        k, src = keys.get(got.get("path"), (None, None))
-        if not k:
-            continue
+    for i, (k, path, src) in enumerate(todo):
+        try:  # one file a process, given time by its size: one Apple's recognizer never answers can't stall the rest
+            out = subprocess.run([exe, langs], input=path + "\n", capture_output=True, text=True,
+                                 timeout=float(os.environ.get("UMP_TRANSCRIBE_WAIT") or 60) + os.path.getsize(path) / 2000).stdout
+            got = json.loads(out.strip().splitlines()[-1]) if out.strip() else {"error": "no answer"}
+        except subprocess.TimeoutExpired:
+            got = {"error": "timed out"}
+        except (OSError, ValueError) as e:
+            got = {"error": str(e)}
         if got.get("error"):
             failed += 1
-            done[k] = {"error": str(got["error"])[:300]}
+            tries = (done.get(k) or {}).get("tries", 0) + 1
+            # tried three times: given up on, as one with nothing heard (a file Apple can't read)
+            done[k] = {"error": str(got["error"])[:300], "tries": tries, **({"text": ""} if tries >= 3 else {})}
         else:
             n += 1
             empty += not got.get("text")
@@ -126,12 +126,10 @@ def main():
                 worded.add(src)
             done[k] = {"text": got.get("text") or "", "locale": got.get("locale"), "confidence": got.get("confidence"),
                        "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        if (n + failed) % 25 == 0:
+        if (i + 1) % 10 == 0:
             write_atomic(TRANSCRIPTS, json.dumps(done))  # a long run cut short keeps what it heard
         if time.time() - t > budget:
-            p.kill()  # the rest next run
-            break
-    p.wait()
+            break  # the rest next run
     write_atomic(TRANSCRIPTS, json.dumps(done))
     print(f"[transcribe] heard {n} of {len(todo)} ({empty} with no speech, {failed} unreadable) in {time.time() - t:.0f}s; "
           f"{'the rest next run; ' if n + failed < len(todo) else ''}their readers take the text next time they run")

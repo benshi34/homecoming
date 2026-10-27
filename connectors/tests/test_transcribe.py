@@ -21,6 +21,8 @@ log = os.environ["HEAR_LOG"]
 for line in sys.stdin:
     p = line.strip()
     open(log, "a").write(p + "\n")
+    if p.endswith("hang.caf"):  # Apple's recognizer, never answering
+        import time; time.sleep(30)
     if not os.path.exists(p):
         print(json.dumps({"path": p, "error": "can't open it"}))
     else:
@@ -52,8 +54,8 @@ class TranscribeTests(unittest.TestCase):
     def norm(self, source, recs):
         (self.corpus / "normalized" / f"{source}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
 
-    def run_it(self, on=True):
-        env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_HEAR": str(self.fake),
+    def run_it(self, on=True, wait="60"):
+        env = {**os.environ, "UMP_TRANSCRIBE_WAIT": wait, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_HEAR": str(self.fake),
                "HEAR_LOG": str(self.log), "UMP_TRANSCRIBE_LANGS": "en-US"}
         env.pop("UMP_TRANSCRIBE", None)
         if on:
@@ -116,6 +118,18 @@ class TranscribeTests(unittest.TestCase):
         self.assertEqual(first, "['voice_memos']", "the newest one, then out of time")
         self.assertEqual(second, "['voice_memos']", "the other two; the song had no words, so iMessage has nothing new")
         self.assertEqual(len(set(self.asked())), 4)
+
+    def test_one_that_never_answers_is_given_up_on_after_three_tries(self):
+        hang, fine = self.file("hang.caf", "x"), self.file("fine.caf", "on my way")
+        self.norm("imessage", [{"ts": "2026-01-06", "meta": {"audio": True, "attachments": [{"path": hang}]}},
+                               {"ts": "2026-01-05", "meta": {"audio": True, "attachments": [{"path": fine}]}}])
+        for _ in range(4):
+            self.run_it(wait="1")
+        names = [Path(p).name for p in self.asked()]
+        self.assertEqual((names.count("hang.caf"), names.count("fine.caf")), (3, 1), "the one after it heard; it, three times")
+        kept = {Path(k.split("|")[0]).name: v for k, v in self.kept().items()}
+        self.assertEqual((kept["hang.caf"]["tries"], kept["hang.caf"]["text"]), (3, ""))
+        self.assertEqual(kept["fine.caf"]["text"], "on my way")
 
     def test_the_readers_take_what_was_heard(self):
         memo = self.file("memo.m4a", "pick up the tripod")
