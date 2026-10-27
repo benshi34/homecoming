@@ -95,7 +95,7 @@ def reacted_to(guid):
         return None
     if guid.startswith("p:") and "/" in guid:
         return guid.split("/", 1)[1]
-    return guid[3:] if guid.startswith("bp:") else guid
+    return guid[3:] if guid.startswith(("bp:", "re:")) else guid
 
 
 def attachment_file(path, copy):
@@ -172,7 +172,7 @@ def messages(con, names, copy):
     # read receipts on), a custom emoji reaction's emoji, the effect it was sent with, its subject line, its edits.
     cols = columns(con, "message")
     more = ", ".join(c if c in cols else f"null {c}" for c in (
-        "attributedBody", "service", "item_type", "associated_message_type", "associated_message_guid", "thread_originator_guid",
+        "attributedBody", "service", "item_type", "associated_message_type", "associated_message_guid", "thread_originator_guid", "thread_originator_part",
         "is_audio_message", "balloon_bundle_id", "date_edited", "date_retracted", "message_summary_info", "group_action_type",
         "group_title", "other_handle", "date_read", "date_delivered", "associated_message_emoji", "expressive_send_style_id", "subject"))
 
@@ -225,7 +225,7 @@ def messages(con, names, copy):
         meta = {"service": r["service"], "group": chat.get("group"),
                 # a reply is in the thread its first message started (Messages keeps no nearer parent)
                 "reply_to": root if kind == "message" else None,
-                "reply_text": (said.get(root) or "")[:200] or None if root and kind == "message" else None,
+                "reply_text": replied_part(said.get(root), r["thread_originator_part"])[:200] or None if root and kind == "message" else None,
                 "in_thread": root if kind == "reaction" else None, "text_tapback": bool(tapped and kind == "reaction") or None,
                 "reaction": reaction if kind == "reaction" else None,
                 "reacts_to": reacts_to,
@@ -246,6 +246,18 @@ def messages(con, names, copy):
                    text=text, meta={k: v for k, v in meta.items() if v is not None})
 
 
+def replied_part(text, part):
+    """What of a thread's first message a reply answers: thread_originator_part is "<part>:<start>:<length>", a range
+    of its text (a long message replied to in part); the whole of it when the range doesn't fit."""
+    text = text or ""
+    try:
+        _, start, length = (int(x) for x in str(part).split(":"))
+    except (TypeError, ValueError):
+        return text
+    piece = text[start:start + length].strip()
+    return piece if piece and 0 < length < len(text) else text
+
+
 def settle(recs):
     """Each person's tapbacks as they stand: on a message, one each (a newer one replaces theirs; a removal, 3000-3007
     or "Removed a heart from", takes it away). The message gets the standing ones (meta.reactions, as every chat
@@ -256,11 +268,13 @@ def settle(recs):
     for r in sorted((r for r in recs if r["kind"] == "reaction"), key=lambda r: r.get("ts") or ""):
         m = r["meta"]
         target = m.get("reacts_to")
-        if not target or target not in by_id:
+        if not target or target not in by_id:  # on a message deleted since: it stays a line of its own
             notes["tapbacks_on_nothing"] += 1
+            m["target_gone"] = True
             continue
         m["on_message"] = True
-        k = (r.get("author"), target)
+        # a person's tapback and the stickers they put on it are each their own: one doesn't replace the other
+        k = (r.get("author"), target, "sticker" if (m.get("reaction") or "").endswith("stickered") else "tapback")
         before = standing.get(k)
         if before:
             before["meta"]["withdrawn"] = r.get("ts") or True
@@ -271,7 +285,7 @@ def settle(recs):
             standing[k] = None
         else:
             standing[k] = r
-    for (who, target), r in standing.items():
+    for (who, target, _), r in standing.items():
         if r:
             m = r["meta"]
             shown = m.get("emoji") if m.get("reaction") == "reacted to" else SYMBOLS.get(m.get("reaction"), m.get("emoji") or m.get("reaction"))
