@@ -180,10 +180,19 @@ def log(job, line):
         p.write_bytes(p.read_bytes()[-LOG_KEEP:])
 
 
+def index_size():
+    try:
+        return (CORPUS / "corpus.db").stat().st_size
+    except OSError:
+        return 0
+
+
 def run(job):
     free = shutil.disk_usage(CORPUS if CORPUS.exists() else CORPUS.parent).free
-    if free < MIN_FREE:
-        log(job, f"skipped: {free >> 20} MB free where the corpus is")
+    # a full read rebuilds the index into a copy of itself, which can grow to its whole size
+    need = MIN_FREE + (index_size() if job == "all" else 0)
+    if free < need:
+        log(job, f"skipped: {free >> 20} MB free where the corpus is, want {need >> 20}")
         return
     CORPUS.mkdir(parents=True, exist_ok=True)
     with open(CORPUS / f".schedule-{job}.lock", "w") as lock:

@@ -123,6 +123,14 @@ class ScheduleTests(unittest.TestCase):
         self.assertIn("MB free where the corpus is", log)
         self.assertFalse((self.corpus / "normalized/setup.jsonl").exists())
 
+    def test_a_full_read_wants_room_for_the_index_copy(self):
+        import shutil
+        free = shutil.disk_usage(self.corpus).free
+        with open(self.corpus / "corpus.db", "wb") as f:
+            f.truncate(free)  # sparse: as big as the free space, using none of it
+        self.schedule("run", "all", UMP_SCHEDULE_MIN_FREE="1")
+        self.assertIn("skipped:", (self.corpus / "raw/schedule/all.log").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
