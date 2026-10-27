@@ -135,6 +135,36 @@ def write_atomic(path, text):
         raise
 
 
+TRANSCRIPTS = RAW / "transcripts.json"  # transcribe.py: what this Mac heard in audio Apple left without words
+_heard = None
+
+
+def audio_key(path):
+    """An audio file as transcribe.py keys what it heard in it: where it is, its size and when it was written (a file
+    changed since is heard again). None when it isn't there."""
+    p = Path(os.path.expanduser(str(path)))
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return f"{p}|{st.st_size}|{int(st.st_mtime)}"
+
+
+def heard(path):
+    """What transcribe.py heard in this audio file, on this Mac: its text, or None (not heard yet, nothing heard, or the
+    file has changed since)."""
+    global _heard
+    try:
+        at = TRANSCRIPTS.stat().st_mtime_ns
+    except OSError:
+        at = None
+    if _heard is None or _heard[0] != at:  # read again once transcribe.py writes (the app runs both in one process)
+        _heard = (at, read_json(TRANSCRIPTS, {}) or {})
+    k = audio_key(path) if path else None
+    got = _heard[1].get(k) if k else None
+    return (got.get("text") or None) if isinstance(got, dict) else None
+
+
 def read_json(path, default=None):
     """A JSON file, or `default` when it's missing or can't be read (cut off by a crash): one bad file mustn't stop
     every later run."""

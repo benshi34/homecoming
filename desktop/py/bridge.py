@@ -1883,6 +1883,28 @@ def run_connectors(names, index=True, argv_for=None):
             if isinstance(e, KeyboardInterrupt):
                 break
         real.flush()
+    # Transcribe audio on this Mac (UMP_TRANSCRIBE): after the readers whose audio Apple left without words, what's new
+    # is heard, and those readers read again to take it (transcribe.py; the iPhone's voicemail waits for its next read)
+    heard_in = [n for n in ("voice_memos", "imessage") if n in names and n not in failed]
+    if os.environ.get("UMP_TRANSCRIBE") == "1" and heard_in:
+        current[0], t = "transcribe", time.time()
+        real.write(json.dumps({"type": "start", "connector": "transcribe"}) + "\n")
+        real.flush()
+        try:
+            worded = importlib.import_module("transcribe").main() or []
+            real.write(json.dumps({"type": "done", "connector": "transcribe", "seconds": round(time.time() - t, 1)}) + "\n")
+        except Exception as e:
+            traceback.print_exc()
+            worded = []
+            real.write(json.dumps({"type": "error", "connector": "transcribe", "error": f"{type(e).__name__}: {e}"[:1000]}) + "\n")
+        for name in heard_in:
+            if name in worded:
+                current[0] = name
+                try:
+                    importlib.import_module(name).main()
+                except Exception:
+                    traceback.print_exc()
+        real.flush()
     if index and names:
         current[0] = "build_index"
         real.write(json.dumps({"type": "start", "connector": "build_index"}) + "\n")

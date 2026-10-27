@@ -268,6 +268,16 @@ class MessagesTests(unittest.TestCase):
             with self.subTest(guid):
                 self.assertNotIn("transcribed", got[guid]["meta"], "nothing Apple heard, or nothing readable")
                 self.assertTrue(got[guid]["meta"]["audio"])
+        # what transcribe.py heard on this Mac, for one Apple didn't transcribe; Apple's own wins where there is one
+        con.execute("insert into attachment values (7, 'at7', '~/Library/Messages/Attachments/aa/Audio Message.caf', 'audio/x-caf', 'Audio Message.caf', 10)")
+        con.execute("insert into message_attachment_join values (4, 7)")
+        con.execute("insert into message_attachment_join values (2, 7)")
+        with patch.object(imessage, "heard_here", lambda p: "running ten late" if p.endswith("Audio Message.caf") else None):
+            got = self.read(con)
+        self.assertTrue(got["plain"]["text"].startswith("running ten late"))
+        self.assertEqual(got["plain"]["meta"]["transcribed_on"], "this Mac")
+        self.assertTrue(got["short"]["text"].startswith("on my way"), "Apple's")
+        self.assertNotIn("transcribed_on", got["short"]["meta"])
 
     def test_replies_group_chats_and_sms_imessage_rcs(self):
         con = self.chat_db()
@@ -842,7 +852,14 @@ class VoiceMemosTests(Home):
             insert into ZCLOUDRECORDING values (1, 'V1', 700000000, 61.5, '20230308 202640.m4a', 'Lecture', null);
             insert into ZCLOUDRECORDING values (2, 'V2', 700000100, 5, '/elsewhere/old.m4a', 'Oops', 700000200);
             insert into ZCLOUDRECORDING values (3, 'V3', 700000300, 9, null, null, null);
+            insert into ZCLOUDRECORDING values (4, 'V4', 700000400, 30, '20230309 101010.m4a', 'Walk', null);
         """)
+        # one Apple didn't transcribe, that transcribe.py heard on this Mac (keyed by path, size and time)
+        heard_ = root / "20230309 101010.m4a"
+        heard_.write_bytes(b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 12)
+        st = heard_.stat()
+        (self.corpus / "raw").mkdir(parents=True, exist_ok=True)
+        (self.corpus / "raw/transcripts.json").write_text(json.dumps({f"{heard_}|{st.st_size}|{int(st.st_mtime)}": {"text": "the fog lifted by nine"}}))
         self.run_module("voice_memos")
         got = self.records("voice_memos")
         self.assertEqual(got["V1"]["text"], "Lecture\nToday we talked about tides")
@@ -850,6 +867,8 @@ class VoiceMemosTests(Home):
         self.assertEqual((got["V2"]["meta"]["deleted"], got["V2"]["meta"]["tier"]), (True, "deleted"), "in Recently Deleted")
         self.assertNotIn("tier", got["V1"]["meta"])
         self.assertIn("V3", got)
+        self.assertEqual((got["V4"]["text"], got["V4"]["meta"]["transcribed_on"]), ("Walk\nthe fog lifted by nine", "this Mac"))
+        self.assertNotIn("transcribed_on", got["V1"]["meta"], "Apple's own")
 
 
 class PodcastsTests(Home):

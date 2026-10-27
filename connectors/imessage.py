@@ -8,7 +8,7 @@ import plistlib
 import sqlite3
 from pathlib import Path
 
-from common import CORPUS, LIB, Writer, columns, connect, from_apple, phone, select, snapshot_sqlite, tables
+from common import CORPUS, LIB, Writer, columns, connect, from_apple, heard as heard_here, phone, select, snapshot_sqlite, tables
 from contacts import Resolver
 
 AVENUE = ("Local SQLite: ~/Library/Messages/chat.db (synced from iPhone via iCloud Messages), plus "
@@ -204,6 +204,9 @@ def messages(con, names, copy):
         edits = [] if unsent else versions(info)
         text = "[unsent message]" if unsent else text or "\n".join(v[-1][1] for v in edits)  # edited: its last version
         heard = audio_transcription(r["attributedBody"]) if r["is_audio_message"] and not unsent else None
+        # none of Apple's: what transcribe.py heard in its audio on this Mac, if it has
+        here = next((h for a in atts for h in [heard_here(a["path"])] if h), None) if r["is_audio_message"] and not heard else None
+        heard = heard or here
         if heard:  # an audio message says what Apple heard in it
             text = (text + "\n" if text else "") + heard
         if atts:
@@ -229,7 +232,7 @@ def messages(con, names, copy):
                 "reaction": TAPBACKS.get(amt) or (f"removed {TAPBACKS.get(amt - 1000, '')}".strip()
                                                   if 3000 <= amt < 4000 else None),
                 "reacts_to": reacted_to(r["associated_message_guid"]) if kind == "reaction" else None,
-                "audio": bool(r["is_audio_message"]) or None, "transcribed": True if heard else None, "app": r["balloon_bundle_id"],
+                "audio": bool(r["is_audio_message"]) or None, "transcribed": True if heard else None, "transcribed_on": "this Mac" if here else None, "app": r["balloon_bundle_id"],
                 "edited": None if unsent else from_apple(r["date_edited"]), "unsent": unsent,
                 "edits": [{"at": from_apple(d), "text": t} for part in edits for d, t in part[:-1]] or None,
                 "unsent_parts": len(unsent_parts) if unsent_parts and not unsent else None,

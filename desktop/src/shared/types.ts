@@ -183,6 +183,7 @@ export interface Settings {
   inboxesOff?: string[]; // addresses Claude doesn't look in for those emails
   iphoneDevice?: string; // the device whose backup is read (a backup's udid); unset: the one read before, else the newest iPhone's
   updateChecks?: boolean; // look for a newer Homecoming once a day (main/updates.ts): on unless turned off
+  transcribeAudio?: boolean; // hear the audio Apple left without words, on this Mac (connectors/transcribe.py): off unless turned on
 }
 
 export interface AppState {

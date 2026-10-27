@@ -56,7 +56,7 @@ import os
 import plistlib
 import whatsapp
 
-from common import CORPUS, HOME, IPHONE, NORM, Writer, ids_in, read_manifest, tables, write_manifest
+from common import CORPUS, HOME, IPHONE, NORM, Writer, heard, ids_in, read_manifest, tables, write_manifest
 
 ILEAPP_VERSION = "v2026.4.4"  # the vendored release; bump with vendor/update_ileapp.sh and re-check ILEAPP.md
 VENDOR = Path(__file__).resolve().parent / "vendor"
@@ -520,6 +520,10 @@ def write_artifact(w, module, category, a, con, media, nicknames, names, chosen,
             number_ = fields.get("Sender")
             who = cache["resolver"].label(str(number_)) if number_ else "Unknown caller"
             said = str(fields.get("Transcript") or "").strip()
+            here = None if said or not files else heard(files[0] if os.path.isabs(files[0]) else CORPUS / files[0])  # transcribe.py's
+            said = said or here or ""
+            if here:
+                meta["transcribed_on"] = "this Mac"
             when = next((iso(r[c], plausible=True) for c in times if iso(r[c], plausible=True)), None)
             meta.update({k: v for k, v in (("handle", number_), ("duration", fields.get("Duration")),
                                            ("deleted", True if fields.get("Deleted") not in (None, "", "No") else None),  # "Yes", or when

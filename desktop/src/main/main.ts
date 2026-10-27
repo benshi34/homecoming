@@ -1276,7 +1276,7 @@ let watcherOn = false;
 
 // A setting in Your Setup changed: the connectors hear of it, and what it changes is read again. A browser turned on
 // or off: browsing history. The phone region: the probe (identity's numbers), and the sources that put names to
-// numbers (Messages, calls).
+// numbers (Messages, calls). Transcribing turned on: Voice Memos and Messages, whose audio it hears (bridge.py).
 function setupChanged(was: Snapshot['settings'], now: Snapshot['settings']) {
   applySetupEnv();
   if ((was.agentBrowser ?? '') !== (now.agentBrowser ?? '')) void checkBrowserSignIns().then(push); // another browser's sign-ins
@@ -1292,6 +1292,7 @@ function setupChanged(was: Snapshot['settings'], now: Snapshot['settings']) {
     void refresh().then(() => refreshCandidates());
     run(['imessage', 'calls', 'whatsapp']); // whose number is whose: WhatsApp matches names by number too
   }
+  if (now.transcribeAudio === true && was.transcribeAudio !== true) run(['voice_memos', 'imessage']);
 }
 
 // An app on this Mac (Finder, Messages, Safari, Chrome), by name. Tests log it instead, like links; the demo doesn't

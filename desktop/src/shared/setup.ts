@@ -81,11 +81,12 @@ export function claudeInboxes(emails: string[], off: string[] = [], to?: string)
 }
 
 // What Your Setup tells the connectors (connectors/browsers.py, phones.py) and bridge.py's ready checks.
-export function setupEnv(s: { historyOff?: string[]; phoneRegion?: string; mailChecks?: boolean; notificationChecks?: boolean }): Record<string, string> {
+export function setupEnv(s: { historyOff?: string[]; phoneRegion?: string; mailChecks?: boolean; notificationChecks?: boolean; transcribeAudio?: boolean }): Record<string, string> {
   return {
     UMP_BROWSERS_SKIP: (s.historyOff ?? []).join(','),
     ...(s.phoneRegion ? { UMP_PHONE_REGION: s.phoneRegion } : {}),
     ...(s.mailChecks === false ? { UMP_READY_MAIL: '0' } : {}),
     ...(s.notificationChecks === false ? { UMP_READY_NOTIFICATIONS: '0' } : {}),
+    ...(s.transcribeAudio === true ? { UMP_TRANSCRIBE: '1' } : {}),
   };
 }
