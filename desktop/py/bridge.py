@@ -75,6 +75,7 @@ MAC_PATHS = {
     "ai_coding": [HOME / ".claude/projects", HOME / ".codex/sessions", LIB / "Application Support/Cursor/User/globalStorage/state.vscdb",
                   LIB / "Application Support/Code/User/workspaceStorage"],
     "editor_history": [LIB / f"Application Support/{e}/User/History" for e in ("Code", "Cursor", "VSCodium", "Windsurf")],
+    "setup": [HOME / ".zshrc", HOME / ".gitconfig", HOME / ".claude/settings.json", HOME / ".config", HOME / "Library/LaunchAgents"],
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
     "books": [LIB / "Containers/com.apple.iBooksX/Data/Documents/BKLibrary", LIB / "Containers/com.apple.iBooksX/Data/Documents/AEAnnotation"],
@@ -409,6 +410,7 @@ FACETS = {
     "ai_coding": "json_extract(meta, '$.tool')",
     "editor_history": "json_extract(meta, '$.editor')",
     "shell_history": "json_extract(meta, '$.shell')",
+    "setup": "json_extract(meta, '$.group')",
     # Documents in an export land in imported_documents; split them by the export's folder (a service you added).
     "imported_documents": "substr(json_extract(meta, '$.origin'), 1, instr(json_extract(meta, '$.origin') || '/', '/') - 1)",
     "photos": "json_extract(meta, '$.type')",
