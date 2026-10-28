@@ -430,6 +430,8 @@ export const CATALOG: Source[] = [
     blurb: 'Workspace messages, threads and reactions. An admin can export a workspace; anyone can export what they see with slackdump.',
     steps: [
       { text: 'Without admin: install slackdump (brew install slackdump), sign in with slackdump workspace new <workspace>, then run slackdump export -member-only -o slack.zip.' },
+      { text: 'Signed in to Slack with Google? Google turns slackdump\'s browser away. Sign it in with your own browser\'s session instead: zsh connectors/slack_signin.sh, which walks you through two pastes from Chrome and signs in every workspace at once.',
+        detail: 'By hand: in Chrome on app.slack.com, DevTools, Application, Cookies: the d cookie (xoxd-...). Each workspace\'s token is in localStorage.localConfig_v2 (teams, token). Then slackdump workspace new -token <xoxc-...> -cookie <xoxd-...> <workspace>.' },
       { text: 'Or ask a workspace admin for an export (Settings & administration → Workspace settings → Import/Export data).' },
       { text: 'Drop the export zip here.' },
     ],
@@ -439,6 +441,7 @@ export const CATALOG: Source[] = [
     blurb: 'Chats, replies and reactions, from Telegram Desktop.',
     steps: [
       { text: 'In Telegram Desktop: Settings → Advanced → Export Telegram data. Choose the chats, set Format to Machine-readable JSON, and export.' },
+      { text: 'Signed in to Telegram Desktop just now? Telegram makes a new device wait 24 hours before it can export; ask again after that, from the same Mac.' },
       { text: 'It saves to Downloads/Telegram Desktop, where the app finds it. Or drop the DataExport folder here.' },
     ],
   },
