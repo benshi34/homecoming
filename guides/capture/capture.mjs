@@ -371,6 +371,9 @@ export async function captureSource({ source, entry, profileDir, outputRoot = DE
       headless: !headed,
       viewport: { width: entry.viewport[0], height: entry.viewport[1] },
       deviceScaleFactor: 2,
+      // the profile's sign-ins were made in plain Chrome (--sign-in, or opened by hand): Chrome's own keychain entry
+      // decrypts them; Playwright's mock keychain wouldn't, and every site would look signed out
+      ignoreDefaultArgs: ['--use-mock-keychain', '--password-store=basic'],
       recordVideo: entry.clip ? { dir: outDir, size: { width: entry.viewport[0], height: entry.viewport[1] } } : undefined,
     };
     context = await browser.launchPersistentContext(profileDir, options);
