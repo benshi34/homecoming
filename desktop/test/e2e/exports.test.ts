@@ -334,7 +334,7 @@ test('another service: add it by name, drop its download in any format, and ever
   s = await until(run.page, 'added from the hub', (x) => x.services.some((e) => e.slug === 'goodreads'));
   const gr = s.services.find((e) => e.slug === 'goodreads')!;
   assert.equal(find(s, gr.id).group, 'web');
-  assert.equal(find(s, gr.id).url, 'https://www.goodreads.com', 'no export page known: its home page, never an account page');
+  assert.equal(find(s, gr.id).url, 'https://www.goodreads.com/review/import', 'its export page, from the directory');
   await run.page.click('[data-testid=nav-found]');
   await run.page.locator('[data-testid=hub-filter-found][aria-selected=true]').waitFor();
   // Adding one that isn't listed starts on the same page.

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import date, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DESKTOP = Path(__file__).resolve().parents[2]
@@ -123,7 +123,9 @@ class Inserts(unittest.TestCase):
         trip = self.embed("agenda", "2025-03-19..2025-03-23")["events"]
         self.assertEqual([(e["title"], e["all_day"], e["start"], e["end"]) for e in trip], [("Tokyo trip", True, "2025-03-19", "2025-03-22")],
                          "an all-day event ends on its last day, not the morning after")
-        soon = (date.today() + timedelta(days=30)).isoformat()
+        # The fixture puts it 30 days ahead in UTC, the zone this test reads in (UMP_TZ): not this Mac's today, which in
+        # the evening (west of UTC) is the day before.
+        soon = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
         self.assertEqual([e["title"] for e in self.embed("agenda", f"{soon}..{soon}")["events"]], ["Dentist"], "plans to come are on a calendar too")
         ids = self.rowids("source = 'calendar' and title in ('Dentist', 'Orbit review')")
         self.assertEqual(sorted(e["title"] for e in self.embed("agenda", ",".join(map(str, ids)))["events"]), ["Dentist", "Orbit review"])

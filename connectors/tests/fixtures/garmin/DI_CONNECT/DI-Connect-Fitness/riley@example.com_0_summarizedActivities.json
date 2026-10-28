@@ -1,0 +1,4 @@
+[{"summarizedActivitiesExport":[
+ {"activityId":12345678901,"name":"Sampletown Running","activityType":"running","userProfileId":11111111,"timeZoneId":149,"beginTimestamp":1717225200000,"sportType":"RUNNING","startTimeGmt":1717225200000,"startTimeLocal":1717200000000,"duration":1825000.0,"elapsedDuration":1900000.0,"movingDuration":1810000.0,"distance":502000.0,"elevationGain":3500.0,"avgSpeed":0.2773,"avgHr":148.0,"maxHr":171.0,"calories":410.0,"steps":5200,"lapCount":5,"locationName":"Sampletown"},
+ {"activityId":12345678902,"name":"Strength","activityType":"strength_training","userProfileId":11111111,"timeZoneId":149,"beginTimestamp":1717398000000,"sportType":"TRAINING","startTimeGmt":1717398000000,"startTimeLocal":1717372800000,"duration":2400000.0,"distance":0.0,"calories":220.0,"avgHr":110.0}
+]}]

@@ -1,0 +1,4 @@
+Const,Your Rating,Date Rated,Title,Original Title,URL,Title Type,IMDb Rating,Runtime (mins),Year,Genres,Num Votes,Release Date,Directors
+tt9900001,9,2024-06-10,The Long Quiet,The Long Quiet,https://www.imdb.com/title/tt9900001/,Movie,7.4,118,2011,"Drama, Romance",12345,2011-05-14,Ada Marlow
+tt9900002,6,2025-01-03,Harbor Lights,Les Feux du port,https://www.imdb.com/title/tt9900002/,TV Mini Series,8.1,55,2019,"Crime, Drama",4321,2019-09-01,"Jo Brandt, Sam Ortiz"
+tt9900003,8,2025-02-11,Harbor Lights: The Pier,Harbor Lights: The Pier,https://www.imdb.com/title/tt9900003/,TV Episode,8.6,52,2019,"Crime, Drama",987,,Jo Brandt

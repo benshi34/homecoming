@@ -1,0 +1,23 @@
+{
+  "service": "Hinge",
+  "version": 1,
+  "items": [
+    {"describe": "Messages you sent", "file": "matches.json", "path": "*.chats", "kind": "message", "time": "timestamp", "zone": "UTC", "text": ["body"],
+     "author": "me", "thread": "@key", "thread_name": "@key"},
+    {"describe": "Profiles you liked", "file": "matches.json", "path": "*.like.*.like", "kind": "like", "time": "timestamp", "zone": "UTC", "text": ["comment"],
+     "author": "me"},
+    {"describe": "Your matches", "file": "matches.json", "path": "*.match", "kind": "event", "time": "timestamp", "zone": "UTC", "author": "me",
+     "thread": "@key", "thread_name": "@key"},
+    {"describe": "Matches you removed", "file": "matches.json", "path": "*.block", "kind": "event", "time": "timestamp", "zone": "UTC", "text": ["block_type"],
+     "author": "me", "thread": "@key", "thread_name": "@key"},
+    {"describe": "People you said you met", "file": "matches.json", "path": "*.we_met", "kind": "event", "time": "timestamp", "zone": "UTC",
+     "text": ["did_meet_subject", "was_my_type"], "author": "me", "thread": "@key", "thread_name": "@key"},
+    {"describe": "Your prompts", "file": "prompts.json", "kind": "post", "time": ["created", "user_updated"], "zone": "UTC", "title": "prompt",
+     "text": ["prompt", "text", "options"], "author": "me"},
+    {"describe": "Your chats (2025 on)", "file": "chat_message.csv", "kind": "message", "time": "timestamp", "text": ["message"],
+     "mine": {"action": ["sent"]}, "thread": "match_id", "thread_name": "match_id"},
+    {"describe": "Profiles you liked (2025 on)", "file": "match_likes.csv", "kind": "like", "time": "timestamp", "text": ["comment"], "author": "me"},
+    {"describe": "Roses you sent (2025 on)", "file": "match_roses.csv", "kind": "like", "time": "timestamp", "text": ["comment"], "author": "me"},
+    {"describe": "Matches you removed (2025 on)", "file": "match_blocks.csv", "kind": "event", "time": "timestamp", "text": ["comment"], "author": "me"}
+  ]
+}

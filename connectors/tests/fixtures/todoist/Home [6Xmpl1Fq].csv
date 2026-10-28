@@ -1,0 +1,8 @@
+﻿TYPE,CONTENT,DESCRIPTION,IS_COLLAPSED,PRIORITY,INDENT,AUTHOR,RESPONSIBLE,DATE,DATE_LANG,TIMEZONE,DURATION,DURATION_UNIT,DEADLINE,DEADLINE_LANG
+meta,view_style=list,,,,,,,,,,,,,
+section,Errands,,False,,,,,,,,,,,
+task,Buy stamps @errands,,,2,1,Riley Park (1000001),,Jan 5,en,America/Los_Angeles,15,minute,,
+note,"Post office closes at 5,
+not 6",,,,,Riley Park (1000001),,,,,,,,
+,,,,,,,,,,,,,,
+task,Fix fence,Two loose boards,,4,1,Riley Park (1000001),,every Saturday,en,America/Los_Angeles,,,2024-03-31,en

@@ -1,0 +1,16 @@
+{
+  "service": "Uber",
+  "version": 1,
+  "items": [
+    {"describe": "Your trips", "file": "trips_data*.csv", "header": "city,product_type,", "kind": "trip", "time": ["begin_trip_time", "request_time"],
+     "title": ["dropoff_address", "product_type"], "text": ["product_type", "status", "begintrip_address", "dropoff_address", "distance",
+     "fare_amount", "fare_currency"], "author": "me"},
+    {"describe": "Your trips (older exports)", "file": "trips_data*.csv", "header": "City,Product Type,", "kind": "trip",
+     "time": ["Begin Trip Time", "Request Time"], "formats": ["%Y-%m-%d %H:%M:%S %z %Z"], "title": ["Dropoff Address", "Product Type"],
+     "text": ["Product Type", "Trip or Order Status", "Begin Trip Address", "Dropoff Address", "Distance (miles)", "Fare Amount", "Fare Currency"],
+     "author": "me"},
+    {"describe": "What you ordered on Uber Eats", "file": "eats_order_details*.csv", "header": "Territory,Restaurant ID,", "kind": "purchase",
+     "time": "Order Time", "formats": ["%Y-%m-%d %H:%M:%S %z %Z"], "title": "Item Name",
+     "text": ["Item Name", "Customizations", "Special Instructions", "Item Price", "Currency", "Order Status"], "thread": "Order ID", "author": "me"}
+  ]
+}

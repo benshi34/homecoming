@@ -1,0 +1,12 @@
+{
+  "service": "Apple Card",
+  "version": 1,
+  "items": [
+    {"describe": "Your Apple Card transactions", "file": "*.[cC][sS][vV]", "header": "Transaction Date,Clearing Date,", "kind": "transaction",
+     "time": "Transaction Date", "formats": ["%m/%d/%Y"], "title": ["Merchant", "Description"],
+     "text": ["Merchant", "Description", "Category", "Type", "Amount (USD)", "Purchased By"], "author": "Purchased By"},
+    {"describe": "Your Apple Card transactions, from a QFX, QBO or OFX download", "file": "*.[oOqQ][fFbB][xXoO]", "path": "CREDITCARDMSGSRSV1", "kind": "transaction", "overlap": true,
+     "time": ["DTUSER", "DTPOSTED"], "title": ["NAME", "MEMO"], "text": ["NAME", "MEMO", "TRNTYPE", "TRNAMT", "CHECKNUM"], "id": "FITID",
+     "author": "me", "thread": "account", "thread_name": "account"}
+  ]
+}

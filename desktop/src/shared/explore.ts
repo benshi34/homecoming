@@ -317,9 +317,17 @@ const KIND_NAME: Record<string, string> = {
   location: 'Where you were', contact: 'Contact', app_usage: 'App you used', app_usage_day: 'A day of apps you used', advertiser: 'An advertiser that has you',
   inference: 'Something a service decided about you', off_platform: 'What a company told a service you did', ad: 'An ad you saw', follow: 'Follow',
   profile: 'Profile', trip: 'Trip', flight: 'Flight', invitation: 'Invitation', interaction: 'Something you did', record: 'Record',
+  read: 'Book you read',
 };
 export function kindName(kind: string, source?: string): string {
   if (kind === 'media') return source === 'spotify' || source === 'app_usage' ? 'Song you played' : 'Something you watched';
+  if (kind === 'watch' && source === 'letterboxd') return 'Film you watched';
+  if (kind === 'watch' && (source === 'trakt' || source === 'netflix')) return 'Film or show you watched';
+  if (source === 'myanimelist' && (kind === 'watch' || kind === 'read')) return kind === 'watch' ? 'Anime you watched' : 'Manga you read';
+  // The app's own mappings use event for what happened in a chat or on a board, not a calendar's events.
+  if (kind === 'event' && source && ['telegram', 'hinge', 'trello'].includes(source)) return 'Something that happened';
+  if (kind === 'reminder' && source === 'todoist') return 'Task';
+  if (kind === 'note' && source === 'trello') return 'Card';
   return KIND_NAME[kind] ?? (kind ? kind[0].toUpperCase() + kind.slice(1).replace(/_/g, ' ') : 'Record');
 }
 

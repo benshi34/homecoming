@@ -1,5 +1,6 @@
 // A mapping the app ships (data/mappings/<slug>.json) reaches a service added before it shipped: at the next launch
-// its download is read again with it, once. TikTok's own export is one nested JSON file.
+// its download is read again with it, once. TikTok's own export is one nested JSON file; Goodreads' is one CSV, its
+// rows split by shelf and its dates its own (2024/03/14); MyAnimeList's is gzipped XML.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,7 +15,13 @@ before(async () => {
   sb = sandbox({ identity: true });
   const lib = path.join(sb.home, 'mapping-library');
   fs.mkdirSync(lib, { recursive: true });
-  fs.copyFileSync(path.join(DESKTOP, 'data/mappings/tiktok.json'), path.join(lib, 'tiktok.json'));
+  for (const m of ['tiktok', 'goodreads', 'myanimelist']) fs.copyFileSync(path.join(DESKTOP, 'data/mappings', `${m}.json`), path.join(lib, `${m}.json`));
+  fs.mkdirSync(path.join(sb.corpus, 'imports/goodreads'), { recursive: true });
+  fs.copyFileSync(path.join(DESKTOP, '../connectors/tests/fixtures/goodreads/goodreads_library_export.csv'),
+    path.join(sb.corpus, 'imports/goodreads/goodreads_library_export.csv'));
+  fs.mkdirSync(path.join(sb.corpus, 'imports/myanimelist'), { recursive: true });
+  fs.copyFileSync(path.join(DESKTOP, '../connectors/tests/fixtures/myanimelist/animelist_1729500000_-_1000001.xml.gz'),
+    path.join(sb.corpus, 'imports/myanimelist/animelist_1729500000_-_1000001.xml.gz'));
   fs.mkdirSync(path.join(sb.corpus, 'imports/tiktok'), { recursive: true });
   fs.writeFileSync(path.join(sb.corpus, 'imports/tiktok/user_data_tiktok.json'), JSON.stringify({
     'Your Activity': { 'Watch History': { VideoList: [{ Date: '2026-06-13 07:51:55', Link: 'https://www.tiktokv.com/share/video/1/', Title: '' }] },
@@ -24,8 +31,11 @@ before(async () => {
   }));
   fs.mkdirSync(sb.userData, { recursive: true });
   fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({ version: 1, onboarding: { done: true },
-    services: [{ id: 'svc_tiktok', slug: 'tiktok', name: 'TikTok', folder: 'tiktok', domains: ['tiktok.com'], addedAt: '2026-10-01T00:00:00Z', from: 'found' }],
-    sources: { svc_tiktok: { requestedAt: '2026-10-01T00:00:00Z' } } }));
+    services: [{ id: 'svc_tiktok', slug: 'tiktok', name: 'TikTok', folder: 'tiktok', domains: ['tiktok.com'], addedAt: '2026-10-01T00:00:00Z', from: 'found' },
+      { id: 'svc_goodreads', slug: 'goodreads', name: 'Goodreads', folder: 'goodreads', domains: ['goodreads.com'], addedAt: '2026-10-01T00:00:00Z', from: 'you' },
+      { id: 'svc_mal', slug: 'myanimelist', name: 'MyAnimeList', folder: 'myanimelist', domains: ['myanimelist.net'], addedAt: '2026-10-01T00:00:00Z', from: 'you' }],
+    sources: { svc_tiktok: { requestedAt: '2026-10-01T00:00:00Z' }, svc_goodreads: { requestedAt: '2026-10-01T00:00:00Z' },
+      svc_mal: { requestedAt: '2026-10-01T00:00:00Z' } } }));
   run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1' }));
 });
 after(async () => {
@@ -46,4 +56,30 @@ test('a service added before its mapping shipped is read with it at the next lau
   const state = JSON.parse(fs.readFileSync(path.join(sb.userData, 'state.json'), 'utf8'));
   assert.ok(state.sources.svc_tiktok.libraryMapping, 'used once: taking it out later sticks');
   assert.equal(find(s, 'svc_tiktok').section, 'done');
+});
+
+test('Goodreads\' library is read with its shipped mapping: every book once, by shelf, on the day it was read', async () => {
+  const s = await until(run.page, 'Goodreads read', (x) => !x.jobs.length && find(x, 'svc_goodreads').records === 5, 120_000);
+  const rows = fs.readFileSync(path.join(sb.corpus, 'normalized/goodreads.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(rows.map((r) => [r.title, r.kind, r.ts]).sort(), [
+    ['A Field Guide to Fog', 'saved', '2024-06-11T00:00:00'],
+    ['Notes on Tides', 'read', '2024-05-02T00:00:00'],
+    ['Old Rivers', 'read', '2022-08-19T00:00:00'],
+    ['The Lighthouse Keeper\'s Year', 'read', '2024-03-14T00:00:00'],
+    ['The Unfinished Map', 'saved', '2023-11-05T00:00:00'],
+  ]);
+  assert.ok(!fs.existsSync(path.join(sb.corpus, 'normalized/goodreads_other.jsonl')), 'nothing left over for the catch-all');
+  assert.equal(find(s, 'svc_goodreads').section, 'done');
+});
+
+test('MyAnimeList\'s list is read from its .xml.gz: an anime a record, your plans saved, its totals one record', async () => {
+  const s = await until(run.page, 'MyAnimeList read', (x) => !x.jobs.length && find(x, 'svc_mal').records === 4, 120_000);
+  const rows = fs.readFileSync(path.join(sb.corpus, 'normalized/myanimelist.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(rows.map((r) => [r.title ?? null, r.kind, r.ts ?? null]).sort(), [
+    [null, 'record', null],
+    ['Harbor Lights: Second Season', 'watch', '2024-03-20T00:00:00'],
+    ['Paper Moons & Stars', 'watch', null],
+    ['Salt Flats', 'saved', null],
+  ]);
+  assert.equal(find(s, 'svc_mal').section, 'done');
 });

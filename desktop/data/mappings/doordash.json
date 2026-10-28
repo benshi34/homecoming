@@ -1,0 +1,8 @@
+{
+  "service": "DoorDash",
+  "version": 1,
+  "items": [
+    {"describe": "What you ordered", "file": "consumer_order_details.csv", "kind": "purchase", "time": "CREATED_AT", "zone": "UTC", "title": "ITEM",
+     "text": ["ITEM", "STORE_NAME", "QUANTITY", "SUBTOTAL"], "thread": "CREATED_AT", "thread_name": "STORE_NAME", "author": "me"}
+  ]
+}

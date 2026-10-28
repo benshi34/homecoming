@@ -1,0 +1,2 @@
+id,full_name,first_name,last_name,display_name_setting,display_name,username,email_address,date_of_birth,child,country,state,city,timezone,locale,member_since,about_me,start_of_week,sleep_tracking,time_display_format,gender,height,weight,stride_length_walking,stride_length_running,weight_unit,distance_unit,height_unit,water_unit,glucose_unit,swim_unit
+ABC123,Riley Park,Riley,Park,name,Riley P.,,riley@example.com,1995-03-02,false,US,CA,Springfield,America/Los_Angeles,en_US,2019-01-01,,SUNDAY,Normal,12hour,FEMALE,170.0,70.4,70.0,90.0,POUND,US,US,FL_OZ,MG_DL,YARD

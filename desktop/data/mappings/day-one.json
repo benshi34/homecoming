@@ -1,0 +1,9 @@
+{
+  "service": "Day One",
+  "version": 1,
+  "items": [
+    {"describe": "Your journal entries", "file": "*.json", "path": "entries", "kind": "note", "time": "creationDate",
+     "text": ["text", "tags", "location.placeName", "location.localityName", "weather.conditionsDescription"], "id": "uuid", "author": "me",
+     "thread": "@file", "thread_name": "@file"}
+  ]
+}

@@ -385,7 +385,7 @@ test('your stream: a month in order, by kind, searched, a day at a time, and eve
   // Older months, picked from the menu and stepped through, and back.
   await p.click('[data-testid=stream-prev]');
   await p.waitForFunction(() => (document.querySelector('[data-testid=stream-month]') as HTMLSelectElement)?.value === '2025-08', null, { timeout: 60_000 });
-  await pick('2025-05', 16);
+  await pick('2025-05', 18);  // with a post on X and a retweet: Your Stream has both, What You Made only the post
   const club = events().filter({ hasText: 'Messages in “Dinner club” (3 messages)' }).first();
   await club.locator('.stream-row').click();
   await p.locator('[data-testid=stream-more] button[data-action=stream-records]').click();

@@ -1,0 +1,17 @@
+{
+  "service": "Apple",
+  "version": 1,
+  "items": [
+    {"describe": "Songs you played on Apple Music", "file": "Apple Music Play Activity.csv", "where": {"Event Type": ["PLAY_END", ""]}, "kind": "listen",
+     "time": ["Event Start Timestamp", "Event End Timestamp"], "title": "Song Name",
+     "text": ["Song Name", "Album Name", "Container Artist Name", "End Reason Type", "Device Type"], "author": "me",
+     "omit": ["Apple ID Number", "Client IP Address", "IP City", "IP Country Code", "IP Latitude", "IP Longitude", "IP Network", "IP Network Type",
+              "IP Region Code", "Device Identifier", "Metrics Client ID", "House ID", "Subscription User ID", "Radio User ID", "Managed ID"]},
+    {"describe": "Your Apple Music plays, a track a day", "file": "Apple Music*Play History Daily Tracks.csv", "kind": "listen", "time": "Date Played",
+     "formats": ["%Y%m%d"], "title": "Track Description", "text": ["Track Description", "Source Type"], "author": "me"},
+    {"describe": "Songs you loved or disliked", "file": "Apple Music Likes and Dislikes.csv", "kind": "like", "time": "Created",
+     "title": "Item Description", "text": ["Item Description", "Preference"], "author": "me"},
+    {"describe": "Songs in your Apple Music library", "file": "Apple Music Library Tracks.json", "kind": "saved", "time": "Date Added To Library",
+     "title": "Title", "text": ["Title", "Artist", "Album", "Genre"], "id": "Track Identifier", "author": "me"}
+  ]
+}

@@ -1,0 +1,3 @@
+id,title,note,excerpt,url,folder,tags,created,cover,highlights,favorite
+900000001,Fog Atlas,Look at the coastal maps,Maps of fog by season,https://example.com/fog,Design/Maps,"maps, weather",2024-01-05T18:30:00.000Z,https://example.com/fog.png,Highlight: fog follows the cold water,true
+900000002,Bread Basics,,A starter guide,https://example.org/bread,Unsorted,,2023-11-20T09:00:00.000Z,,,false

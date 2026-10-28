@@ -1,0 +1,18 @@
+{
+  "service": "Bank of America",
+  "version": 1,
+  "items": [
+    {"describe": "Your checking and savings activity", "file": "*.[cC][sS][vV]", "header": "Date,Description,Amount,Running Bal.", "needs": ["Amount"],
+     "kind": "transaction", "time": "Date", "formats": ["%m/%d/%Y"], "title": "Description", "text": ["Description", "Amount"], "author": "me",
+     "thread": "@file", "thread_name": "@file"},
+    {"describe": "Your card activity", "file": "*.[cC][sS][vV]", "header": "Posted Date,Reference Number,", "kind": "transaction", "time": "Posted Date",
+     "formats": ["%m/%d/%Y"], "title": "Payee", "text": ["Payee", "Address", "Amount"], "id": "Reference Number", "author": "me",
+     "thread": "@file", "thread_name": "@file"},
+    {"describe": "Your checking and savings activity, from a QFX, QBO or OFX download", "file": "*.[oOqQ][fFbB][xXoO]", "path": "BANKMSGSRSV1", "kind": "transaction", "overlap": true,
+     "time": ["DTUSER", "DTPOSTED"], "title": ["NAME", "MEMO"], "text": ["NAME", "MEMO", "TRNTYPE", "TRNAMT", "CHECKNUM"], "id": "FITID",
+     "author": "me", "thread": "account", "thread_name": "account"},
+    {"describe": "Your card activity, from a QFX, QBO or OFX download", "file": "*.[oOqQ][fFbB][xXoO]", "path": "CREDITCARDMSGSRSV1", "kind": "transaction", "overlap": true,
+     "time": ["DTUSER", "DTPOSTED"], "title": ["NAME", "MEMO"], "text": ["NAME", "MEMO", "TRNTYPE", "TRNAMT", "CHECKNUM"], "id": "FITID",
+     "author": "me", "thread": "account", "thread_name": "account"}
+  ]
+}

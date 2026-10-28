@@ -1,0 +1,12 @@
+{
+  "service": "Cash App",
+  "version": 1,
+  "items": [
+    {"describe": "Your Cash App activity", "file": "*.csv", "header": "Transaction ID,Date,", "kind": "transaction", "time": "Date",
+     "title": ["Name of sender/receiver", "Notes", "Transaction Type"],
+     "text": ["Notes", "Transaction Type", "Name of sender/receiver", "Amount", "Asset Type", "Status"], "id": "Transaction ID", "author": "me"},
+    {"describe": "Your Cash App activity (2025 on)", "file": "*.csv", "header": "Date,Transaction ID,", "kind": "transaction", "time": "Date",
+     "title": ["Name of sender/receiver", "Notes", "Transaction Type"],
+     "text": ["Notes", "Transaction Type", "Name of sender/receiver", "Amount", "Asset Type", "Status"], "id": "Transaction ID", "author": "me"}
+  ]
+}

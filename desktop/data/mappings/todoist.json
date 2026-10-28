@@ -1,0 +1,12 @@
+{
+  "service": "Todoist",
+  "version": 1,
+  "items": [
+    {"describe": "Your tasks", "file": "*.csv", "header": "TYPE,CONTENT,", "where": {"TYPE": ["task"]}, "kind": "reminder", "title": "CONTENT",
+     "text": ["CONTENT", "DESCRIPTION", "DATE", "DEADLINE"], "time": "DEADLINE", "author": "me", "thread": "@file", "thread_name": "@file"},
+    {"describe": "Comments on your tasks", "file": "*.csv", "header": "TYPE,CONTENT,", "where": {"TYPE": ["note"]}, "kind": "comment",
+     "text": ["CONTENT"], "author": "AUTHOR", "thread": "@file", "thread_name": "@file"},
+    {"describe": "Sections of your projects", "file": "*.csv", "header": "TYPE,CONTENT,", "where": {"TYPE": ["section"]}, "kind": "record",
+     "title": "CONTENT", "text": ["CONTENT"], "author": "me", "thread": "@file", "thread_name": "@file"}
+  ]
+}

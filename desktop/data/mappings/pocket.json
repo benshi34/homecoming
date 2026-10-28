@@ -1,0 +1,8 @@
+{
+  "service": "Pocket",
+  "version": 1,
+  "items": [
+    {"describe": "Articles you saved", "file": "*.csv", "header": "title,url,time_added,", "kind": "saved", "time": "time_added",
+     "title": "title", "text": ["title", "tags", "status"], "url": "url", "author": "me"}
+  ]
+}

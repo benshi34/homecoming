@@ -1,0 +1,7 @@
+[{
+  "dateTime" : "03/01/24 00:00:00",
+  "value" : {"date" : "03/01/24", "value" : 54.01, "error" : 6.78}
+},{
+  "dateTime" : "03/02/24 00:00:00",
+  "value" : {"date" : null, "value" : 0.0, "error" : 0.0}
+}]

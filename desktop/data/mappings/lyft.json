@@ -1,0 +1,16 @@
+{
+  "service": "Lyft",
+  "version": 1,
+  "items": [
+    {"describe": "Your rides", "file": "passenger_rides.csv", "kind": "trip", "time": ["pickup_timestamp", "requested_timestamp"],
+     "title": ["destination_address", "status"], "text": ["status", "pickup_address", "destination_address"], "author": "me"},
+    {"describe": "What you paid Lyft", "file": "payments_from_user.csv", "kind": "transaction", "time": "created_at",
+     "text": ["amount", "currency", "payment_method"], "author": "me"},
+    {"describe": "Texts with your drivers", "file": "sms_messages.csv", "kind": "message", "time": "message_delivered_at",
+     "text": ["message_body"], "author": "from_user_role", "mine": {"from_user_role": ["passenger"]}},
+    {"describe": "Your scooter and bike rides", "file": "lyft_bike_scooters.csv", "kind": "trip", "time": ["unlocked_at", "reserved_at"],
+     "text": ["distance_travelled_meters"], "author": "me"},
+    {"describe": "Rides you gave as a driver", "file": "driver_rides.csv", "kind": "trip", "time": ["pickup_timestamp", "accepted_timestamp"],
+     "text": ["status"], "author": "me"}
+  ]
+}

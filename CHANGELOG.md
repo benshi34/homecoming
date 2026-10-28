@@ -9,6 +9,25 @@ cd ~/Developer/homecoming/desktop
 npm run update
 ```
 
+## 0.5.0
+
+- **35 more services read natively,** each from its own download, with nothing new leaving your Mac: Amazon (orders, Kindle reading), Netflix, Uber, Lyft, DoorDash, Snapchat, Telegram, PayPal, Venmo, Cash App, Apple Card, Coinbase, Robinhood, Chase, Bank of America, Capital One, Tinder, Hinge, Evernote, Day One, Trello, Todoist, Apple Music, Bing searches, Fitbit, Garmin, Letterboxd, Goodreads, IMDb, Trakt, MyAnimeList, The StoryGraph, Instapaper, Raindrop.io and Pocket. Each one's export steps are on its page.
+- **Built from public samples:** Letterboxd and Goodreads were checked against real exports; the rest were built from open-source importers' test files and the services' own help pages, and haven't been. If yours reads wrong, say so in an issue, with what the file looks like, and it'll be fixed.
+- **Bank and card downloads:** the QFX, QBO or OFX file any bank, card or Apple Card gives for Quicken or QuickBooks is read too, and a transaction in two overlapping downloads is kept once.
+- **Fitbit, a day at a time:** steps, distance, calories, floors, heart rate, sleep, blood oxygen, skin temperature and the rest, which Fitbit and Google Takeout write as millions of readings a minute or a few seconds apart, are each read as one record a day, on your clock. Each GPS route from a workout is one record: where it started and ended, how far, how long.
+- **Exports no reader knows** can now be XML or gzipped, have several tables in one CSV, rows of more than one kind in a file, and dates in any written form: the mappings behind all of the above are data the app ships, not code, so more can follow the same way.
+- **Publishing can't undo the community's work:** a release stops if a fix merged on GitHub isn't in it yet.
+
+## 0.4.0
+
+- **Signal on this Mac:** your chats and calls in Signal Desktop, both sides, and who said what in groups, with reactions, edits and replies. Signal keeps them encrypted, so macOS asks once to let Homecoming use its key; nothing decrypted is written to disk. Signal Desktop has only what reached it since it was linked to your phone.
+- **Zotero:** the papers and pages you saved, your notes on them and your highlights in their PDFs, from the Zotero app on this Mac: your library and the groups it syncs.
+- **X messages name people:** a direct message's sender, and a one-on-one conversation, are named for the person where your own posts mention or reply to them, not by an account number.
+- **A retweet isn't something you made:** What You Made and On This Day count only your own posts on X.
+- **Dates written 2024/01/13 are dates:** an export no reader knows, such as Goodreads' library, gets its dates when they're written with slashes.
+- **Each git commit once:** a worktree or a second clone of a repository no longer brings its commits in again.
+- **Thank you, @nathanjzhao,** who wrote all of these.
+
 ## 0.3.0
 
 - **Homecoming tells you when there's a new version:** once a day it reads its list of versions on GitHub, and says so once, in a notification and at the bottom of the sidebar, with what's new in it. Nothing about you is sent. Turn it off in General → Updates; Homecoming → Check for Updates… looks now.

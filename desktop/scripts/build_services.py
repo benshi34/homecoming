@@ -57,10 +57,21 @@ EXPORTS = {
                          "within 24 hours and click Confirm request. The report comes by email, within the time the law "
                          "allows (up to 30 or 45 days).",
                 "difficulty": "medium", "email": "privacyrequests@booking.com"},
+    "coinbase": {"url": "https://help.coinbase.com/en/pro/privacy-and-security/data-privacy/gdpr-how-to-access-information.html",
+                 "notes": "For your transactions: on coinbase.com, Statements → Transaction history → Generate report, as CSV. "
+                          "For everything else on your account, request your data in the Privacy section (the guide above).",
+                 "difficulty": "easy"},
     "craigslist": {"url": "https://www.craigslist.org/contact?step=form&reqKey=a38",
                    "notes": "Craigslist's Download my data form. Sign in so it knows it's you, then fill it in and send it. "
                             "Without an account, email ccpa@craigslist.org.",
                    "difficulty": "medium", "email": "ccpa@craigslist.org"},
+    "day-one": {"url": "https://dayoneapp.com/guides/tips-and-tutorials/exporting-entries/",
+                "notes": "In the Day One app: on a Mac, File → Export → JSON; on an iPhone, Settings → Import/Export → Export "
+                         "Day One JSON. You get a zip with a .json file a journal and your photos.",
+                "difficulty": "easy"},
+    "doordash": {"notes": "Request an archive of your data from DoorDash's privacy page (help.doordash.com links to it). "
+                          "DoorDash emails when the zip is ready: its consumer_order_details.csv has everything you ordered.",
+                 "difficulty": "medium"},
     "duolingo": {"url": "https://drive-thru.duolingo.com/",
                  "notes": "Sign in at duolingo.com first, then open this page again: Data Vault doesn't send you there and "
                           "back. Ask for a copy of your data (the same page can delete your account: not that button). "
@@ -71,10 +82,35 @@ EXPORTS = {
                                                  "Security and Privacy). It's usually ready in under two hours: download it "
                                                  "from the same page.",
                                         "difficulty": "easy", "email": "dpo@ea.com"},
+    "evernote": {"notes": "In the Evernote app on your Mac: right-click a notebook → Export Notebook… → ENEX. One .enex file "
+                          "a notebook: export each one you want.",
+                 "difficulty": "medium"},
+    "garmin": {"url": "https://www.garmin.com/en-US/account/datamanagement/exportdata/",
+               "notes": "Sign in to your Garmin Account, then Data Management → Export Your Data → Request Data Export. Garmin "
+                        "emails a link when the zip is ready, usually within a few days.",
+               "difficulty": "easy"},
     "github": {"url": "https://github.com/settings/admin",
                "notes": "Settings → Account → Export account data → Start export. GitHub emails a download link to your "
                         "primary address. It lasts 7 days and may ask for your password again.",
                "difficulty": "easy"},
+    "goodreads": {"url": "https://www.goodreads.com/review/import",
+                  "notes": "On goodreads.com (the phone app can't export): My Books → Import and export → Export Library. A link, "
+                           "Your export from <date>, appears under the button within seconds: click it to download "
+                           "goodreads_library_export.csv, your shelves, ratings, reviews and the dates you finished each book.",
+                  "difficulty": "easy"},
+    "imdb": {"url": "https://www.imdb.com/exports/",
+             "notes": "On imdb.com, open Your Ratings, then the ⋮ menu → Export; do the same on your Watchlist and on each of "
+                      "your lists. IMDb makes the files in a minute or two and lists them here, under Your exports: download "
+                      "each CSV.",
+             "difficulty": "easy"},
+    "instapaper": {"url": "https://www.instapaper.com/user",
+                   "notes": "On instapaper.com, Settings → Export → Download .CSV file. instapaper-export.csv downloads "
+                            "straight away: every article you saved, the folder it's in and when you saved it.",
+                   "difficulty": "easy"},
+    "letterboxd": {"url": "https://letterboxd.com/settings/data/",
+                   "notes": "Settings → Data → Export your data, then Export data. A zip, letterboxd-<username>-<date>-utc.zip, "
+                            "downloads straight away: your diary, reviews, ratings, watchlist, likes and lists.",
+                   "difficulty": "easy"},
     "lyft": {"url": "https://account.lyft.com/privacy/data",
              "notes": "Sign in with the code Lyft texts you, then click Start under Download Data. Lyft emails when it's "
                       "ready, usually in a few days. US and Canada only.",
@@ -86,6 +122,10 @@ EXPORTS = {
                                    "everything else Microsoft holds, ask at account.microsoft.com/privacy/privacy-request "
                                    "(Export my data).",
                           "difficulty": "medium"},
+    "myanimelist": {"url": "https://myanimelist.net/panel.php?go=export",
+                    "notes": "Choose Anime List, then Export My List, and download the file it offers "
+                             "(animelist_<numbers>.xml.gz). Do it again with Manga List for your manga.",
+                    "difficulty": "easy"},
     "netflix": {"url": "https://www.netflix.com/account/getmyinfo",
                 "notes": "Sign in (Netflix may send a code first), then Submit Request and confirm it from the email Netflix "
                          "sends. Netflix emails when it's ready, within 30 days. Only the account owner can ask: with just a "
@@ -101,15 +141,49 @@ EXPORTS = {
                         "your payments, also download Activity → the download icon → a Custom report as CSV (12 months per "
                         "file, up to 7 years back).",
                "difficulty": "easy"},
+    "pocket": {"notes": "Pocket closed in July 2025, and its exports ended that November. A Pocket export you downloaded "
+                        "before then (a zip with part_000000.csv in it) can still be read: add it here.",
+               "difficulty": "impossible"},
+    "raindrop-io": {"notes": "In the Raindrop.io app, Settings → Backups → Create new. Raindrop emails you when it's ready; "
+                             "download it from the same page. Of the files, the CSV has your notes, tags and highlights.",
+                    "difficulty": "easy"},
+    "robinhood": {"url": "https://robinhood.com/us/en/support/articles/finding-your-reports-and-statements/",
+                  "notes": "In Robinhood: Account → Reports and statements → Reports → generate an account activity report for "
+                           "the dates you want. It takes up to a day; download the CSV from the same page. Crypto isn't in it.",
+                  "difficulty": "medium"},
+    "snapchat": {"url": "https://support.snapchat.com/en-US/a/download-my-data",
+                 "notes": "Sign in at accounts.snapchat.com, then My Data. Turn on Export JSON Files (without it the download "
+                          "is web pages only), choose what to include and All Time, then Submit. Snapchat emails a link, often "
+                          "within a day: download every part (mydata~<numbers>.zip, then -2, -3 ... for memories).",
+                 "difficulty": "easy"},
+    "square-cash": {"notes": "On cash.app, sign in, then Activity → Statements → Export CSV. A CSV of your payments, "
+                             "deposits and transfers downloads straight away.",
+                    "difficulty": "easy"},
     "steam": {"url": "https://help.steampowered.com/en/accountdata",
               "notes": "Steam has no single download. Sign in: this page lists your account data by kind (purchases, "
                        "logins, playtime and more), each on a page of its own. Open the ones you want and save each with "
                        "File → Save Page As. For anything else, Contact Steam Support with an account data question.",
               "difficulty": "medium"},
+    "telegram": {"notes": "Only Telegram Desktop can export (not the phone app): Settings → Advanced → Export Telegram data. "
+                          "Choose what to include, set the format to Machine-readable JSON, then Export. If Telegram asks, "
+                          "confirm in the phone app, then export again. It makes a folder, DataExport_<date>, with result.json.",
+                 "difficulty": "medium"},
+    "the-storygraph": {"notes": "On thestorygraph.com, Manage Account → Manage Your Data → Export StoryGraph Library. "
+                                "It makes one CSV of your library (shelves, ratings, reviews, the dates you read each book); "
+                                "download it when it's ready.",
+                       "difficulty": "easy"},
     "tiktok": {"url": "https://www.tiktok.com/setting/download-your-data",
                "notes": "On Request data: choose JSON (the default is TXT), click Select all (nothing is ticked to start), "
                         "then Request data. It's often ready within hours (TikTok allows a few days). Download it from the "
                         "Download data tab on the same page within 4 days: TikTok emails you a code to type in first.",
+               "difficulty": "easy"},
+    "todoist": {"url": "https://www.todoist.com/help/articles/import-or-export-a-project-as-a-csv-file-in-todoist-YC8YvN",
+                "notes": "On todoist.com: open a project, then ⋯ → Export as a template → CSV, one project at a time. With Pro, "
+                         "Settings → Backups downloads a zip of every project.",
+                "difficulty": "easy"},
+    "trello": {"url": "https://support.atlassian.com/trello/docs/exporting-data-from-trello/",
+               "notes": "On a board: the ⋯ menu → Print, export and share → Export as JSON. One file a board, with its cards, "
+                        "checklists and the last 1,000 comments and changes.",
                "difficulty": "easy"},
     "tumblr": {"url": "https://www.tumblr.com/settings/privacy",
                "notes": "Settings → Privacy → Request Privacy Data (on the web: the apps don't have it). Tumblr emails to "
@@ -120,6 +194,10 @@ EXPORTS = {
              "notes": "Uber asks you to sign in again here, with a code, even when you're already signed in. Then choose "
                       "Download your data. Uber emails or texts when it has the request and again when the file is ready.",
              "difficulty": "medium"},
+    "venmo": {"url": "https://help.venmo.com/cs/articles/transaction-history-vhel281",
+              "notes": "On venmo.com, sign in, then Statements: choose a month and Download CSV, one month at a time. "
+                       "A long one may be emailed instead.",
+              "difficulty": "medium"},
     "wattpad": {"url": "https://www.wattpad.com/settings",
                 "notes": "Sign in, then on Settings scroll to Download your Personal Information and choose JSON (not HTML): "
                          "it downloads straight away. For more than this summary, email privacy@wattpad.com.",

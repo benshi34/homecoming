@@ -1,0 +1,2 @@
+[{"sleepStartTimestampGMT":"2024-06-01T05:40:00.0","sleepEndTimestampGMT":"2024-06-01T13:10:00.0","calendarDate":"2024-06-01","sleepWindowConfirmationType":"ENHANCED_CONFIRMED_FINAL","deepSleepSeconds":5400,"lightSleepSeconds":14400,"remSleepSeconds":6000,"awakeSleepSeconds":1200,"unmeasurableSeconds":0,"averageRespiration":14.0,"sleepScores":{"overallScore":81,"qualityScore":78},"retro":false},
+ {"retro":false}]
