@@ -59,6 +59,7 @@ from urllib.parse import unquote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import common
+import office_notes
 import identity
 from browser_history import classify
 from common import (CORPUS, Writer, from_unix, junk_member, looks_like_bomb, member_name, open_nested, read_json, read_manifest,
@@ -4278,9 +4279,19 @@ def other_documents(es, W, used):
                 text = data.decode("utf-8", "replace")
         except Exception:
             text = ""
+        text = re.sub(r"[ \t]+", " ", text).strip()
+        found = None
+        if ext in office_notes.OFFICE_EXT:  # comments, replies and tracked changes inside it
+            with tempfile.NamedTemporaryFile(suffix=ext) as t:
+                t.write(data)
+                t.flush()
+                found = office_notes.notes(t.name)
+        if found:
+            text = f"{text}\n\n{office_notes.as_text(found)}"
         title = re.sub(r"\s[0-9a-f]{32}$", "", PurePosixPath(e.name).stem)  # Notion appends page ids
-        w.add(id=key, kind="document", author="me", title=title, text=re.sub(r"[ \t]+", " ", text).strip()[:200_000] or title,
-              thread=e.origin, thread_name=str(PurePosixPath(e.path).parent), meta={"origin": e.origin, "path": e.path, "ext": ext})
+        w.add(id=key, kind="document", author="me", title=title, text=text[:200_000] or title,
+              thread=e.origin, thread_name=str(PurePosixPath(e.path).parent),
+              meta={"origin": e.origin, "path": e.path, "ext": ext, **office_notes.counts(found)})
 
 
 # Leftovers nobody else read. Left out only: security files, viewer/app assets, mail indexes, other people's server art.
