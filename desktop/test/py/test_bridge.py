@@ -63,11 +63,26 @@ class Sandbox(unittest.TestCase):
                     pass
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def probe(self):
-        return jsonout(bridge(["probe"], self.home, self.corpus))
+    def probe(self, tailscale="exit 1"):
+        # this Mac's own Tailscale (and its apps) out of sight: a stand-in first on PATH, signed out unless told
+        bin_ = self.tmp / "bin"
+        bin_.mkdir(exist_ok=True)
+        (bin_ / "tailscale").write_text("#!/bin/sh\n" + tailscale + "\n")
+        (bin_ / "tailscale").chmod(0o755)
+        env = {"PATH": f"{bin_}:{os.environ.get('PATH', '')}", "UMP_APPLICATIONS": str(self.tmp / "no-apps")}
+        return jsonout(bridge(["probe"], self.home, self.corpus, extra_env=env))
 
 
 class ProbeTests(Sandbox):
+    def test_other_machines_are_there_with_one_of_yours_on_tailscale_or_a_vm(self):
+        net = lambda peers: "echo '" + json.dumps({"Self": {"UserID": 1}, "Peer": peers}) + "'"
+        shared = {"a": {"HostName": "theirs", "OS": "linux", "UserID": 2, "ShareeNode": True}, "b": {"HostName": "funnel-ingress-node", "UserID": 2},
+                  "c": {"HostName": "phone", "OS": "iOS", "UserID": 1}}
+        self.assertEqual(self.probe(net(shared))["sources"]["machines"], "absent", "only someone else's, a relay and a phone")
+        self.assertEqual(self.probe(net({**shared, "d": {"HostName": "box", "OS": "linux", "UserID": 1}}))["sources"]["machines"], "ok")
+        (self.home / ".orbstack").mkdir()
+        self.assertEqual(self.probe()["sources"]["machines"], "ok", "OrbStack set up, Tailscale signed out")
+
     def test_empty_home(self):
         p = self.probe()
         self.assertIsNone(p["fda"])
