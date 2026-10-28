@@ -221,11 +221,13 @@ def redact(text, prose=False):
 
 
 def run(cmd, timeout=20):
-    """A read-only command's output, or None when it isn't installed or fails."""
+    """A read-only command's output, or None when it isn't installed or fails. Homebrew is told to neither update
+    itself nor send analytics: a read here must reach nothing outside this Mac."""
     if not shutil.which(cmd[0]) and not os.path.exists(cmd[0]):
         return None
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout,
+                           env={**os.environ, "HOMEBREW_NO_ANALYTICS": "1", "HOMEBREW_NO_AUTO_UPDATE": "1"})
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout if r.returncode == 0 else None
