@@ -10,6 +10,7 @@ export interface Step {
   text: string;
   detail?: string;
   app?: boolean; // about this app (drop the download here), not the service: Do It for Me isn't told it
+  shot?: string; // a picture of this step on the service's page: guides/<source id>/<shot> (guides/README.md)
 }
 
 export interface Source {
@@ -26,6 +27,7 @@ export interface Source {
   url?: string;
   downloadUrl?: string;
   steps?: Step[];
+  clip?: string; // a short recording of the whole export, no sound: guides/<source id>/<clip>
   // Typical and worst-case hours from request to download link.
   waitHours?: [number, number];
   // Days the download link stays valid once it's ready.

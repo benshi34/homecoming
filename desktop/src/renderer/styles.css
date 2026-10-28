@@ -225,6 +225,9 @@ input[type=checkbox]:checked::after {
 .steps-row { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; position: relative; }
 .steps-row + .steps-row::before { content: ''; position: absolute; top: 0; left: 36px; right: 0; border-top: 0.5px solid var(--separator); }
 .steps-row input { margin-top: 2px; }
+.step-shot { display: block; margin-top: 6px; max-width: 220px; max-height: 120px; border-radius: 6px; border: 0.5px solid var(--separator); cursor: zoom-in; }
+.step-shot.big { max-width: 100%; max-height: none; cursor: zoom-out; }
+.steps-clip { display: block; width: calc(100% - 24px); margin: 10px 12px 2px; border-radius: 8px; background: #000; }
 .steps-row .t { font-size: 13px; line-height: 1.4; transition: color 0.2s; }
 .steps-row .t.done { color: var(--tertiary); text-decoration: line-through; }
 .steps-row .s { font-size: 11.5px; color: var(--secondary); margin-top: 2px; }
