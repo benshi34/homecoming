@@ -35,6 +35,21 @@ def csv_text(header, rows):
     return out.getvalue()
 
 
+def docx_with(text):
+    """A minimal Word file whose body is these lines."""
+    body = "".join(f"<w:p><w:r><w:t>{line}</w:t></w:r></w:p>" for line in text.split("\n"))
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                   '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+        z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+        z.writestr("word/document.xml", '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                   f'<w:body>{body}</w:body></w:document>')
+    return b.getvalue()
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         t = tempfile.TemporaryDirectory()
@@ -530,6 +545,51 @@ def emlx(raw, partial=False):
     """Mail's own message file: the message's length in bytes on a line, the message, then a plist."""
     plist = b'<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>flags</key><integer>8590195713</integer></dict></plist>\n'
     return f"{len(raw)}\n".encode() + raw + plist
+
+
+class DriveApiTests(Base):
+    """A Google Doc pulled from the Drive API: drive.json (files.get, comments.list, revisions.list as the API returns
+    them), the Doc as it is now, and its text at two versions."""
+
+    def setUp(self):
+        super().setUp()
+        doc = docx_with("Plan\nShip the tide model by May.")
+        f = {"id": "DOC1", "name": "Tide plan", "mimeType": "application/vnd.google-apps.document", "ownedByMe": True,
+             "createdTime": "2026-03-01T10:00:00.000Z", "modifiedTime": "2026-03-03T09:00:00.000Z", "webViewLink": "https://docs.google.com/document/d/DOC1/edit",
+             "owners": [{"displayName": "Ada Lovelace", "emailAddress": "ada@example.com"}]}
+        me, mo = {"displayName": "Ada Lovelace", "me": True}, {"displayName": "Mo Reyes", "emailAddress": "mo@example.com"}
+        comments = [{"id": "c1", "author": mo, "createdTime": "2026-03-02T12:00:00.000Z", "modifiedTime": "2026-03-02T12:00:00.000Z",
+                     "content": "Is May realistic?", "quotedFileContent": {"mimeType": "text/html", "value": "by May"}, "resolved": True,
+                     "replies": [{"id": "r1", "author": me, "createdTime": "2026-03-02T13:00:00.000Z", "content": "Yes, the data's in."},
+                                 {"id": "r2", "author": mo, "createdTime": "2026-03-02T14:00:00.000Z", "content": "", "action": "resolve"},
+                                 {"id": "r3", "author": mo, "createdTime": "2026-03-02T14:01:00.000Z", "content": "oops", "deleted": True}]}]
+        revisions = [{"id": "1", "modifiedTime": "2026-03-01T10:00:00.000Z", "lastModifyingUser": me},
+                     {"id": "7", "modifiedTime": "2026-03-03T09:00:00.000Z", "lastModifyingUser": mo, "size": "2048"},
+                     {"id": "9", "modifiedTime": "2026-03-03T09:30:00.000Z", "lastModifyingUser": me}]  # no text pulled
+        self.files("drive/ada@example.com/DOC1", {
+            "drive.json": {"account": "ada@example.com", "file": f, "comments": comments, "revisions": revisions},
+            "current.docx": doc,
+            "revisions/1.txt": "\ufeffPlan\nShip the tide model by April.\n",
+            "revisions/7.txt": "\ufeffPlan\nShip the tide model by May.\nOwner: Mo\n"})
+
+    def test_the_doc_its_comment_thread_and_its_versions(self):
+        self.run_import()
+        [doc] = self.of("imported_documents")
+        self.assertEqual((doc["id"], doc["title"], doc["author"], doc["ts"]), ("drive:DOC1", "Tide plan", "me", "2026-03-03T09:00:00.000Z"))
+        self.assertIn("Ship the tide model by May", doc["text"])
+        self.assertEqual((doc["meta"]["comments"], doc["meta"]["versions"]), (1, 3))
+        thread = self.thread("drive_comments", "drive:DOC1:c1", kind="comment")
+        self.assertEqual([(r["author"], r["text"]) for r in thread], [
+            ("Mo Reyes", "Is May realistic?"), ("me", "Yes, the data's in."), ("Mo Reyes", "[resolved the comment]")])
+        self.assertEqual((thread[0]["meta"]["quoted"], thread[0]["meta"]["resolved"]), ("by May", True))
+        self.assertEqual((thread[1]["meta"]["reply_to"], thread[1]["meta"]["reply_text"]), ("DOC1:c1", "Is May realistic?"))
+        self.assertNotIn("oops", [r["text"] for r in thread], "a deleted reply")
+        versions = sorted(self.of("drive_versions", "edit"), key=lambda r: r["ts"])
+        self.assertEqual([v["author"] for v in versions], ["me", "Mo Reyes", "me"])
+        self.assertIn("Ship the tide model by April", versions[0]["text"], "the first version: its text")
+        self.assertEqual(versions[1]["text"].splitlines()[1:], ["-Ship the tide model by April.", "+Ship the tide model by May.", "+Owner: Mo"])
+        self.assertEqual(versions[2]["text"], "Edited Tide plan", "no text for this one")
+        self.assertEqual(self.unclaimed(), set())
 
 
 class LooseMailTests(Base):

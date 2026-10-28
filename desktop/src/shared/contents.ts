@@ -26,6 +26,8 @@ const KINDS: Record<string, Record<string, string>> = {
   browser_saved: { bookmark: 'Bookmarks', reading_list: 'Reading List', download: 'Downloads', open_tab: 'Tabs open on your other devices' },
   calendar: { event: 'Events' },
   notion: { note: 'Pages' },
+  drive_comments: { comment: 'Comments and replies on your Docs, Sheets and Slides' },
+  drive_versions: { edit: 'Versions of your Docs: who changed what, and when' },
 };
 const KIND_WORDS: Record<string, string> = {
   contact: 'Contacts', note: 'Notes', event: 'Events', reminder: 'Reminders', call: 'Calls', document: 'Documents',
