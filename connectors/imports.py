@@ -4274,15 +4274,24 @@ def drive_api(es, W, used):
     before when both texts are here."""
     import difflib
     by_path = {e.path: e for e in es}
+    # A file shared between two of your accounts is pulled under each: it's read once, from the copy with the most history
+    found = []
     for e in es:
         if e.name != "drive.json" or e.path in used:
             continue
         d = guarded(e, used, lambda e: e.json())
-        if not isinstance(d, dict) or not isinstance(d.get("file"), dict) or "revisions" not in d:
-            continue
+        if isinstance(d, dict) and isinstance(d.get("file"), dict) and "revisions" in d:
+            found.append((e, d))
+    found.sort(key=lambda x: (-len(listish(x[1].get("revisions"))), -len(listish(x[1].get("comments"))), x[0].path))
+    seen = set()
+    for e, d in found:
         used.add(e.path)
         f, folder = d["file"], posixpath.dirname(e.path)
         fid, name = str(f.get("id") or folder), f.get("name") or "Untitled"
+        if fid in seen:
+            used.update(x.path for x in es if x.path.startswith(folder + "/"))  # the other copy's files: read, not left over
+            continue
+        seen.add(fid)
         who = lambda u: "me" if isinstance(u, dict) and (u.get("me") or is_me_name(u.get("displayName"))) else (u or {}).get("displayName") or (u or {}).get("emailAddress")
         comments, revisions = [c for c in listish(d.get("comments")) if isinstance(c, dict)], [r for r in listish(d.get("revisions")) if isinstance(r, dict)]
         text = ""

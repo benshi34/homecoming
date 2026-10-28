@@ -591,6 +591,18 @@ class DriveApiTests(Base):
         self.assertEqual(versions[2]["text"], "Edited Tide plan", "no text for this one")
         self.assertEqual(self.unclaimed(), set())
 
+    def test_a_doc_shared_between_two_of_your_accounts_is_read_once(self):
+        # The same Doc, pulled again under a second account that sees less of its history
+        f = {"id": "DOC1", "name": "Tide plan", "mimeType": "application/vnd.google-apps.document", "modifiedTime": "2026-03-03T09:00:00.000Z"}
+        self.files("drive/ada@school.example/DOC1", {
+            "drive.json": {"account": "ada@school.example", "file": f, "comments": [], "revisions": [{"id": "9", "modifiedTime": "2026-03-03T09:30:00.000Z"}]},
+            "current.docx": docx_with("Plan\nShip the tide model by May.")})
+        self.run_import()
+        [doc] = self.of("imported_documents")
+        self.assertEqual((doc["meta"]["comments"], doc["meta"]["versions"]), (1, 3), "the copy with its history")
+        self.assertEqual(len(self.of("drive_versions", "edit")), 3)
+        self.assertEqual(self.unclaimed(), set(), "the other copy is read, not left over")
+
 
 class LooseMailTests(Base):
     def test_eml_files_in_folders_and_old_encodings(self):
