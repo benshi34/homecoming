@@ -13,6 +13,7 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
+import office_notes
 from apple_notes import _fields, _varint
 from common import HOME, LIB, NORM, RAW, ROOT, Writer, cloud_only, from_unix, ids_in, read_json, write_atomic
 from email_parse import html_to_text
@@ -78,7 +79,7 @@ SHARED_DRIVE = re.compile(r"-SharedLibraries-", re.I)
 GOOGLE_NOT_MINE = ("Shared drives", "Other computers")
 # Text read before, by path: its size and time then. A file unchanged since isn't read again; its record carries over.
 READ = RAW / "documents" / "read.json"
-READER = "1"
+READER = "2"
 
 
 def snappy(data):
@@ -465,12 +466,17 @@ def main():
                 if secret:  # passwords or one-time codes: only that the file is there
                     text = ""
                     w.notes["password_files"] = w.notes.get("password_files", 0) + 1
-                text = re.sub(r"[ \t]+", " ", text).strip()[:MAX_CHARS]
+                text = re.sub(r"[ \t]+", " ", text).strip()
+                # comments, replies and tracked changes in Office and LibreOffice files (office_notes.py), after the text
+                found = office_notes.notes(path) if ext in office_notes.OFFICE_EXT and not secret else None
+                if found:
+                    text = f"{text}\n\n{office_notes.as_text(found)}"
+                text = text[:MAX_CHARS]
                 w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=name,
                       text=text or name, thread=label, thread_name=str(path.parent),
                       meta={k: v for k, v in (("root", label), ("path", str(path)), ("ext", ext), ("bytes", st.st_size),
                                               ("created", from_unix(getattr(st, "st_birthtime", 0))),
-                                              ("error", err), ("chars", len(text)),
+                                              ("error", err), ("chars", len(text)), *office_notes.counts(found).items(),
                                               ("left_out", "passwords or codes: only its name is kept" if secret else None),
                                               *vault.items()) if v})
     write_atomic(READ, json.dumps({"reader": READER, "files": files}))

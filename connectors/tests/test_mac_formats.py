@@ -17,6 +17,7 @@ import sys
 import tempfile
 import types
 import unittest
+import zipfile
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -1017,6 +1018,21 @@ class DocumentsTests(Home):
         self.assertEqual(got["locked.md"]["meta"]["error"], "PermissionError")
         self.assertNotIn("gone.md", got)
         self.assertIn("broken.docx", got)
+
+    def test_comments_and_tracked_changes_in_a_word_file(self):
+        docs = self.home / "Documents"
+        docs.mkdir()
+        w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        with zipfile.ZipFile(docs / "draft.docx", "w") as z:
+            z.writestr("word/document.xml", f'<w:document {w}><w:body><w:p><w:commentRangeStart w:id="1"/><w:r><w:t>The tide turns at six.</w:t></w:r>'
+                                            f'<w:commentRangeEnd w:id="1"/><w:ins w:id="5" w:author="Mo Reyes"><w:r><w:t> Bring boots.</w:t></w:r></w:ins></w:p></w:body></w:document>')
+            z.writestr("word/comments.xml", f'<w:comments {w}><w:comment w:id="1" w:author="Mo Reyes" w:date="2026-03-02T12:00:00Z">'
+                                            '<w:p><w:r><w:t>Six in the morning?</w:t></w:r></w:p></w:comment></w:comments>')
+        self.run_module("documents")
+        [doc] = self.records("documents").values()
+        self.assertIn('Comment, Mo Reyes (on "The tide turns at six."): Six in the morning?', doc["text"])
+        self.assertIn("Inserted by Mo Reyes:  Bring boots.", doc["text"])
+        self.assertEqual((doc["meta"]["comments"], doc["meta"]["tracked_changes"]), (1, 1))
 
 
 # ---------------------------------------------------------------- empty and missing databases
