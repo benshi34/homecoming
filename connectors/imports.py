@@ -4237,8 +4237,118 @@ def fitbit_days(es, W, used):
 TAKEOUT_INDEX = re.compile(r"(^|/)Takeout(?: \d+)?/[^/]+\.html?$|(^|/)archive_browser\.html$")
 
 
-def other_documents(es, W, used):
+def document_text(ext, data):
+    """A document's text, from its bytes: pdf, Word (and doc, rtf, odt, by macOS textutil), PowerPoint, Pages and
+    Keynote, html, a notebook's cells, else the bytes as text. "" when it can't be read."""
     from documents import iwork_text, pdf_text, pptx_text
+    try:
+        if ext in (".pdf", ".docx", ".doc", ".rtf", ".odt"):
+            with tempfile.NamedTemporaryFile(suffix=ext) as t:
+                t.write(data)
+                t.flush()
+                if ext == ".pdf":
+                    return pdf_text(Path(t.name)) or ""
+                return subprocess.run(["textutil", "-convert", "txt", "-stdout", t.name], capture_output=True, text=True, timeout=60).stdout
+        if ext == ".pptx":
+            return pptx_text(io.BytesIO(data)) or ""
+        if ext in (".pages", ".key"):
+            return iwork_text(io.BytesIO(data)) or ""
+        if ext in (".html", ".htm"):
+            return html_to_text(data.decode("utf-8", "replace"))
+        if ext == ".ipynb":
+            return "\n\n".join("".join(c.get("source", [])) for c in json.loads(data).get("cells", []))
+        if ext == ".xlsx":
+            from documents import xlsx_text
+            return xlsx_text(io.BytesIO(data)) or ""
+        return data.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def drive_api(es, W, used):
+    """Google Drive files with their comment threads and version history, as the Drive API (v3) gives them: a folder
+    per file with drive.json ({"file": files.get, "comments": comments.list with replies, "revisions": revisions.list,
+    "account"}), current.<docx|xlsx|pptx|ipynb> (the file as it is now) and revisions/<id>.txt (a Doc's text at that
+    version). The document goes to imported_documents, its comments and replies to drive_comments (a reply names the
+    comment it answers), and each version to drive_versions, with the lines it added and took out since the one
+    before when both texts are here."""
+    import difflib
+    by_path = {e.path: e for e in es}
+    # A file shared between two of your accounts is pulled under each: it's read once, from the copy with the most history
+    found = []
+    for e in es:
+        if e.name != "drive.json" or e.path in used:
+            continue
+        d = guarded(e, used, lambda e: e.json())
+        if isinstance(d, dict) and isinstance(d.get("file"), dict) and "revisions" in d:
+            found.append((e, d))
+    found.sort(key=lambda x: (-len(listish(x[1].get("revisions"))), -len(listish(x[1].get("comments"))), x[0].path))
+    seen = set()
+    for e, d in found:
+        used.add(e.path)
+        f, folder = d["file"], posixpath.dirname(e.path)
+        fid, name = str(f.get("id") or folder), f.get("name") or "Untitled"
+        if fid in seen:
+            used.update(x.path for x in es if x.path.startswith(folder + "/"))  # the other copy's files: read, not left over
+            continue
+        seen.add(fid)
+        who = lambda u: "me" if isinstance(u, dict) and (u.get("me") or is_me_name(u.get("displayName"))) else (u or {}).get("displayName") or (u or {}).get("emailAddress")
+        comments, revisions = [c for c in listish(d.get("comments")) if isinstance(c, dict)], [r for r in listish(d.get("revisions")) if isinstance(r, dict)]
+        text = ""
+        for x in es:
+            if posixpath.dirname(x.path) == folder and x.name.startswith("current."):
+                used.add(x.path)
+                text = document_text(PurePosixPath(x.name).suffix.lower(), x.read())
+        mine = f.get("ownedByMe") or f.get("modifiedByMeTime")
+        W("imported_documents").add(
+            id=f"drive:{fid}", kind="document", ts=f.get("modifiedTime"), author="me" if mine else who(f.get("lastModifyingUser")),
+            title=name, text=re.sub(r"[ \t]+", " ", text).strip()[:200_000] or name, thread=e.origin, thread_name=d.get("account") or "Google Drive",
+            meta={k: v for k, v in {"origin": e.origin, "path": e.path, "url": f.get("webViewLink"), "mime": f.get("mimeType"),
+                                    "account": d.get("account"), "created": f.get("createdTime"),
+                                    "owners": [o.get("displayName") for o in listish(f.get("owners")) if isinstance(o, dict)] or None,
+                                    "comments": len(comments) or None, "versions": len(revisions) or None}.items() if v})
+        wc = W("drive_comments")
+        for c in comments:
+            quoted = ((c.get("quotedFileContent") or {}).get("value") or "").strip() or None
+            people = sorted({who(x.get("author")) for x in [c, *listish(c.get("replies"))] if isinstance(x, dict) and who(x.get("author")) not in (None, "me")})
+            base = {"group": len(people) > 1 or None, "participants": people or None, "url": f.get("webViewLink"), "document": name}
+            wc.add(id=f"{fid}:{c.get('id')}", kind="comment", ts=c.get("createdTime"), author=who(c.get("author")),
+                   is_me=who(c.get("author")) == "me", thread=f"drive:{fid}:{c.get('id')}", thread_name=f"{name}: {(quoted or c.get('content') or '')[:60]}",
+                   participants=people, text=c.get("content") or "",
+                   meta={k: v for k, v in {**base, "quoted": quoted, "resolved": c.get("resolved") or None,
+                                           "edited": c.get("modifiedTime") if c.get("modifiedTime") != c.get("createdTime") else None}.items() if v})
+            for r in listish(c.get("replies")):
+                if not isinstance(r, dict) or r.get("deleted"):
+                    continue
+                said = r.get("content") or {"resolve": "[resolved the comment]", "reopen": "[reopened the comment]"}.get(r.get("action"), "")
+                wc.add(id=f"{fid}:{c.get('id')}:{r.get('id')}", kind="comment", ts=r.get("createdTime"), author=who(r.get("author")),
+                       is_me=who(r.get("author")) == "me", thread=f"drive:{fid}:{c.get('id')}", thread_name=f"{name}: {(quoted or c.get('content') or '')[:60]}",
+                       participants=people, text=said,
+                       meta={k: v for k, v in {**base, "reply_to": f"{fid}:{c.get('id')}", "reply_text": (c.get("content") or "")[:200] or None,
+                                               "action": r.get("action")}.items() if v})
+        wv, before = W("drive_versions"), None
+        for r in sorted(revisions, key=lambda r: r.get("modifiedTime") or ""):
+            t = by_path.get(posixpath.join(folder, "revisions", f"{r.get('id')}.txt"))
+            now = None
+            if t:
+                used.add(t.path)
+                now = t.read().decode("utf-8", "replace").replace("\ufeff", "").splitlines()
+            changed = ""
+            if now is not None and before is not None:
+                diff = [x for x in difflib.unified_diff(before, now, lineterm="", n=0) if x[:1] in "+-" and x[:3] not in ("+++", "---") and x[1:].strip()]
+                changed = "\n".join(diff)[:6000]
+            elif now is not None:
+                changed = "\n".join(now)[:6000]
+            if now is not None:
+                before = now
+            wv.add(id=f"{fid}:{r.get('id')}", kind="edit", ts=r.get("modifiedTime"), author=who(r.get("lastModifyingUser")),
+                   is_me=who(r.get("lastModifyingUser")) == "me", thread=f"drive:{fid}", thread_name=name,
+                   text=f"Edited {name}" + (f"\n{changed}" if changed else ""),
+                   meta={k: v for k, v in {"document": name, "url": f.get("webViewLink"), "revision": r.get("id"), "bytes": int(r["size"]) if str(r.get("size") or "").isdigit() else None,
+                                           "text_here": now is not None or None}.items() if v})
+
+
+def other_documents(es, W, used):
     for e in es:
         ext = PurePosixPath(e.name).suffix.lower()
         if e.path in used or ext not in DOC_EXT or e.size > 60 * 2**20 or e.size == 0 or TAKEOUT_INDEX.search(e.path) or "Takeout/Keep/" in e.path:  # Keep has JSON twins
@@ -4254,30 +4364,7 @@ def other_documents(es, W, used):
         key = f"{e.path}#{hashlib.sha1(data).hexdigest()[:12]}"
         if w.has(key):
             continue
-        try:
-            if ext == ".pdf":
-                with tempfile.NamedTemporaryFile(suffix=".pdf") as t:
-                    t.write(data)
-                    t.flush()
-                    text = pdf_text(Path(t.name))
-            elif ext in (".docx", ".doc", ".rtf", ".odt"):
-                with tempfile.NamedTemporaryFile(suffix=ext) as t:
-                    t.write(data)
-                    t.flush()
-                    text = subprocess.run(["textutil", "-convert", "txt", "-stdout", t.name], capture_output=True,
-                                          text=True, timeout=60).stdout
-            elif ext == ".pptx":
-                text = pptx_text(io.BytesIO(data))
-            elif ext in (".pages", ".key"):
-                text = iwork_text(io.BytesIO(data))
-            elif ext in (".html", ".htm"):
-                text = html_to_text(data.decode("utf-8", "replace"))
-            elif ext == ".ipynb":
-                text = "\n\n".join("".join(c.get("source", [])) for c in json.loads(data).get("cells", []))
-            else:
-                text = data.decode("utf-8", "replace")
-        except Exception:
-            text = ""
+        text = document_text(ext, data)
         title = re.sub(r"\s[0-9a-f]{32}$", "", PurePosixPath(e.name).stem)  # Notion appends page ids
         w.add(id=key, kind="document", author="me", title=title, text=re.sub(r"[ \t]+", " ", text).strip()[:200_000] or title,
               thread=e.origin, thread_name=str(PurePosixPath(e.path).parent), meta={"origin": e.origin, "path": e.path, "ext": ext})
@@ -4436,7 +4523,7 @@ def other_files(es, W, used):
 
 
 PARSERS = [ai_exports, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, zoom,
-           notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
+           drive_api, notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
 
 
 def main():
