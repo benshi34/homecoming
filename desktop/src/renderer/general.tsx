@@ -35,6 +35,10 @@ export function GeneralPage({ snap, toolbar, onAssistant, onExport, onWhatsNew, 
               trailing={<Toggle checked={s.autoRefresh} onChange={(v) => set({ autoRefresh: v })} label="Read this Mac every day" testId="toggle-daily" />} />
             <GroupRow icon={<GlyphTile glyph="reload" color="blue" />} title="Read this Mac now" chevron={false} subtitle="Every source on this Mac, read again now."
               trailing={<Button size="small" onClick={() => void api.action('*', 'run-all-mac')} disabled={locked} title={locked ? READ_ONLY_NOTE : undefined} testAction="run-all-mac">Read Now</Button>} />
+            <GroupRow icon={<GlyphTile glyph="wave" color="red" />} title="Transcribe audio on this Mac" chevron={false} testId="general-transcribe"
+              subtitle={s.transcribeAudio ? 'Voice memos, voice messages and voicemails Apple didn\'t transcribe are heard by Apple\'s speech recognition on this Mac. Nothing is sent anywhere.'
+                : 'Off: only the transcripts Apple already made are read.'}
+              trailing={<Toggle checked={s.transcribeAudio === true} onChange={(v) => set({ transcribeAudio: v })} label="Transcribe audio on this Mac" testId="toggle-transcribe" />} />
           </Group>
 
           <Group title="Exports coming home" footer="While an export is on its way, Homecoming looks for the file, and for the service's &quot;your data is ready&quot; email and notification. It reads a private copy of each, kept on this Mac; nothing else from them goes into your library. Turning one off removes its copy.">
