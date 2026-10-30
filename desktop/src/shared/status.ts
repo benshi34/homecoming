@@ -180,10 +180,10 @@ function gapWarning(src: Source, keys: string[], stats: Stats | null, now: Date)
   return out;
 }
 
-function base(src: Source, st: SourceState | undefined): Pick<SourceView, 'id' | 'name' | 'group' | 'blurb' | 'records' | 'warnings' | 'actions' | 'optional' | 'url'> & { notes: string[] } {
+function base(src: Source, st: SourceState | undefined): Pick<SourceView, 'id' | 'name' | 'group' | 'blurb' | 'records' | 'warnings' | 'actions' | 'optional' | 'url' | 'clip'> & { notes: string[] } {
   return {
     id: src.id, name: src.name, group: src.group, blurb: src.blurb, records: 0, warnings: [],
-    notes: [...(src.knownGaps ?? [])], actions: [], optional: src.optional, url: src.url,
+    notes: [...(src.knownGaps ?? [])], actions: [], optional: src.optional, url: src.url, clip: src.clip,
   };
 }
 

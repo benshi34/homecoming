@@ -1126,11 +1126,13 @@ function claudeDownloading(id?: string): boolean {
 
 // The Downloads watcher, and the files it passed over while Watch Downloads was off: looked at again when it's turned on.
 let watcher: FolderWatcher | null = null;
+let telegramWatcher: FolderWatcher | null = null;
 const passedOver = new Set<string>();
 function watchAgain() {
-  for (const p of passedOver) watcher?.forget(p);
+  for (const p of passedOver) for (const w of [watcher, telegramWatcher]) w?.forget(p);
   passedOver.clear();
   void watcher?.scan();
+  void telegramWatcher?.scan();
 }
 
 // One file at a time: two copies of one download arriving together (a link followed twice) are then told apart,
@@ -1157,7 +1159,7 @@ async function handleDownloadsFile(p: string, size: number) {
     const n = (identifyFailed.get(p) ?? 0) + 1;
     identifyFailed.set(p, n);
     log(`Couldn't look at ${path.basename(p)} in Downloads: ${(e as Error).message}`);
-    if (n <= 3) setTimeout(() => watcher?.forget(p), n * 60_000);
+    if (n <= 3) setTimeout(() => [watcher, telegramWatcher].forEach((w) => w?.forget(p)), n * 60_000);
     return;
   }
   if (f && !f.kind && (f.valid || f.encrypted) && IMPORTS) {
@@ -1271,6 +1273,7 @@ function maybeStartWatcher() {
   if (!watcher || watcherOn || deferFolders()) return;
   watcherOn = true;
   watcher.start();
+  telegramWatcher?.start();
 }
 let watcherOn = false;
 
@@ -3220,6 +3223,10 @@ if (!app.requestSingleInstanceLock()) {
     // With Watch Downloads off it waits (files aren't marked as seen), apart from what Claude is downloading.
     watcher = new FolderWatcher(P.downloads, (p, size) => void onDownloadsFile(p, size),
       Number(process.env.UMP_SETTLE_MS || 4000), Number(process.env.UMP_POLL_MS || 3000), (name) => !!serviceNamed(name),
+      () => store.state.settings.watchDownloads || claudeDownloading());
+    // Telegram Desktop saves its exports a folder down, in Downloads/Telegram Desktop (beside files people sent you)
+    telegramWatcher = new FolderWatcher(path.join(P.downloads, 'Telegram Desktop'), (p, size) => void onDownloadsFile(p, size),
+      Number(process.env.UMP_SETTLE_MS || 4000), Number(process.env.UMP_POLL_MS || 3000), () => false,
       () => store.state.settings.watchDownloads || claudeDownloading());
     maybeStartWatcher();
     // This Mac looked at every minute while the window is open, every five while nothing shows it.

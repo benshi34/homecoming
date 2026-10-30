@@ -363,8 +363,16 @@ def sources_present(con):
 
 # ---------------------------------------------------------------- people
 
+def chat_meta(source, meta):
+    """What chat_partner needs of a message's meta: all of it from the apps whose meta says who it's with, else only
+    whether it says it's a group (a Slack channel, a Telegram group): read only when it might."""
+    return meta_of(meta) if source in ("imessage", "discord") or (meta and '"group": true' in meta) else {}
+
+
 def chat_partner(source, thread_name, participants, meta, mine):
     """The one other person in a one-on-one conversation, or None for a group or a server channel."""
+    if meta.get("group") is True:
+        return None
     if source == "imessage":
         return None if meta.get("group") else thread_name
     if source == "discord":
@@ -404,7 +412,7 @@ def identities(con, mine):
     q = (f"select source, thread, thread_name, participants, meta from records where {MESSAGES} "
          f"and source not in ({','.join(repr(s) for s in CONTACT_NAMED)}) group by source, thread")
     for source, thread, thread_name, participants, meta in con.execute(q):
-        who = chat_partner(source, thread_name, participants, meta_of(meta) if source == "discord" else {}, mine)
+        who = chat_partner(source, thread_name, participants, chat_meta(source, meta), mine)
         if who and key(who) not in mine:
             threads[(source, key(who))].add(thread)
     # The names your Contacts give: a first name alone from another app can be one of these.
@@ -434,7 +442,7 @@ def message_rows(con, mine, pg=None, ident=None):
     for i, (rowid, source, ts, is_me, thread, thread_name, participants, meta) in enumerate(con.execute(q)):
         if pg:
             pg.tick(i)
-        m = meta_of(meta) if source in ("imessage", "discord") else {}
+        m = chat_meta(source, meta)
         who = chat_partner(source, thread_name, participants, m, mine)
         if not key(who) or key(who) in mine:
             continue
@@ -653,7 +661,7 @@ def on_this_day(md=None):
                     places[p] += 1
             elif kind == "message" and source in CHATS:
                 # One person once, whichever apps you talked in (the busiest conversation opens); a group as a group.
-                m = meta_of(meta) if source in ("imessage", "discord") else {}
+                m = chat_meta(source, meta)
                 who = chat_partner(source, thread_name, participants, m, mine)
                 pk = ident(source, thread, who, person_meta(meta)) if who else None
                 if pk:
@@ -883,7 +891,7 @@ def trip_people(con, lo, hi, merged=None, ident=None):
     for source, thread, thread_name, participants, meta in con.execute(
             f"select source, thread, thread_name, participants, meta from records where kind = 'message' and source in ({','.join('?' * len(CHATS))}) "
             "and ts >= ? and ts < ?", (*CHATS, lo, hi)):
-        who = chat_partner(source, thread_name, participants, meta_of(meta) if source in ("imessage", "discord") else {}, mine)
+        who = chat_partner(source, thread_name, participants, chat_meta(source, meta), mine)
         k = ident(source, thread, who, person_meta(meta)) if who and key(who) not in mine else None
         if k:
             k, name = merged.get(k, (k, person_meta(meta).get("person_name") or who))
@@ -2339,7 +2347,8 @@ def thread(rowid, direction=None, edge=None, limit=60):
         return {"error": "not a message in a conversation"}
     _, source, _, th, thread_name, participants, ts, meta = r
     cols = "rowid, ts, is_me, author, kind, text, meta"
-    base = f"select {cols} from records where source = ? and thread = ? and kind in ('message', 'reaction') and ts is not null"
+    base = (f"select {cols} from records where source = ? and thread = ? and kind in ('message', 'reaction') and ts is not null "
+            f"and {shown_rows(int(rowid))}")
 
     def take(where, args, order, n):
         rows = con.execute(f"{base} and {where} order by ts {order} limit {int(n)}", (source, th, *args)).fetchall()
@@ -2362,7 +2371,7 @@ def thread(rowid, direction=None, edge=None, limit=60):
             rows = day
         else:
             rows = take("ts < ?", (lo,), "desc", 12) + day + take("ts >= ?", (hi,), "asc", 12)
-    out = _messages(rows)
+    out = _messages(rows, (int(rowid),))
     first, last = (rows[0][1], rows[-1][1]) if rows else (ts, ts)
     more = lambda op, t: con.execute(f"select 1 from records where source = ? and thread = ? and kind in ('message', 'reaction') "
                                      f"and ts {op} ? limit 1", (source, th, t)).fetchone() is not None
@@ -2378,7 +2387,7 @@ def explore_page(con, source, th, thread_name, participants, meta, rows):
     mine = me_names()
     if not any(r[4] == "message" and parse(r[1]) for r in rows):
         return None  # neither page counts a message with no time that can be right
-    who = chat_partner(source, thread_name, participants, meta_of(meta) if source in ("imessage", "discord") else {}, mine)
+    who = chat_partner(source, thread_name, participants, chat_meta(source, meta), mine)
     if who:
         if source not in CHATS or not key(who) or key(who) in mine:
             return None
@@ -2399,18 +2408,28 @@ def explore_page(con, source, th, thread_name, participants, meta, rows):
     return {"page": "group", "key": group_key(source, th), "name": group_title(t["name"], members)}
 
 
+def shown_rows(*anchors):
+    """SQL for the rows a conversation shows: not a tapback that shows on its message (meta.on_message), unless it's
+    one opened. In the query, so one hidden doesn't take a place of the ones counted out."""
+    keep = ", ".join(str(int(a)) for a in anchors) or "-1"
+    return f"(kind != 'reaction' or json_extract(meta, '$.on_message') is null or rowid in ({keep}))"
+
+
 ATTACHED = re.compile(r"\s*\[attachment: ([^\]]*)\]")
 
 
-def _messages(rows):
+def _messages(rows, anchors=()):
     """Rows of (rowid, ts, is_me, author, kind, text, meta) as a chat app shows them: what came with it (a picture on
     this Mac is drawn, anything else named), whether it was edited (and what it said before, where that's kept) or
-    unsent, and the reactions an app keeps on the message itself (Instagram's and Messenger's; Messages keeps each
-    as a message of its own, kind "reaction")."""
+    unsent, what it replies to, and the reactions standing on it (meta.reactions, every chat source's). Messages
+    keeps each tapback as a message of its own too (kind "reaction"): one on a message that's here (meta.on_message)
+    shows on it, not as a line of its own, unless it's the one opened (anchors)."""
     mine = me_names()
     out = []
     for rid, ts_, is_me, author, kind, text, m in rows:
         mt = meta_of(m)
+        if kind == "reaction" and mt.get("on_message") and rid not in anchors:
+            continue
         files = [f for f in (mt.get("files") or []) if isinstance(f, str)]
         body = ATTACHED.sub("", text or "").strip()
         drawn = next((Path(f).name for f in files if Path(f).suffix.lower() in IMAGE_EXT), None)
@@ -2425,13 +2444,14 @@ def _messages(rows):
         out.append({"rowid": rid, "ts": lt.isoformat() if lt else None, "at": ts_, "me": str(is_me) == "1", "author": author,
                     "kind": kind, "text": body, "files": len(files), "image": drawn is not None, "attachments": attachments,
                     "edited": bool(mt.get("edited") or edits), "before": [e["text"] for e in edits if isinstance(e, dict) and isinstance(e.get("text"), str)],
-                    "unsent": bool(mt.get("unsent")), "reactions": reactions})
+                    "unsent": bool(mt.get("unsent")), "reactions": reactions,
+                    **({"reply": mt["reply_text"]} if isinstance(mt.get("reply_text"), str) and mt["reply_text"] else {})})
     return out
 
 
 def _who(con, source, th, thread_name, participants, meta):
     """Which app a conversation is in, who it's with (no one name for a group), and whether only your side is kept."""
-    m = meta_of(meta) if source in ("imessage", "discord") else {}
+    m = chat_meta(source, meta)
     who = chat_partner(source, thread_name, participants, m, me_names())
     others = con.execute("select 1 from records where source = ? and thread = ? and kind = 'message' and is_me != '1' limit 1",
                          (source, th)).fetchone()
@@ -2461,7 +2481,7 @@ def embed(kind, spec):
             return {"error": "those messages are in different conversations"}
         _, source, _, th, thread_name, participants, ts, meta = ends[0]
         base = ("select rowid, ts, is_me, author, kind, text, meta from records where source = ? and thread = ? "
-                "and kind in ('message', 'reaction') and ts is not null")
+                f"and kind in ('message', 'reaction') and ts is not null and {shown_rows(*ids)}")
         if len(ends) == 2:
             lo, hi = sorted([ends[0][6], ends[1][6]])
             rows = con.execute(f"{base} and ts >= ? and ts <= ? order by ts, rowid limit {SNIPPET}", (source, th, lo, hi)).fetchall()
@@ -2472,7 +2492,7 @@ def embed(kind, spec):
             after = con.execute(f"{base} and (ts > ? or (ts = ? and rowid >= ?)) order by ts, rowid limit 4",
                                 (source, th, ts, ts, ids[0])).fetchall()
             rows, anchors = before + after, ids
-        out = _messages(rows)
+        out = _messages(rows, anchors)
         pics = thumbs([m["rowid"] for m in out if m["image"]], 360)
         for m in out:
             if str(m["rowid"]) in pics:
