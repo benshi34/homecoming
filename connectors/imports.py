@@ -107,12 +107,12 @@ AV = {
 }
 EXPORT_SOURCES = frozenset(AV)  # the exports' sources (the catch-alls and mappings add theirs to AV as they run)
 DOC_EXT = {".pdf", ".docx", ".doc", ".rtf", ".odt", ".pptx", ".pages", ".key", ".md", ".markdown", ".txt", ".tex",
-           ".html", ".htm", ".ipynb"}
+           ".html", ".htm", ".ipynb", ".xlsx"}
 
 
 class Entry:
-    def __init__(self, path, opener, size, origin):
-        self.path, self.open, self.size, self.origin = path, opener, size, origin
+    def __init__(self, path, opener, size, origin, timestamp=None):
+        self.path, self.open, self.size, self.origin, self.timestamp = path, opener, size, origin, timestamp
 
     @property
     def name(self):
@@ -182,7 +182,8 @@ def entries():
                 except Exception as x:  # noqa: BLE001 - a zip in it that's damaged (BadZipFile, zlib.error, a bad CRC), or no room
                     cut_short(f"{origin}: {prefix}{name}", x)
                 continue
-            out.append(Entry(prefix + name, lambda z=z, i=info: z.open(i), info.file_size, origin))
+            timestamp = datetime(*info.date_time).isoformat(timespec="seconds")
+            out.append(Entry(prefix + name, lambda z=z, i=info: z.open(i), info.file_size, origin, timestamp))
 
     def add_tar(p, origin):
         """GitHub's export is a .tar.gz. A compressed tar can't be read file by file without starting over each time, so
@@ -229,7 +230,7 @@ def entries():
                 except (zipfile.BadZipFile, OSError) as x:
                     cut_short(f"{origin}: {name}", x)
                 continue
-            out.append(Entry(name, lambda f=f: open(f, "rb"), f.stat().st_size, origin))
+            out.append(Entry(name, lambda f=f: open(f, "rb"), f.stat().st_size, origin, datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")))
 
     for p in sorted(IMPORTS.rglob("*")):
         # A link in an export folder could pull in any file on this Mac (~/.ssh/...): only real files count.
@@ -247,7 +248,7 @@ def entries():
         elif p.name.lower().endswith(TAR_EXT):
             add_tar(p, str(rel))
         else:
-            out.append(Entry(rel.as_posix(), lambda p=p: open(p, "rb"), p.stat().st_size, rel.parts[0]))
+            out.append(Entry(rel.as_posix(), lambda p=p: open(p, "rb"), p.stat().st_size, rel.parts[0], datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds")))
     for (origin, why, inside), n in sorted(collections.Counter((x["origin"], x["why"], bool(x["path"])) for x in LEFT_OUT).items()):
         hint = (" Double-click it in Finder (enter its password if it asks), then put the folder it makes in corpus/imports/ instead"
                 if why in ("locked with a password", "packed in a way that can't be read here") else "")
@@ -588,6 +589,236 @@ def claude_projects(data, w):
             w.add(id=dkey, kind="document", ts=d.get("created_at"), author="claude.ai" if starter else "me", is_me=not starter,
                   thread=pid, thread_name=name, title=(d.get("filename") or "untitled")[:300],
                   text=(d.get("content") or "")[:200_000] or d.get("filename"), meta={"tool": "claude.ai", "project": name})
+
+
+AI_STUDIO_ROOT = re.compile(r"(?:^|/)Takeout(?: \d+)?/Drive/Google AI Studio/")
+AI_STUDIO_ATTACHMENT_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mp4", ".mov", ".m4a", ".aac",
+                            ".mp3", ".wav", ".svg", ".pdf")
+
+
+def ai_studio_rel(e):
+    m = AI_STUDIO_ROOT.search(e.path)
+    return e.path[m.end():] if m else None
+
+
+def ai_studio_value(x):
+    """Text from AI Studio's small text-bearing objects (system instructions and citations)."""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, dict):
+        for k in ("text", "value", "content", "parts"):
+            if k in x:
+                text = ai_studio_value(x[k])
+                if text:
+                    return text
+    if isinstance(x, list):
+        return "\n".join(t for t in (ai_studio_value(v) for v in x) if t)
+    return ""
+
+
+def ai_studio_refs(x):
+    """Names and ids in a driveImage/driveDocument/inlineImage object."""
+    out = []
+    if isinstance(x, str):
+        out.append(x)
+    elif isinstance(x, dict):
+        for k, v in x.items():
+            if k.lower() in {"name", "filename", "file_name", "title", "id", "fileid", "driveid", "uri", "url"}:
+                out.extend(ai_studio_refs(v))
+            elif isinstance(v, (dict, list)):
+                out.extend(ai_studio_refs(v))
+    elif isinstance(x, list):
+        for v in x:
+            out.extend(ai_studio_refs(v))
+    return out
+
+
+def ai_studio_attachment(entry, folder, used, docs, w, referenced=False):
+    """Claim an AI Studio attachment, keeping PDFs searchable and media as a normal file."""
+    used.add(entry.path)
+    rel = PurePosixPath(entry.path).name
+    dest = MEDIA / "ai_studio" / rid(folder) / rel
+    saved = save_media(entry, dest, entry.timestamp)
+    path = saved or entry.path
+    ext = PurePosixPath(entry.name).suffix.lower()
+    if ext == ".pdf":
+        text = re.sub(r"[ \t]+", " ", document_text(ext, entry.read())).strip()
+        key = f"ai_studio:attachment:{entry.path}"
+        if not docs.has(key):
+            docs.add(id=key, kind="document", ts=entry.timestamp, author="me", is_me=True, title=entry.name,
+                     text=text[:200_000] or entry.name, thread=folder, thread_name="Google AI Studio",
+                     meta={"origin": entry.origin, "path": entry.path, "ext": ext, "files": [path] if saved else None})
+    elif not referenced:
+        key = f"ai_studio:file:{entry.path}"
+        if not w.has(key):
+            w.add(id=key, kind="file", ts=entry.timestamp, author="me", is_me=True, title=entry.name,
+                  text=f"File {entry.path}", thread=folder, thread_name="Google AI Studio",
+                  meta={"files": [path] if saved else None, "path": entry.path})
+    return {"name": entry.name, "path": path}
+
+
+def ai_studio_build_zip(e, w):
+    """A Build app project kept as one zip: its metadata.json's name and description, and the files in it."""
+    key = f"build:{e.path}"
+    if w.has(key) or e.size > 512 << 20:
+        return
+    with e.open() as f:
+        try:
+            z = zipfile.ZipFile(io.BytesIO(f.read()))
+        except zipfile.BadZipFile:
+            return
+    names = [n for n in z.namelist() if not n.endswith("/") and not junk_member(n)]
+    meta = next((n for n in names if PurePosixPath(n).name == "metadata.json"), None)
+    try:
+        d = json.loads(z.read(meta)) if meta else {}
+    except (ValueError, KeyError, zipfile.BadZipFile):
+        d = {}
+    d = d if isinstance(d, dict) else {}
+    name = d.get("name") or d.get("title") or e.name
+    desc = d.get("description") or d.get("summary") or ""
+    w.add(id=key, kind="project", ts=e.timestamp, author="me", is_me=True, thread=e.path, thread_name="Google AI Studio Build",
+          title=str(name)[:300], text="\n".join(x for x in (str(desc), "Files: " + ", ".join(names)) if x)[:200_000],
+          meta={"tool": "ai_studio", "build": True, "description": desc or None})
+
+
+def ai_studio(es, W, used):
+    """Google AI Studio's Drive export: chats, Build app projects, applet history and their attachments."""
+    roots = [(e, ai_studio_rel(e)) for e in es]
+    roots = [(e, rel) for e, rel in roots if rel is not None]
+    if not roots:
+        return
+    by_folder = collections.defaultdict(list)
+    for e, rel in roots:
+        if "/" not in rel:
+            by_folder[PurePosixPath(e.path).parent.as_posix()].append(e)
+
+    w = W("ai_studio")
+    docs = None
+
+    # Build projects are nested zips. entries() exposes their members as <project>.zip/<file>.
+    builds = collections.defaultdict(list)
+    for e, rel in roots:
+        m = re.match(r"([^/]+\.zip)/(.*)$", rel, re.I)
+        if m:
+            builds[(PurePosixPath(e.path).parent / m.group(1)).as_posix()].append(e)
+    for project, members in builds.items():
+        metadata = next((e for e in members if PurePosixPath(e.path).name == "metadata.json"), None)
+        d = guarded(metadata, used, lambda e: e.json()) if metadata else None
+        if not isinstance(d, dict):
+            d = {}
+        name = d.get("name") or d.get("title") or d.get("description") or PurePosixPath(project).stem
+        desc = d.get("description") or d.get("summary") or ""
+        prefix = project + "/"
+        files = [e.path[len(prefix):] if e.path.startswith(prefix) else e.name for e in members]
+        key = f"build:{project}"
+        if not w.has(key):
+            w.add(id=key, kind="project", ts=metadata.timestamp if metadata else members[0].timestamp, author="me", is_me=True,
+                  thread=project, thread_name="Google AI Studio Build", title=str(name)[:300],
+                  text="\n".join(x for x in (str(desc), "Files: " + ", ".join(files)) if x)[:200_000],
+                  meta={"tool": "ai_studio", "build": True, "description": desc or None})
+        used.update(e.path for e in members)
+
+    for e, rel in roots:
+        if e.path in used or "/" in rel:
+            continue
+        folder = PurePosixPath(e.path).parent.as_posix()
+        if e.name == "applet_access_history.json":
+            d = guarded(e, used, lambda e: e.json())
+            if not isinstance(d, dict):
+                continue
+            used.add(e.path)
+            for i, app in enumerate(listish(d.get("applets"))):
+                if not isinstance(app, dict):
+                    continue
+                name = app.get("name") or app.get("title") or app.get("id") or f"Applet {i + 1}"
+                ts = parse_time(app.get("lastAccessTime")) or parse_time(app.get("firstAccessTime"))
+                w.add(id=f"applet:{e.path}:{app.get('id') or name}:{i}", kind="activity", ts=ts, author="me", is_me=True,
+                      thread=e.path, thread_name=e.name, title=str(name)[:300], text=f"Opened {name}",
+                      meta={"tool": "ai_studio", "applet": app.get("id") or name,
+                            "first_access": app.get("firstAccessTime"), "last_access": app.get("lastAccessTime")})
+            continue
+        # A chat is a JSON file with no extension and a chunkedPrompt. Other files in this folder are attachments.
+        # (A long title is cut short to end in ".._", which isn't an extension.)
+        if re.fullmatch(r"\.[A-Za-z0-9]{1,5}", PurePosixPath(e.name).suffix):
+            continue
+        # A Build app saved to Drive is a zip with no extension, named for the app (real Takeouts, Oct 2026)
+        with e.open() as f:
+            head = f.read(4)
+        if head == b"PK\x03\x04":
+            ai_studio_build_zip(e, w)
+            used.add(e.path)
+            continue
+        d = guarded(e, used, lambda e: e.json())
+        if not isinstance(d, dict) or not isinstance(d.get("chunkedPrompt"), dict):
+            continue
+        used.add(e.path)
+        attachments = [x for x in by_folder[folder] if x.path != e.path and PurePosixPath(x.name).suffix.lower() in AI_STUDIO_ATTACHMENT_EXT]
+        def find_attachment(refs):
+            refs = {str(x).strip().lower() for x in refs if str(x).strip()}
+            for a in attachments:
+                vals = {a.name.lower(), a.path.lower(), PurePosixPath(a.path).name.lower()}
+                if refs & vals or any(r.endswith("/" + a.name.lower()) for r in refs):
+                    return a
+            return None
+
+        model = ((d.get("runSettings") or {}).get("model") if isinstance(d.get("runSettings"), dict) else None)
+        system = ai_studio_value(d.get("systemInstruction"))
+        citations = d.get("citations") if isinstance(d.get("citations"), list) else None
+        for i, chunk in enumerate(listish(d["chunkedPrompt"].get("chunks"))):
+            if not isinstance(chunk, dict) or chunk.get("isThought"):
+                continue
+            text = chunk.get("text") if isinstance(chunk.get("text"), str) else ai_studio_value(chunk)
+            role = chunk.get("role") if chunk.get("role") in ("user", "model") else "model"
+            expanded = []
+            if isinstance(text, str) and text.lstrip().startswith("["):
+                try:
+                    odd = json.loads(text)
+                except (TypeError, ValueError):
+                    odd = None
+                if isinstance(odd, list) and odd and all(isinstance(x, dict) for x in odd):
+                    for j, item in enumerate(odd):
+                        payload = item.get("payload")
+                        if isinstance(payload, dict) and payload.get("type") == "thinking":
+                            continue
+                        body = ai_studio_value(payload) if isinstance(payload, (dict, list)) else str(payload or "")
+                        if body:
+                            who = item.get("author") if item.get("author") in ("user", "model") else role
+                            sec = (item.get("createdTimestamp") or {}).get("seconds") if isinstance(item.get("createdTimestamp"), dict) else None
+                            when = datetime.fromtimestamp(int(sec), timezone.utc).isoformat() if str(sec or "").isdigit() else None
+                            expanded.append((j, who, body, when))
+            if not expanded:
+                expanded = [(0, role, text or "", None)]
+            refs = []
+            for key in ("driveImage", "driveDocument", "inlineImage"):
+                if chunk.get(key):
+                    refs.extend(ai_studio_refs(chunk[key]))
+            attachment = find_attachment(refs)
+            attachment_meta = []
+            if attachment:
+                if PurePosixPath(attachment.name).suffix.lower() == ".pdf" and docs is None:
+                    docs = W("imported_documents")
+                attachment_meta.append(ai_studio_attachment(attachment, folder, used, docs, w, referenced=True))
+            for j, who, body, when in expanded:
+                body = "\n".join(x for x in (body, *(f"[attachment: {a['name']}]" for a in attachment_meta)) if x)
+                if not body.strip():
+                    continue
+                w.add(id=f"chat:{e.path}:{i}:{j}", kind="ai_turn", ts=when or e.timestamp, author="me" if who == "user" else "gemini",
+                      is_me=who == "user", thread=e.path, thread_name=e.name, title=e.name,
+                      text=body, meta={k: v for k, v in {"tool": "ai_studio", "model": model,
+                                                         "system_instruction": system or None, "citations": citations,
+                                                         "attachments": attachment_meta or None,
+                                                         "files": [a["path"] for a in attachment_meta] or None,
+                                                         "finish_reason": chunk.get("finishReason")}.items() if v is not None})
+
+    # Attachments that no chunk named are still part of the exported AI Studio folder. Claim them with the same
+    # document/media handling so the catch-alls do not report them as unexplained leftovers.
+    for e, rel in roots:
+        if e.path in used or "/" in rel or PurePosixPath(e.name).suffix.lower() not in AI_STUDIO_ATTACHMENT_EXT:
+            continue
+        folder = PurePosixPath(e.path).parent.as_posix()
+        if PurePosixPath(e.name).suffix.lower() == ".pdf" and docs is None:
+            docs = W("imported_documents")
+        ai_studio_attachment(e, folder, used, docs, w)
 
 
 # ---------------------------------------------------------------- Google Takeout
@@ -4235,12 +4466,146 @@ def fitbit_days(es, W, used):
 
 # Takeout's index of what's in it (archive_browser.html; Archiv_Übersicht.html in German): the one page at its top.
 TAKEOUT_INDEX = re.compile(r"(^|/)Takeout(?: \d+)?/[^/]+\.html?$|(^|/)archive_browser\.html$")
+TAKEOUT_ANY = re.compile(r"(?:^|/)Takeout(?: \d+)?/")
+TAKEOUT_QUIET = re.compile(r"(?:^|/)Takeout(?: \d+)?/(?:News/[^/]+\.txt|Gemini/[^/]+\.html|Maps/Requests for services/[^/]+\.json|Home App/SecurityAlarmClips\.json|Google Workspace Marketplace/README|Chrome/Device Information\.json)$", re.I)
+
+
+def document_text(ext, data):
+    """A document's text, from its bytes: pdf, Word (and doc, rtf, odt, by macOS textutil), PowerPoint, Pages and
+    Keynote, html, a notebook's cells, else the bytes as text. "" when it can't be read."""
+    from documents import iwork_text, pdf_text, pptx_text
+    try:
+        if ext in (".pdf", ".docx", ".doc", ".rtf", ".odt"):
+            with tempfile.NamedTemporaryFile(suffix=ext) as t:
+                t.write(data)
+                t.flush()
+                if ext == ".pdf":
+                    return pdf_text(Path(t.name)) or ""
+                return subprocess.run(["textutil", "-convert", "txt", "-stdout", t.name], capture_output=True, text=True, timeout=60).stdout
+        if ext == ".pptx":
+            return pptx_text(io.BytesIO(data)) or ""
+        if ext in (".pages", ".key"):
+            return iwork_text(io.BytesIO(data)) or ""
+        if ext in (".html", ".htm"):
+            return html_to_text(data.decode("utf-8", "replace"))
+        if ext == ".ipynb":
+            return "\n\n".join("".join(c.get("source", [])) for c in json.loads(data).get("cells", []))
+        if ext == ".xlsx":
+            from documents import xlsx_text
+            return xlsx_text(io.BytesIO(data)) or ""
+        return data.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def drive_api(es, W, used):
+    """Google Drive files with their comment threads and version history, as the Drive API (v3) gives them: a folder
+    per file with drive.json ({"file": files.get, "comments": comments.list with replies, "revisions": revisions.list,
+    "account"}), current.<docx|xlsx|pptx|ipynb> (the file as it is now) and revisions/<id>.txt (a Doc's text at that
+    version). The document goes to imported_documents, its comments and replies to drive_comments (a reply names the
+    comment it answers), and each version to drive_versions, with the lines it added and took out since the one
+    before when both texts are here."""
+    import difflib
+    by_path = {e.path: e for e in es}
+    # A Drive pull can stop before drive.json arrives. Claim its loose current/revision files so they are not
+    # mistaken for ordinary documents; a later complete pull will bring the folder metadata.
+    for e in es:
+        if e.path in used:
+            continue
+        parts = PurePosixPath(e.path).parts
+        di = next((i for i, part in enumerate(parts) if part.lower() == "drive"), None)
+        tail = "/".join(parts[di + 3:]) if di is not None and len(parts) > di + 3 else ""
+        if di is not None and tail and (re.fullmatch(r"revisions/[^/]+\.txt", tail) or re.fullmatch(r"current\.[^/]+", tail)):
+            folder = "/".join(parts[:di + 3])
+            if f"{folder}/drive.json" not in by_path:
+                used.add(e.path)
+    # A file shared between two of your accounts is pulled under each: it's read once, from the copy with the most history
+    found = []
+    for e in es:
+        if e.name != "drive.json" or e.path in used:
+            continue
+        d = guarded(e, used, lambda e: e.json())
+        if isinstance(d, dict) and isinstance(d.get("file"), dict) and "revisions" in d:
+            found.append((e, d))
+    found.sort(key=lambda x: (-len(listish(x[1].get("revisions"))), -len(listish(x[1].get("comments"))), x[0].path))
+    seen = set()
+    for e, d in found:
+        used.add(e.path)
+        f, folder = d["file"], posixpath.dirname(e.path)
+        fid, name = str(f.get("id") or folder), f.get("name") or "Untitled"
+        if fid in seen:
+            used.update(x.path for x in es if x.path.startswith(folder + "/"))  # the other copy's files: read, not left over
+            continue
+        seen.add(fid)
+        who = lambda u: "me" if isinstance(u, dict) and (u.get("me") or is_me_name(u.get("displayName"))) else (u or {}).get("displayName") or (u or {}).get("emailAddress")
+        comments, revisions = [c for c in listish(d.get("comments")) if isinstance(c, dict)], [r for r in listish(d.get("revisions")) if isinstance(r, dict)]
+        text = ""
+        for x in es:
+            if posixpath.dirname(x.path) == folder and x.name.startswith("current."):
+                used.add(x.path)
+                text = document_text(PurePosixPath(x.name).suffix.lower(), x.read())
+        mine = f.get("ownedByMe") or f.get("modifiedByMeTime")
+        W("imported_documents").add(
+            id=f"drive:{fid}", kind="document", ts=f.get("modifiedTime"), author="me" if mine else who(f.get("lastModifyingUser")),
+            title=name, text=re.sub(r"[ \t]+", " ", text).strip()[:200_000] or name, thread=e.origin, thread_name=d.get("account") or "Google Drive",
+            meta={k: v for k, v in {"origin": e.origin, "path": e.path, "url": f.get("webViewLink"), "mime": f.get("mimeType"),
+                                    "account": d.get("account"), "created": f.get("createdTime"),
+                                    "owners": [o.get("displayName") for o in listish(f.get("owners")) if isinstance(o, dict)] or None,
+                                    "comments": len(comments) or None, "versions": len(revisions) or None}.items() if v})
+        wc = W("drive_comments")
+        for c in comments:
+            quoted = ((c.get("quotedFileContent") or {}).get("value") or "").strip() or None
+            people = sorted({who(x.get("author")) for x in [c, *listish(c.get("replies"))] if isinstance(x, dict) and who(x.get("author")) not in (None, "me")})
+            base = {"group": len(people) > 1 or None, "participants": people or None, "url": f.get("webViewLink"), "document": name}
+            wc.add(id=f"{fid}:{c.get('id')}", kind="comment", ts=c.get("createdTime"), author=who(c.get("author")),
+                   is_me=who(c.get("author")) == "me", thread=f"drive:{fid}:{c.get('id')}", thread_name=f"{name}: {(quoted or c.get('content') or '')[:60]}",
+                   participants=people, text=c.get("content") or "",
+                   meta={k: v for k, v in {**base, "quoted": quoted, "resolved": c.get("resolved") or None,
+                                           "edited": c.get("modifiedTime") if c.get("modifiedTime") != c.get("createdTime") else None}.items() if v})
+            for r in listish(c.get("replies")):
+                if not isinstance(r, dict) or r.get("deleted"):
+                    continue
+                said = r.get("content") or {"resolve": "[resolved the comment]", "reopen": "[reopened the comment]"}.get(r.get("action"), "")
+                wc.add(id=f"{fid}:{c.get('id')}:{r.get('id')}", kind="comment", ts=r.get("createdTime"), author=who(r.get("author")),
+                       is_me=who(r.get("author")) == "me", thread=f"drive:{fid}:{c.get('id')}", thread_name=f"{name}: {(quoted or c.get('content') or '')[:60]}",
+                       participants=people, text=said,
+                       meta={k: v for k, v in {**base, "reply_to": f"{fid}:{c.get('id')}", "reply_text": (c.get("content") or "")[:200] or None,
+                                               "action": r.get("action")}.items() if v})
+        wv, before = W("drive_versions"), None
+        for r in sorted(revisions, key=lambda r: r.get("modifiedTime") or ""):
+            t = by_path.get(posixpath.join(folder, "revisions", f"{r.get('id')}.txt"))
+            now = None
+            if t:
+                used.add(t.path)
+                now = t.read().decode("utf-8", "replace").replace("\ufeff", "").splitlines()
+            changed = ""
+            if now is not None and before is not None:
+                diff = [x for x in difflib.unified_diff(before, now, lineterm="", n=0) if x[:1] in "+-" and x[:3] not in ("+++", "---") and x[1:].strip()]
+                changed = "\n".join(diff)[:6000]
+            elif now is not None:
+                changed = "\n".join(now)[:6000]
+            if now is not None:
+                before = now
+            wv.add(id=f"{fid}:{r.get('id')}", kind="edit", ts=r.get("modifiedTime"), author=who(r.get("lastModifyingUser")),
+                   is_me=who(r.get("lastModifyingUser")) == "me", thread=f"drive:{fid}", thread_name=name,
+                   text=f"Edited {name}" + (f"\n{changed}" if changed else ""),
+                   meta={k: v for k, v in {"document": name, "url": f.get("webViewLink"), "revision": r.get("id"), "bytes": int(r["size"]) if str(r.get("size") or "").isdigit() else None,
+                                           "text_here": now is not None or None}.items() if v})
 
 
 def other_documents(es, W, used):
-    from documents import iwork_text, pdf_text, pptx_text
     for e in es:
         ext = PurePosixPath(e.name).suffix.lower()
+        if TAKEOUT_QUIET.search(e.path):
+            used.add(e.path)
+            continue
+        if e.size == 0 and TAKEOUT_ANY.search(e.path):  # (Chrome's Dictionary.csv when you added no words)
+            used.add(e.path)
+            continue
+        if not ext and "/Drive/" in e.path and e.path not in used and 0 < e.size <= 60 * 2**20:
+            with e.open() as f:  # Colab keeps a notebook's name without .ipynb
+                if re.match(rb'\s*\{\s*"nbformat"', f.read(64)):
+                    ext = ".ipynb"
         if e.path in used or ext not in DOC_EXT or e.size > 60 * 2**20 or e.size == 0 or TAKEOUT_INDEX.search(e.path) or "Takeout/Keep/" in e.path:  # Keep has JSON twins
             continue
         try:
@@ -4248,36 +4613,14 @@ def other_documents(es, W, used):
         except DAMAGED as x:
             unreadable(e, x, used)
             continue
+        used.add(e.path)
         # One document is its place in the export and what it holds: the same Drive file in every Takeout since (or in
         # two zips of one) is kept once; a changed one, or another account's under the same name, is one of its own.
         w = W("imported_documents")
         key = f"{e.path}#{hashlib.sha1(data).hexdigest()[:12]}"
         if w.has(key):
             continue
-        try:
-            if ext == ".pdf":
-                with tempfile.NamedTemporaryFile(suffix=".pdf") as t:
-                    t.write(data)
-                    t.flush()
-                    text = pdf_text(Path(t.name))
-            elif ext in (".docx", ".doc", ".rtf", ".odt"):
-                with tempfile.NamedTemporaryFile(suffix=ext) as t:
-                    t.write(data)
-                    t.flush()
-                    text = subprocess.run(["textutil", "-convert", "txt", "-stdout", t.name], capture_output=True,
-                                          text=True, timeout=60).stdout
-            elif ext == ".pptx":
-                text = pptx_text(io.BytesIO(data))
-            elif ext in (".pages", ".key"):
-                text = iwork_text(io.BytesIO(data))
-            elif ext in (".html", ".htm"):
-                text = html_to_text(data.decode("utf-8", "replace"))
-            elif ext == ".ipynb":
-                text = "\n\n".join("".join(c.get("source", [])) for c in json.loads(data).get("cells", []))
-            else:
-                text = data.decode("utf-8", "replace")
-        except Exception:
-            text = ""
+        text = document_text(ext, data)
         title = re.sub(r"\s[0-9a-f]{32}$", "", PurePosixPath(e.name).stem)  # Notion appends page ids
         w.add(id=key, kind="document", author="me", title=title, text=re.sub(r"[ \t]+", " ", text).strip()[:200_000] or title,
               thread=e.origin, thread_name=str(PurePosixPath(e.path).parent), meta={"origin": e.origin, "path": e.path, "ext": ext})
@@ -4357,6 +4700,9 @@ def other_data(es, W, used):
     LEFTOVER_WRITTEN.clear()
     for e in es:
         ext = PurePosixPath(e.name).suffix.lower()
+        if TAKEOUT_QUIET.search(e.path):
+            used.add(e.path)
+            continue
         if e.path in used or ext not in (".json", ".csv", ".js") or not e.size or e.size > 50 * 2**20:
             continue
         if re.search(LEFTOVER_SECURITY, e.path, re.I) and not FIT.search(e.path) or re.search(LEFTOVER_NO_INFO, e.path) or \
@@ -4435,8 +4781,8 @@ def other_files(es, W, used):
                       meta={"files": [path]})
 
 
-PARSERS = [ai_exports, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, zoom,
-           notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
+PARSERS = [ai_exports, ai_studio, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, zoom,
+           drive_api, notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
 
 
 def main():

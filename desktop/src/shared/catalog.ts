@@ -64,7 +64,7 @@ export interface Source {
 }
 
 const GOOGLE_CORE = ['gmail', 'google_activity', 'google_calendar', 'google_contacts', 'chrome_synced', 'google_keep',
-  'google_chat', 'google_maps_places', 'youtube', 'google_tasks', 'google_saved'];
+  'google_chat', 'google_maps_places', 'youtube', 'google_tasks', 'google_saved', 'ai_studio'];
 
 export const CATALOG: Source[] = [
   // ---------------------------------------------------------------- setup
@@ -236,7 +236,7 @@ export const CATALOG: Source[] = [
     knownGaps: ['Work and school Google accounts need their own export.'],
   },
   {
-    id: 'google_photos_drive', name: 'Google Photos and Drive', group: 'web', produces: ['google_photos'],
+    id: 'google_photos_drive', name: 'Google Photos and Drive', group: 'web', produces: ['google_photos', 'drive_comments', 'drive_versions'],
     signIn: { domains: ['google.com'], cookies: ['SID', '__Secure-1PSID'] },
     blurb: 'Photo times, places and people from Google Photos, and the text of your Drive files (imported as documents). Can be very large.',
     url: 'https://takeout.google.com/', downloadUrl: 'https://takeout.google.com/manage',
@@ -247,6 +247,8 @@ export const CATALOG: Source[] = [
       { text: 'Create a separate export with only Google Photos and Drive ticked.', detail: 'This can run to hundreds of GB. Check free space first.' },
       { text: 'Choose 50 GB parts, then Create export.' },
       { text: 'Download only as many parts as fit on this Mac or an external drive.' },
+      { text: 'Takeout leaves out comment threads and version history. Those come from the Drive API: a folder per file with drive.json (files.get, comments.list, revisions.list), the file as it is now, and revisions/<id>.txt, under imports/drive.',
+        detail: 'Any tool that writes that layout works; rclone already signed in to Drive is enough to make one.' },
     ],
   },
   {
@@ -568,6 +570,7 @@ export const IMPORT_PARSER_SOURCES: Record<string, string[]> = {
   slack: ['slack'],
   zoom: ['zoom'],
   notion_export: ['notion'],
+  drive_api: ['google_photos_drive'],
   other_documents: ['google_photos_drive', 'notion'],
   // Exports read with a mapping Claude wrote (connectors/mapped_exports.py): services you added. main.ts adds
   // those, and adds them to the catch-alls below, when it attributes an import's errors.
