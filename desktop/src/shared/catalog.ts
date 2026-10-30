@@ -64,7 +64,7 @@ export interface Source {
 }
 
 const GOOGLE_CORE = ['gmail', 'google_activity', 'google_calendar', 'google_contacts', 'chrome_synced', 'google_keep',
-  'google_chat', 'google_maps_places', 'youtube', 'google_tasks', 'google_saved'];
+  'google_chat', 'google_maps_places', 'youtube', 'google_tasks', 'google_saved', 'ai_studio'];
 
 export const CATALOG: Source[] = [
   // ---------------------------------------------------------------- setup

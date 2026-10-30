@@ -603,6 +603,16 @@ class DriveApiTests(Base):
         self.assertEqual(len(self.of("drive_versions", "edit")), 3)
         self.assertEqual(self.unclaimed(), set(), "the other copy is read, not left over")
 
+    def test_an_incomplete_drive_folder_claims_loose_files_until_metadata_arrives(self):
+        self.files("drive/ada@example.com/LOST", {
+            "current.docx": docx_with("A partial pull"),
+            "revisions/1.txt": "A revision without metadata",
+        })
+        self.run_import()
+        self.assertFalse([r for r in self.of("imported_documents") if "LOST" in r.get("meta", {}).get("path", "")],
+                         "a folder without drive.json is not an ordinary document")
+        self.assertEqual(self.unclaimed(), set())
+
 
 class LooseMailTests(Base):
     def test_eml_files_in_folders_and_old_encodings(self):
