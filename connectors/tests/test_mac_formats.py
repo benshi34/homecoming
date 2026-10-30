@@ -249,6 +249,40 @@ class MessagesTests(unittest.TestCase):
                 self.assertEqual(got[guid]["meta"]["reacts_to"], "m1", "the message's own guid, which is its record's id")
         self.assertEqual(got["m1"]["kind"], "message")
 
+    def test_tapbacks_as_they_stand(self):
+        con = self.chat_db()
+        self.add(con, 1, "m1", text="See you at 6", is_from_me=1)
+        self.add(con, 2, "loved", text="Loved “See you at 6”", associated_message_type=2000, associated_message_guid="p:0/m1")
+        self.add(con, 3, "liked", text="Liked “See you at 6”", associated_message_type=2001, associated_message_guid="bp:m1")
+        self.add(con, 4, "unliked", text="Removed a like from “See you at 6”", associated_message_type=3001, associated_message_guid="p:0/m1")
+        self.add(con, 5, "emoji", text="Reacted 🎉 to “See you at 6”", associated_message_type=2006, associated_message_guid="re:m1",
+                 associated_message_emoji="🎉")
+        self.add(con, 6, "sticker", text=None, associated_message_type=1000, associated_message_guid="p:0/m1")
+        self.add(con, 7, "gone", text="Loved “a deleted message”", associated_message_type=2000, associated_message_guid="p:0/deleted")
+        self.add(con, 8, "sms", text="Liked “See you at 6”", service="SMS", handle_id=2)  # a phone that isn't Apple's: the tapback as text
+        recs = list(imessage.messages(con, NAMES, "mac"))
+        imessage.settle(recs)
+        got = {r["id"]: r for r in recs}
+        m = got["m1"]["meta"]
+        self.assertEqual([x["reaction"] for x in m["reactions"]], ["🎉", "sticker", "👍"],
+                         "each person's newest tapback, a sticker beside it, and the text one from another phone")
+        self.assertTrue(got["loved"]["meta"]["withdrawn"] and got["liked"]["meta"]["withdrawn"], "replaced, then taken back")
+        self.assertEqual(got["unliked"]["meta"]["cancels"], "liked")
+        self.assertNotIn("withdrawn", got["emoji"]["meta"])
+        self.assertTrue(got["emoji"]["meta"]["on_message"], "re:<guid> is the message too")
+        self.assertEqual((got["sms"]["kind"], got["sms"]["meta"]["reacts_to"], got["sms"]["meta"]["text_tapback"]), ("reaction", "m1", True))
+        self.assertTrue(got["gone"]["meta"]["target_gone"])
+        self.assertNotIn("on_message", got["gone"]["meta"], "one on a message deleted since stays a line of its own")
+
+    def test_a_reply_quotes_the_part_it_answers(self):
+        con = self.chat_db()
+        self.add(con, 1, "long", text="Dinner Friday? Also, can you bring the projector", is_from_me=1)
+        self.add(con, 2, "r1", text="Yes to dinner", handle_id=2, thread_originator_guid="long", thread_originator_part="0:0:14")
+        self.add(con, 3, "r2", text="Sure", handle_id=2, thread_originator_guid="long", thread_originator_part="0:0:99")
+        got = self.read(con)
+        self.assertEqual(got["r1"]["meta"]["reply_text"], "Dinner Friday?")
+        self.assertEqual(got["r2"]["meta"]["reply_text"], "Dinner Friday? Also, can you bring the projector", "a range past it: the whole")
+
     def test_replies_group_chats_and_sms_imessage_rcs(self):
         con = self.chat_db()
         self.add(con, 1, "g1", chat=2, text="Who's in?", is_from_me=1)

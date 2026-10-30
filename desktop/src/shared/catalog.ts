@@ -427,10 +427,22 @@ export const CATALOG: Source[] = [
   },
   {
     id: 'slack', name: 'Slack', group: 'guided', produces: ['slack'], importDir: 'slack', optional: true,
-    blurb: 'Workspace messages. Only workspace admins can export.',
+    blurb: 'Workspace messages, threads and reactions. An admin can export a workspace; anyone can export what they see with slackdump.',
     steps: [
-      { text: 'Ask a workspace admin for an export (Settings & administration → Workspace settings → Import/Export data), or use slackdump.' },
+      { text: 'Without admin: install slackdump (brew install slackdump), sign in with slackdump workspace new <workspace>, then run slackdump export -member-only -o slack.zip.' },
+      { text: 'Signed in to Slack with Google? Google turns slackdump\'s browser away. Sign it in with your own browser\'s session instead: zsh connectors/slack_signin.sh, which walks you through two pastes from Chrome and signs in every workspace at once.',
+        detail: 'By hand: in Chrome on app.slack.com, DevTools, Application, Cookies: the d cookie (xoxd-...). Each workspace\'s token is in localStorage.localConfig_v2 (teams, token). Then slackdump workspace new -token <xoxc-...> -cookie <xoxd-...> <workspace>.' },
+      { text: 'Or ask a workspace admin for an export (Settings & administration → Workspace settings → Import/Export data).' },
       { text: 'Drop the export zip here.' },
+    ],
+  },
+  {
+    id: 'telegram', name: 'Telegram', group: 'guided', produces: ['telegram'], importDir: 'telegram', optional: true,
+    blurb: 'Chats, replies and reactions, from Telegram Desktop.',
+    steps: [
+      { text: 'In Telegram Desktop: Settings → Advanced → Export Telegram data. Choose the chats, set Format to Machine-readable JSON, and export.' },
+      { text: 'The first time you ask, Telegram makes you wait 24 hours and tells you when to come back. Ask again then, from the same Mac.' },
+      { text: 'It saves to Downloads/Telegram Desktop, where the app finds it. Or drop the DataExport folder here.' },
     ],
   },
   {
@@ -451,9 +463,9 @@ export const downloadPage = (src: Source) => (EMAIL_ONLY.has(src.id) ? undefined
 
 export const BY_ID: Record<string, Source> = Object.fromEntries(CATALOG.map((s) => [s.id, s]));
 // Services you set up by hand rather than request (Outlook and other mail through Mail, Maps Timeline from the phone,
-// Slack and Zoom from their own export pages): accounts like the rest, chosen with them, each with its page. The other
+// Slack, Telegram and Zoom from their own export pages): accounts like the rest, chosen with them, each with its page. The other
 // guided sources (a vCard, WhatsApp chats, Messages in iCloud) fill gaps the Mac and iPhone leave: not accounts.
-export const GUIDED_ACCOUNTS = ['other_mail', 'maps_timeline', 'slack', 'zoom'];
+export const GUIDED_ACCOUNTS = ['other_mail', 'maps_timeline', 'slack', 'telegram', 'zoom'];
 export const isAccount = (s: { id: string; group: string }) => s.group === 'web' || GUIDED_ACCOUNTS.includes(s.id);
 
 // Domains of the built-in accounts, so a service found in your data that's already here isn't offered again.
@@ -462,7 +474,7 @@ const BUILTIN_DOMAINS: Record<string, string[]> = {
   instagram: ['instagram.com'], facebook: ['facebook.com', 'facebookmail.com', 'messenger.com', 'meta.com'],
   discord: ['discord.com', 'discordapp.com'], linkedin: ['linkedin.com'], notion: ['notion.so', 'notion.com'],
   chatgpt: ['openai.com', 'chatgpt.com'], claude_ai: ['claude.ai', 'anthropic.com'], x: ['x.com', 'twitter.com'],
-  reddit: ['reddit.com', 'redditmail.com'], spotify: ['spotify.com'], whatsapp_chats: ['whatsapp.com'], slack: ['slack.com'],
+  reddit: ['reddit.com', 'redditmail.com'], spotify: ['spotify.com'], whatsapp_chats: ['whatsapp.com'], slack: ['slack.com'], telegram: ['telegram.org', 't.me'],
   zoom: ['zoom.us'],
 };
 for (const [id, d] of Object.entries(BUILTIN_DOMAINS)) BY_ID[id].domains = d;
@@ -546,7 +558,7 @@ export function reservedFolders(): Set<string> {
 export const KIND_TO_SOURCE: Record<string, string> = {
   google_takeout: 'google_takeout', google_photos_drive: 'google_photos_drive', instagram: 'instagram',
   facebook: 'facebook', discord: 'discord', linkedin: 'linkedin', notion: 'notion', chatgpt: 'chatgpt',
-  claude_ai: 'claude_ai', x: 'x', reddit: 'reddit', spotify: 'spotify', slack: 'slack', zoom: 'zoom',
+  claude_ai: 'claude_ai', x: 'x', reddit: 'reddit', spotify: 'spotify', slack: 'slack', telegram: 'telegram', zoom: 'zoom',
   whatsapp_chats: 'whatsapp_chats', iphone_vcard: 'iphone_vcard', maps_timeline: 'maps_timeline', mailbox: 'other_mail',
 };
 
@@ -566,6 +578,7 @@ export const IMPORT_PARSER_SOURCES: Record<string, string[]> = {
   spotify: ['spotify'],
   whatsapp: ['whatsapp_chats'],
   slack: ['slack'],
+  telegram: ['telegram'],
   zoom: ['zoom'],
   notion_export: ['notion'],
   other_documents: ['google_photos_drive', 'notion'],
