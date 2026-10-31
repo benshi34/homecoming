@@ -105,8 +105,10 @@ class SignalTests(unittest.TestCase):
         self.assertEqual((m1["author"], m1["is_me"], m1["thread_name"], m1["participants"], m1["ts"]),
                          ("Grace Hopper", False, "Grace Hopper", ["Grace Hopper"], "2026-01-01T10:00:00Z"),
                          "your name for her (from Contacts), not her profile name")
-        self.assertEqual(m1["meta"]["reactions"], [{"emoji": "❤️", "from": "me"}], "your reaction comes from Note to Self")
-        self.assertEqual((m2["author"], m2["is_me"], m2["meta"]["edits"], m2["meta"]["reply_to"]), ("me", True, 1, 1767261600000))
+        self.assertEqual(m1["meta"]["reactions"], [{"who": "me", "reaction": "❤️", "ts": "2026-01-01T10:01:40Z"}], "your reaction comes from Note to Self")
+        self.assertEqual((m2["author"], m2["is_me"], m2["meta"]["edits"]), ("me", True, 1))
+        self.assertEqual((m2["meta"]["reply_to"], m2["meta"]["reply_text"]), ("m1", "high tide at 6?"),
+                         "a reply names the message it quotes by its id, not when that was sent")
         m3 = recs["m3"]
         self.assertEqual((m3["author"], m3["thread_name"], m3["participants"], m3["meta"]["group"]),
                          ("Alan Turing", "Tide club", ["Alan Turing", "Grace Hopper"], True), "a group: who wrote it, everyone but you")

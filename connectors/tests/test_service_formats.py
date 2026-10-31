@@ -485,6 +485,51 @@ class SpotifyTests(Base):
         self.assertIn("StreamingHistory_music_0.json", self.unclaimed())
 
 
+# ---------------------------------------------------------------- Granola
+
+GRANOLA_HEAD = ["document_id", "user_email", "document_title", "workspace_name", "document_created", "summary", "notes", "transcript"]
+G1, G2 = "1b2c3d4e-0000-4000-8000-000000000001", "1b2c3d4e-0000-4000-8000-000000000002"
+
+
+def granola_row(doc, title, summary="", notes="", transcript="", when="2026-09-21T14:13:20.250Z"):
+    return [doc, "ada@example.com", title, "Ada's workspace", when, summary, notes, transcript]
+
+
+class GranolaTests(Base):
+    """Granola's "Export historical data", laid out as a real one was (2026-10-31): a zip holding a folder and a CSV,
+    LF line ends, no BOM, the summary in Markdown, the transcript as lines with no speakers or times."""
+
+    def test_a_meeting_with_its_summary_notes_and_transcript(self):
+        self.zip("granola/granola-export-2026-10-31.zip", {"granola-export-2026-10-31/granola-export-2026-10-31-000.csv": csv_text(GRANOLA_HEAD, [
+            granola_row(G1, "Garden club", " \n\n# Spring planting\n\n- Tomatoes after the frost", "bring seeds", "Morning all.\nMorning."),
+            granola_row(G2, "Untitled", transcript="Just a test.", when="2026-09-14T09:30:00.000Z")])})
+        self.run_import()
+        r = {x["meta"]["document_id"]: x for x in self.of("granola")}
+        self.assertEqual(set(r), {G1, G2})
+        self.assertEqual((r[G1]["title"], r[G1]["ts"], r[G1]["kind"]), ("Garden club", "2026-09-21T14:13:20.250000Z", "document"))
+        self.assertEqual(r[G1]["text"], "Summary:\n# Spring planting\n\n- Tomatoes after the frost\n\nNotes:\nbring seeds\n\nTranscript:\nMorning all.\nMorning.")
+        self.assertEqual(r[G2]["text"], "Transcript:\nJust a test.", "no empty Summary or Notes")
+        self.assertEqual(self.unclaimed(), set())
+
+    def test_a_long_meeting_and_a_meeting_in_two_exports(self):
+        long = "\n".join(f"line {i} of a long meeting" for i in range(12000))  # past csv's 131072-character field
+        self.assertGreater(len(long), 131072)
+        self.zip("granola/granola-export-2026-10-31.zip", {"granola-export-2026-10-31/granola-export-2026-10-31-000.csv": csv_text(GRANOLA_HEAD, [
+            granola_row(G1, "All-hands", transcript=long)])})
+        self.zip("granola/granola-export-2026-11-02.zip", {"granola-export-2026-11-02/granola-export-2026-11-02-000.csv": csv_text(GRANOLA_HEAD, [
+            granola_row(G1, "All-hands", transcript=long), granola_row(G2, "Standup", transcript="Short.")])})
+        self.run_import()
+        r = [x["meta"]["document_id"] for x in self.of("granola")]
+        self.assertEqual(sorted(r), [G1, G2], "a meeting in both exports is kept once")
+        self.assertTrue(next(x for x in self.of("granola") if x["meta"]["document_id"] == G1)["text"].endswith("line 11999 of a long meeting"))
+
+    def test_another_csv_named_like_it_is_left_alone(self):
+        self.files("granola", {"granola-export-notes.csv": csv_text(["Name", "Notes"], [["a", "b"]])})
+        self.run_import()
+        self.assertEqual(self.of("granola"), [])
+        self.assertEqual(len(self.of("granola_other")), 1, "kept by the catch-all, not taken and dropped")
+
+
 # ---------------------------------------------------------------- Notion
 
 N1 = "Export-0a1b2c3d-1111-2222-3333-444455556666"

@@ -90,7 +90,7 @@ const SOURCES: Record<string, [string, string]> = {
   discord: ['bubbles', 'indigo'], linkedin: ['briefcase', 'blue'], notion: ['doc', 'graphite'], chatgpt: ['sparkle', 'teal'],
   claude_ai: ['sparkle', 'orange'], x: ['at', 'graphite'], reddit: ['bubble', 'orange'], spotify: ['music', 'green'],
   other_mail: ['envelope', 'blue'], apple_mail: ['envelope', 'blue'], maps_timeline: ['pin', 'green'], messages_sync: ['sync', 'green'], iphone_vcard: ['card', 'gray'],
-  whatsapp_chats: ['bubble', 'green'], slack: ['hash', 'purple'], zoom: ['video', 'blue'],
+  whatsapp_chats: ['bubble', 'green'], slack: ['hash', 'purple'], telegram: ['bubble', 'blue'], zoom: ['video', 'blue'],
 };
 
 const GROUP: Record<string, [string, string]> = { setup: ['gear', 'gray'], mac: ['laptop', 'blue'], iphone: ['iphone', 'graphite'], web: ['globe', 'purple'], guided: ['person', 'orange'] };

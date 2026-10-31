@@ -306,14 +306,21 @@ export function Steps({ view, locked }: { view: SourceView; locked?: boolean }) 
     setDone((d) => d.map((x, j) => (j === i ? !x : x)));
     void api.action(view.id, 'toggle-step', { index: i });
   };
+  // A step's picture opens full size in place; a click on it doesn't tick the step
+  const [big, setBig] = useState<number | null>(null);
   return (
     <div className="group-box" data-testid="steps">
+      {view.clip && <video className="steps-clip" data-testid="steps-clip" src={`guides/${view.id}/${view.clip}`} controls muted playsInline preload="metadata" />}
       {view.steps!.map((s, i) => (
         <label key={i} className="steps-row">
           <input type="checkbox" checked={done[i] ?? s.done} onChange={() => toggle(i)} aria-label={`Step ${i + 1}`} disabled={locked} title={locked ? READ_ONLY_NOTE : undefined} />
           <div>
             <div className={`t ${done[i] ? 'done' : ''}`}>{s.text}</div>
             {s.detail && <div className="s">{s.detail}</div>}
+            {s.shot && (
+              <img className={`step-shot ${big === i ? 'big' : ''}`} data-testid="step-shot" src={`guides/${view.id}/${s.shot}`} alt=""
+                onClick={(e) => { e.preventDefault(); setBig(big === i ? null : i); }} />
+            )}
           </div>
         </label>
       ))}

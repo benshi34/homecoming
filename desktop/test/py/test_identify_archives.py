@@ -65,6 +65,32 @@ class IdentifyArchiveTests(Sandbox):
         self.assertEqual(r["finder.zip"]["kind"], "chatgpt", "Finder's ._ files aren't a mailbox")
         self.assertEqual((r["only-junk.zip"]["kind"], r["only-junk.zip"].get("empty")), (None, True), "nothing but Finder's details")
 
+    def test_slackdump_and_telegram(self):
+        import json
+        conv = json.dumps({"channel_id": "C0AAAAAAA", "name": "general", "messages": [{"ts": "1.0", "text": "hi"}]})
+        tg = self.tmp / "Downloads" / "Telegram Desktop" / "DataExport_2026-01-06"
+        tg.mkdir(parents=True)
+        (tg / "result.json").write_text(json.dumps({"chats": {"list": [{"id": 1, "messages": [{"id": 1, "date_unixtime": "1"}]}]}}))
+        other = self.tmp / "Downloads" / "results"
+        other.mkdir()
+        (other / "result.json").write_text('{"score": 3}')
+        r = self.identify(self.make("dump.zip", zip_bytes({"C0AAAAAAA.json": conv, "D0BBBBBBB.json": conv})),
+                          self.make("ids.zip", zip_bytes({"C0AAAAAAA.json": '{"rows": []}'})), tg, other)
+        self.assertEqual(r["dump.zip"]["kind"], "slack", "slackdump's dump: a file a conversation")
+        self.assertIsNone(r["ids.zip"]["kind"], "named like one, but not one")
+        self.assertEqual(r["DataExport_2026-01-06"]["kind"], "telegram")
+        self.assertIsNone(r["results"]["kind"], "another result.json")
+
+    def test_granola(self):
+        head = "document_id,user_email,document_title,workspace_name,document_created,summary,notes,transcript\n"
+        row = '1b2c3d4e-0000-4000-8000-000000000001,ada@example.com,Standup,Ada\'s workspace,2026-09-21T14:13:20.250Z,"# Notes",,"Hi.\nBye."\n'
+        r = self.identify(self.make("granola-export-2026-10-31.zip", zip_bytes({"granola-export-2026-10-31/granola-export-2026-10-31-000.csv": head + row})),
+                          self.make("granola-export-2026-10-31-000.csv", (head + row).encode()),
+                          self.make("granola-export-names.zip", zip_bytes({"granola-export-names.csv": "Name,Email\nAda,ada@example.com\n"})))
+        self.assertEqual(r["granola-export-2026-10-31.zip"]["kind"], "granola", "the download as Granola sends it")
+        self.assertEqual(r["granola-export-2026-10-31-000.csv"]["kind"], "granola", "its CSV dropped on its own")
+        self.assertIsNone(r["granola-export-names.zip"]["kind"], "named like one, but not one")
+
     def test_zips_in_zips_two_deep_damaged_and_locked(self):
         inner = zip_bytes(CHATGPT)
         locked = patch_headers(inner, flags_on=0x1)

@@ -1496,7 +1496,7 @@ def mailbox_candidates(c):
 
 # Chat sources whose "is this me?" is decided by name. Whoever is in (almost) every conversation of an export
 # is its owner: that finds the nickname or old display name nobody would think to type in.
-CHAT_SOURCES = {"google_chat": "Google Chat", "whatsapp_export": "WhatsApp", "slack": "Slack", "linkedin": "LinkedIn messages",
+CHAT_SOURCES = {"google_chat": "Google Chat", "whatsapp_export": "WhatsApp", "slack": "Slack", "telegram": "Telegram", "linkedin": "LinkedIn messages",
                 "reddit": "Reddit messages", "messenger": "Messenger", "instagram": "Instagram"}
 
 
@@ -1632,6 +1632,14 @@ def classify_names(names, peek=None, filename=""):
         return "whatsapp_chats"
     if {"users.json", "channels.json"} <= base:
         return "slack"
+    # slackdump's dump: a file a conversation, named by its id
+    dumps = [n for n in names if re.fullmatch(r"(.*/)?[CDG][A-Z0-9]{6,}\.json", n)]
+    if dumps and peek and '"channel_id"' in peek(dumps[0])[:2000]:
+        return "slack"
+    # Telegram Desktop's JSON export: result.json, at the top of DataExport_<date> (every chat) or ChatExport_<date> (one)
+    result = [n for n in names if n.rsplit("/", 1)[-1] == "result.json" and n.count("/") <= 1]
+    if result and peek and '"date_unixtime"' in peek(result[0]):
+        return "telegram"
     files = [n for n in names if not n.endswith("/")]
     # Mail: mailboxes, an Outlook for Mac archive (.olm, a zip), or a folder of messages dragged out of a mail app
     mail = sum(n.lower().endswith((".eml", ".emlx")) for n in files)
@@ -1640,6 +1648,10 @@ def classify_names(names, peek=None, filename=""):
         return "mailbox"
     if files and all(n.lower().endswith(".vtt") for n in files):
         return "zoom"
+    # Granola's "Export historical data": granola-export-<date>/granola-export-<date>-000.csv, a row a meeting
+    granola = [n for n in files if re.search(r"(^|/)granola-export-[^/]*\.csv$", n, re.I)]
+    if granola and (peek is None or "document_id" in peek(granola[0])[:2000]):
+        return "granola"
     if any(n.rsplit("/", 1)[-1] in ("Timeline.json", "location-history.json") for n in names):
         return "maps_timeline"
     m = META_NAME.match(filename)  # a part of a Meta download with only its photos and videos
@@ -1682,6 +1694,8 @@ def identify(path):
         res["kind"] = "mailbox"
     elif lower.endswith(".vtt"):
         res["kind"] = "zoom"
+    elif re.fullmatch(r"granola-export-.*\.csv", lower):
+        res["kind"] = "granola"
     elif lower in ("timeline.json", "location-history.json"):
         res["kind"] = "maps_timeline"
     elif lower.endswith((".tgz", ".tar.gz", ".tar")):

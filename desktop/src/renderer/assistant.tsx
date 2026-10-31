@@ -512,7 +512,7 @@ function AccountsPage({ ctx }: { ctx: Ctx }) {
   const allFound = found.length + (ctx.snap.discovery?.unmatched.length ?? 0);
   // How long it takes, or for one set up by hand, how it's done.
   const HOW: Record<string, string> = { other_mail: 'Through Mail on this Mac, no waiting', maps_timeline: 'Exported from your phone, no waiting',
-    slack: 'Exported by a workspace admin', zoom: 'Downloaded from Zoom\'s web portal' };
+    slack: 'Exported with slackdump, or by a workspace admin', telegram: 'Exported from Telegram Desktop', zoom: 'Downloaded from Zoom\'s web portal' };
   const wait = (id: string) => (BY_ID[id]?.waitHours ? `Takes ${waitRange(BY_ID[id].waitHours!)}` : HOW[id] ?? '');
   const common: Account[] = commonAccounts(ctx.snap.sources).map((x, k) => ({ id: x.id, name: x.name, rank: k,
     subtitle: `${wait(x.id)}${x.optional ? ' · Can be hundreds of GB, so it isn\'t on your list unless you add it' : ''}`, tag: x.section === 'done' ? 'Collected' : undefined }));
