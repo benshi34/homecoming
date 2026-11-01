@@ -275,7 +275,7 @@ export interface YearStory {
 // "reaction").
 export interface ThreadMessage {
   rowid: number; ts: string | null; at: string | null; me: boolean; author: string | null; kind: 'message' | 'reaction'; text: string; files: number; image: boolean;
-  attachments?: string[]; edited?: boolean; before?: string[]; unsent?: boolean; reactions?: { who: string | null; reaction: string }[];
+  attachments?: string[]; edited?: boolean; before?: string[]; unsent?: boolean; reactions?: { who: string | null; reaction: string }[]; reply?: string;
 }
 // The page Explore has for a conversation: the person's in Your People, or the group chat's.
 export interface ExploreAt { page: 'person' | 'group'; key: string; name: string }

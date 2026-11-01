@@ -126,9 +126,9 @@ describe('Setup Assistant steps', () => {
 
   test('the account list puts optional ones last', () => {
     const list = accountChoices(views()).map((v) => v.id);
-    assert.ok(['google_photos_drive', 'slack', 'zoom'].includes(list[list.length - 1]), list.join());
-    assert.deepEqual(list.slice(-3).sort(), ['google_photos_drive', 'slack', 'zoom']);
-    assert.equal(list.length, CATALOG.filter((s) => s.group === 'web').length + 4, 'every web account, and Outlook, Maps Timeline, Slack and Zoom');
+    assert.ok(['google_photos_drive', 'slack', 'telegram', 'zoom'].includes(list[list.length - 1]), list.join());
+    assert.deepEqual(list.slice(-4).sort(), ['google_photos_drive', 'slack', 'telegram', 'zoom']);
+    assert.equal(list.length, CATALOG.filter((s) => s.group === 'web').length + 5, 'every web account, and Outlook, Maps Timeline, Slack, Telegram and Zoom');
   });
 
   test('the accounts most people use are listed most used first, without the ones you added', () => {
