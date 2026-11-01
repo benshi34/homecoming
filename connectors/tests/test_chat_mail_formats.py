@@ -231,7 +231,8 @@ class SlackTests(Base):
             "__uploads/F0EEEEEEE/Canvas": '<div class="quip-canvas-content"><h1>Plan</h1><p class="line">Ship on Friday</p></div>',
             "__uploads/F0FFFFFFF/IMG_0001.RW2": b"raw sensor data",
             "__uploads/F0GGGGGGG/beach.jpg": b"\xff\xd8\xff\xe0 made-up beach",
-            "__uploads/F0HHHHHHH/scan.pdf": b"not a pdf at all"})
+            "__uploads/F0HHHHHHH/notes.txt": b"Bring the tent poles",
+            "__uploads/F0JJJJJJJ/empty.pdf": b""})
         self.run_import()
         got = {r["meta"]["file_id"]: r for r in self.of("slack") if r.get("thread") in ("slack-files", "slack-canvases")}
         self.assertEqual(got["F0DDDDDDD"]["meta"]["inside"], ["pic.jpg", "rows.csv"])
@@ -242,7 +243,9 @@ class SlackTests(Base):
         self.assertEqual(got["F0FFFFFFF"]["title"], "IMG_0001.RW2")
         self.assertNotIn("F0GGGGGGG", got, "a photo is the catch-all's: copied, not only listed")
         self.assertEqual([r["title"] for r in self.of("slack_files")], ["beach.jpg"])
-        self.assertEqual(got["F0HHHHHHH"]["title"], "scan.pdf", "a document no reader could read is listed after them")
+        self.assertNotIn("F0HHHHHHH", got, "a document the catch-all read isn't listed as unread too")
+        self.assertEqual([r["title"] for r in self.of("imported_documents") if "F0HHHHHHH" in r["meta"]["path"]], ["notes"])
+        self.assertEqual(got["F0JJJJJJJ"]["title"], "empty.pdf", "a document no reader could read is listed after them")
         self.assertEqual(self.unclaimed(), set())
 
     def test_slackdumps_dump_a_file_a_conversation(self):

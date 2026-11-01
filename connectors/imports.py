@@ -4412,6 +4412,7 @@ TAKEOUT_INDEX = re.compile(r"(^|/)Takeout(?: \d+)?/[^/]+\.html?$|(^|/)archive_br
 
 def other_documents(es, W, used):
     from documents import iwork_text, pdf_text, pptx_text
+    read = set()  # claimed once all are read: one path in two Takeouts is two files, and a changed one is read too
     for e in es:
         ext = PurePosixPath(e.name).suffix.lower()
         if e.path in used or ext not in DOC_EXT or e.size > 60 * 2**20 or e.size == 0 or TAKEOUT_INDEX.search(e.path) or "Takeout/Keep/" in e.path:  # Keep has JSON twins
@@ -4421,6 +4422,7 @@ def other_documents(es, W, used):
         except DAMAGED as x:
             unreadable(e, x, used)
             continue
+        read.add(e.path)
         # One document is its place in the export and what it holds: the same Drive file in every Takeout since (or in
         # two zips of one) is kept once; a changed one, or another account's under the same name, is one of its own.
         w = W("imported_documents")
@@ -4454,6 +4456,7 @@ def other_documents(es, W, used):
         title = re.sub(r"\s[0-9a-f]{32}$", "", PurePosixPath(e.name).stem)  # Notion appends page ids
         w.add(id=key, kind="document", author="me", title=title, text=re.sub(r"[ \t]+", " ", text).strip()[:200_000] or title,
               thread=e.origin, thread_name=str(PurePosixPath(e.path).parent), meta={"origin": e.origin, "path": e.path, "ext": ext})
+    used |= read
 
 
 # Leftovers nobody else read. Left out only: security files, viewer/app assets, mail indexes, other people's server art.
@@ -4659,7 +4662,7 @@ def slack_files(es, W, used):
 
 
 def slack_files_left(es, W, used):
-    """After the catch-alls: a shared document or photo they couldn't read (too big, no text), listed."""
+    """After the catch-alls: a shared document or photo they couldn't read (empty, a photo they skipped), listed."""
     slack_shared(es, W, used)
 
 PARSERS = [ai_exports, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, telegram, zoom,
