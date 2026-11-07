@@ -45,4 +45,5 @@ while IFS=$'\t' read -r token domain name; do
 done <<< "$TEAMS"
 unset D TEAMS
 print "$added signed in, $failed didn't. slackdump workspace list shows them."
+print "Workspaces inside one organization (a school's, a company's) export together: export the organization's own workspace, and the others answer team_is_restricted."
 print "Now sign out of Slack in Chrome and back in if this session was ever pasted anywhere else."
