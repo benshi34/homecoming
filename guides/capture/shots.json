@@ -1,0 +1,55 @@
+{
+  "google_takeout": {
+    "url": "https://takeout.google.com/",
+    "viewport": [1280, 900],
+    "steps": [
+      { "step": 0, "file": "0-sign-in.png", "actions": [], "region": null },
+      { "step": 1, "file": "1-choose-data.png", "actions": [{ "click": { "role": "button", "name": "Deselect all" } }], "region": null },
+      { "step": 2, "file": "2-activity-json.png", "actions": [{ "click": { "text": "Multiple formats" } }], "region": null },
+      { "step": 3, "file": "3-youtube-json.png", "actions": [{ "click": { "text": "Multiple formats" } }], "region": null },
+      { "step": 4, "file": "4-export-options.png", "actions": [], "region": null }
+    ],
+    "clip": { "file": "export.webm", "actions": [{ "click": { "role": "button", "name": "Deselect all" } }] }
+  },
+  "instagram": {
+    "url": "https://accountscenter.instagram.com/info_and_permissions/dyi/",
+    "viewport": [1280, 900],
+    "steps": [
+      { "step": 0, "file": "0-sign-in.png", "actions": [], "region": null },
+      { "step": 1, "file": "1-create-export.png", "actions": [{ "click": { "text": "Export your information" } }], "region": null },
+      { "step": 2, "file": "2-options.png", "actions": [{ "click": { "text": "Customize information" } }], "region": null },
+      { "step": 3, "file": "3-email.png", "actions": [], "region": null },
+      { "step": 4, "file": "4-start-export.png", "actions": [], "region": null }
+    ],
+    "clip": { "file": "export.webm", "actions": [{ "click": { "text": "Export your information" } }, { "click": { "text": "Customize information" } }] }
+  },
+  "facebook": {
+    "url": "https://accountscenter.facebook.com/info_and_permissions/dyi/",
+    "viewport": [1280, 900],
+    "steps": [
+      { "step": 0, "file": "0-sign-in.png", "actions": [], "region": null },
+      { "step": 1, "file": "1-create-export.png", "actions": [{ "click": { "text": "Export your information" } }], "region": null },
+      { "step": 2, "file": "2-options.png", "actions": [{ "click": { "text": "Customize information" } }], "region": null },
+      { "step": 3, "file": "3-email.png", "actions": [], "region": null },
+      { "step": 4, "file": "4-start-export.png", "actions": [], "region": null }
+    ],
+    "clip": { "file": "export.webm", "actions": [{ "click": { "text": "Export your information" } }, { "click": { "text": "Customize information" } }] }
+  },
+  "discord": {
+    "url": "https://discord.com/app",
+    "viewport": [1280, 900],
+    "steps": [
+      { "step": 0, "file": "0-sign-in.png", "actions": [], "region": null },
+      { "step": 1, "file": "1-verify-email.png", "actions": [], "region": null },
+      { "step": 2, "file": "2-request-data.png", "actions": [{ "click": { "text": "User Settings" } }], "region": null },
+      { "step": 3, "file": "3-select-data.png", "actions": [], "region": null },
+      { "step": 4, "file": "4-submit.png", "actions": [], "region": null }
+    ],
+    "clip": { "file": "export.webm", "actions": [{ "click": { "text": "User Settings" } }] }
+  },
+  "telegram": {
+    "manual": true,
+    "note": "Telegram is a desktop app. Capture the export walkthrough manually in Telegram Desktop.",
+    "steps": []
+  }
+}

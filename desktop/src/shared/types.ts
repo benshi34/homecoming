@@ -284,7 +284,8 @@ export interface SourceView {
   priority: number;
   optional?: boolean;
   blockedBy?: string;
-  steps?: { text: string; detail?: string; done: boolean }[];
+  steps?: { text: string; detail?: string; shot?: string; done: boolean }[];
+  clip?: string; // guides/<id>/<clip>, beside its steps
   url?: string;
   progress?: number; // 0..1 when known
   parts?: { name: string; records: number; device?: boolean; artifacts?: Record<string, number> }[];

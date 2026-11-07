@@ -182,11 +182,15 @@ def main():
                 files.setdefault(a["messageId"], []).append(a)
 
         skipped = {}
+        # A reply's quote names the message it quotes by when that was sent (ms) and who wrote it, not by its id:
+        # the messages so far by (conversation, sent_at), each with its sender (none: yours)
+        sent = {}
         for r in con.execute("select id, conversationId, type, body, sent_at, sourceServiceId, json, isViewOnce, isErased "
                              "from messages order by sent_at"):
             if r["type"] not in MESSAGES:
                 skipped[r["type"] or "none"] = skipped.get(r["type"] or "none", 0) + 1
                 continue
+            sent.setdefault((r["conversationId"], r["sent_at"]), []).append((r["id"], r["sourceServiceId"]))
             if w.has(r["id"]):
                 continue
             j = json.loads(r["json"] or "{}")
@@ -207,13 +211,23 @@ def main():
             text = "\n".join(p for p in parts if p).strip() or ("[deleted message]" if deleted else "[view-once message]"
                                                                 if r["isViewOnce"] else "[empty message]")
             quote = j.get("quote") if isinstance(j.get("quote"), dict) else {}
+            reply_to = None
+            if quote.get("id"):
+                same = sent.get((r["conversationId"], quote["id"])) or []
+                by = quote.get("authorAci") or quote.get("author")
+                pick_ = [x for x in same if by and x[1] == by] or [x for x in same if x[1] is None] or same
+                reply_to = pick_[0][0] if pick_ and pick_[0][0] != r["id"] else None
             # A reaction's fromId is the reacting person's own conversation; yours is Note to Self.
-            reactions = [{"emoji": x.get("emoji"), "from": "me" if x.get("fromId") == mine_conv else
-                          name_of(convs[x["fromId"]]) if x.get("fromId") in convs else None}
-                         for x in j.get("reactions") or [] if isinstance(x, dict)]
+            # as every chat source keeps them, {who, reaction, at}: Signal keeps only the ones that stand (one taken
+            # back is gone from the list)
+            reactions = [{k: v for k, v in {"who": "me" if x.get("fromId") == mine_conv else
+                                            name_of(convs[x["fromId"]]) if x.get("fromId") in convs else None,
+                                            "reaction": x.get("emoji"), "ts": from_unix(x.get("timestamp"), "ms")}.items() if v}
+                         for x in j.get("reactions") or [] if isinstance(x, dict) and x.get("emoji")]
             meta = {"group": chat["group"] or None, "tier": "deleted" if deleted else None,
                     "edits": len(j["editHistory"]) - 1 if isinstance(j.get("editHistory"), list) and len(j["editHistory"]) > 1 else None,
-                    "reply_to": quote.get("id"), "reactions": reactions or None, "view_once": bool(r["isViewOnce"]) or None}
+                    "reply_to": reply_to,
+                    "reply_text": (str(quote.get("text") or "")[:200] or None) if quote else None, "reactions": reactions or None, "view_once": bool(r["isViewOnce"]) or None}
             w.add(id=r["id"], kind="message", ts=from_unix(r["sent_at"], "ms"), author=author, is_me=mine, thread=r["conversationId"],
                   thread_name=chat["name"], participants=chat["people"], text=text,
                   meta={k: v for k, v in meta.items() if v is not None})

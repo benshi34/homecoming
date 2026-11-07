@@ -127,7 +127,7 @@ export function accountChoices(views: SourceView[]): SourceView[] {
 
 // The accounts most people have, roughly by how many people use each (monthly users, public figures for 2025).
 // Google Photos and Drive sits with Google.
-export const POPULARITY = ['google_takeout', 'google_photos_drive', 'facebook', 'instagram', 'other_mail', 'chatgpt', 'spotify', 'x',
+export const POPULARITY = ['google_takeout', 'google_photos_drive', 'facebook', 'instagram', 'other_mail', 'telegram', 'chatgpt', 'spotify', 'x',
   'maps_timeline', 'reddit', 'linkedin', 'discord', 'slack', 'notion', 'zoom', 'claude_ai'];
 
 // "Used by most people" on the Accounts page: the app's own web accounts, most used first.

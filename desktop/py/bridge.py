@@ -1496,7 +1496,7 @@ def mailbox_candidates(c):
 
 # Chat sources whose "is this me?" is decided by name. Whoever is in (almost) every conversation of an export
 # is its owner: that finds the nickname or old display name nobody would think to type in.
-CHAT_SOURCES = {"google_chat": "Google Chat", "whatsapp_export": "WhatsApp", "slack": "Slack", "linkedin": "LinkedIn messages",
+CHAT_SOURCES = {"google_chat": "Google Chat", "whatsapp_export": "WhatsApp", "slack": "Slack", "telegram": "Telegram", "linkedin": "LinkedIn messages",
                 "reddit": "Reddit messages", "messenger": "Messenger", "instagram": "Instagram"}
 
 
@@ -1632,6 +1632,14 @@ def classify_names(names, peek=None, filename=""):
         return "whatsapp_chats"
     if {"users.json", "channels.json"} <= base:
         return "slack"
+    # slackdump's dump: a file a conversation, named by its id
+    dumps = [n for n in names if re.fullmatch(r"(.*/)?[CDG][A-Z0-9]{6,}\.json", n)]
+    if dumps and peek and '"channel_id"' in peek(dumps[0])[:2000]:
+        return "slack"
+    # Telegram Desktop's JSON export: result.json, at the top of DataExport_<date> (every chat) or ChatExport_<date> (one)
+    result = [n for n in names if n.rsplit("/", 1)[-1] == "result.json" and n.count("/") <= 1]
+    if result and peek and '"date_unixtime"' in peek(result[0]):
+        return "telegram"
     files = [n for n in names if not n.endswith("/")]
     # Mail: mailboxes, an Outlook for Mac archive (.olm, a zip), or a folder of messages dragged out of a mail app
     mail = sum(n.lower().endswith((".eml", ".emlx")) for n in files)
