@@ -57,12 +57,12 @@ QUOTED = re.compile(r"^([`'\"])(.+)\1$")
 NOT_A_PASSWORD_PARTS = {
     "link": r"^(?i:(?:mailto|tel|sms|data|urn|cid|file|javascript|about|arxiv|doi|isbn|https?|ftp):|www\.)|://",
     "markup": r"^(?:\[|!\[|<|\||\(|-{2})|^\{.*\}$|\*\*|__|&#?\w+;",
-    "tag or variable": r"^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$",
+    "tag or variable": r"^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$|^\$\{.*\}$",
     "email": r"[^@\s]+@[^@\s]+\.(?i:[a-z]{2,})$",
     "path": r"^[/~\\]|^\.\.?/|/.*/|^[A-Za-z]+/[A-Za-z]+$|\\",
     "file name": r"\.(?i:[a-z]{2,5}|[a-z]{1,3}\d)$",
     "hex or number": r"^[0-9a-f-]{8,}$|^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|^[0-9:.+-]+$|^v?\d+(?:\.\d+)+",
-    "code": r"\(\)|[)\]]$|::|->|=>",
+    "code": r"\(\)|[)\]]$|::|->|=>|(?i:!important)",
     "encoded": r"=$|=[0-9A-F]{2}|^\w+=|[^\x21-\x7e]",
     "one kind of case": r"^[A-Z0-9_]+$|^[a-z0-9_]+$",
     "word then joiner": r"^[A-Za-z]+[_-][A-Za-z0-9_-]*$",
@@ -109,7 +109,7 @@ def _named(tok):
     (Qwen2.5-72B-Instruct, GPT4o-mini, Llama-3.1-8B): a model, part or build name."""
     parts = re.split(r"[-_.:+]", tok)
     return (len(parts) >= 2 and all(PART.fullmatch(p) for p in parts)
-            and any(len(p) >= 4 and p.isalpha() for p in parts))  # a word among them, unlike N7x-Qf2r-Lp8k
+            and any(len(p) >= 3 and p.isalpha() for p in parts))  # a word among them, unlike N7x-Qf2r-Lp8k
 
 
 def _random_looking(tok):

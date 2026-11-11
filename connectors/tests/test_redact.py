@@ -87,7 +87,7 @@ class StandalonePasswordTests(unittest.TestCase):
                      "https://ex.com/aB3x9Kq2", "Ref: Tq7vWp2Lm9Xz", "Order ID: Tq7vWp2Lm9Xz", "[cid:image001.png@01DC2A3B]",
                      "abcAB9=", "see https://youtu.be/dQw4w9WgXcQ ok", "commit 3f2a9c1b7e5d4a6f8b0c",
                      "arXiv:2412.19437v1 [cs.CL]", "paid $1,234.56 today.", "Hannum,", "some text kP3vRw9ZtqLm in a sentence",
-                     "- Meeting 10:30am-11:00am", "- $1,299.99", "- RTX4090_24GB", "GPT4o-mini", "time: 12:30:45pm"):
+                     "- Meeting 10:30am-11:00am", "- $1,299.99", "- RTX4090_24GB", "GPT4o-mini", "- 10-Nov-2026", "x: 9!important;", "time: 12:30:45pm"):
             with self.subTest(text=text):
                 self.assertEqual(redact(text), text)
 
