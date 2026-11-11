@@ -55,7 +55,7 @@ LABELLED = re.compile(r"(?P<label>[^\s:=]{1,30}(?:[ \t][^\s:=]{1,30}){0,3}[ \t]*
 QUOTED = re.compile(r"^([`'\"])(.+)\1$")
 # Each one's name says what it keeps (a check can say which fired without showing the token).
 NOT_A_PASSWORD_PARTS = {
-    "link": r"^(?i:(?:mailto|tel|sms|data|urn|cid|file|javascript|about|arxiv|doi|isbn|https?|ftp):|www\.)|://",
+    "link": r"^\[?(?i:(?:mailto|tel|sms|data|urn|cid|file|javascript|about|arxiv|doi|isbn|https?|ftp):|www\.)|://",
     "markup": r"^(?:\[|!\[|<|\||\(|-{2})|^\{.*\}$|\*\*|__|&#?\w+;",
     "tag or variable": r"^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$|^\$\{.*\}$",
     "email": r"[^@\s]+@[^@\s]+\.(?i:[a-z]{2,})$",
@@ -143,11 +143,31 @@ ID_LABEL = re.compile(r"(?i)\b(?:id|ids|ref|reference|order|invoice|ticket|case|
                       r"sku|model|part|cid|uuid|hash|commit|build|version|code)\b\W*$|[\[@<]")
 
 
+# A generator's output can start with [ or ~, hold two slashes or end in ), so markup, path, number and code
+# rules catch it by accident. Links, emails, file names and tags still win.
+STRONG = re.compile("|".join(f"(?:{NOT_A_PASSWORD_PARTS[k]})" for k in ("link", "email", "file name", "tag or variable", "encoded")))
+
+
+CODEISH = re.compile(r"\([^()]*\)|\{[^{}]*\}|<[^<>]*>|\[[^\[\]]*\]|::|%[0-9A-Fa-f]{2}|[=$]|\.~|&#?\w+;|\*\*|`|/[^/]*/")
+
+
+def _generated(tok):
+    """Mixed case, digits and three or more kinds of symbol (not the . / - _ paths and names are made of), drawn at
+    random: a generator's, whatever else it happens to look like."""
+    kinds = set(re.findall(r"[^A-Za-z0-9./_-]", tok))
+    # a backslash is LaTeX (\cite{Smith2024}) or Windows, not a password generator
+    # matched brackets, ::, %2F escapes, = and $ are code, math and URLs; a generator rarely pairs them up
+    return ("\\" not in tok and not CODEISH.search(tok) and len(kinds) >= 3 and re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok)
+            and not STRONG.search(tok) and _random_looking(tok))
+
+
 def _password_like(tok, alone):
     """Drawn at random, Apple's format, or (alone on its line) letters, a digit and a symbol that aren't words, the
     way people make their own: not a link, path, name or ID."""
     tok = QUOTED.sub(r"\2", tok)
-    if not 10 <= len(tok) <= 40 or NOT_A_PASSWORD.search(tok.rstrip(".,;")) and not APPLE.match(tok):
+    if not 10 <= len(tok) <= 40:
+        return False
+    if NOT_A_PASSWORD.search(tok.rstrip(".,;")) and not APPLE.match(tok) and not (alone and _generated(tok)):
         return False
     # words in it are fine when a symbol people put in passwords is too (Purple7!Horse); without one it's a name
     wordy = _wordy(tok) and not re.search(r"[!@#$%^*?~+]", tok)
