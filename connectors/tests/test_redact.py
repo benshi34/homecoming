@@ -64,5 +64,30 @@ class MoreSecretsTests(unittest.TestCase):
         self.assertNotIn("MIIEvQ", redact(key))
 
 
+class StandalonePasswordTests(unittest.TestCase):
+    """A generated password saved in a note, alone on its line or after a short label, with no word "password"
+    near it; and the IDs, names, paths and PDF fragments that look a little like one. Made-up values."""
+
+    def test_saved_passwords_are_blanked(self):
+        for text, gone in [("Xk9#mP2qL!vR4t", "Xk9#mP2qL!vR4t"), ("Bank: Tq7vWp2Lm9Xz", "Tq7vWp2Lm9Xz"),
+                           ("- email = hR5tYq0pWm3z", "hR5tYq0pWm3z"), ("  3. N7x-Qf2r-Lp8k", "N7x-Qf2r-Lp8k"),
+                           ("abcdEf-g1hijk-lmnopq", "g1hijk"), ("the db one is Xk9#mP2qL!vR4t for now", "Xk9#mP2qL!vR4t"),
+                           ("use `Ab/.@#CDEFGH9J` there", "CDEFGH9J"), ("#Ab9cd-E#FGH!=+k", "FGH!=+k"),
+                           ("**Password**: hunter2abc!", "hunter2abc"), ("notes\nkP3vRw9ZtqLm\nmore", "kP3vRw9ZtqLm")]:
+            with self.subTest(text=text):
+                self.assertNotIn(gone, redact(text))
+                self.assertIn("[redacted password]", redact(text))
+
+    def test_look_alikes_are_left_alone(self):
+        for text in ("iPhone15Pro", "MacBookAir2", "Qwen2.5-72B-Instruct", "use Llama-3.1-8B-Instruct here", "STM32H7S3A8",
+                     "v1.2.3-beta", "IMG_1234.JPG", "Report.PDF", "src/Main9Ab.tsx", "~/dev/Ab9cdEfg1", "#projectTag2",
+                     "a1b2c3d4-e5f6-7a8b-9c0d-112233445566", "getUserById()", "2024-07-01", "ada@example.com",
+                     "https://ex.com/aB3x9Kq2", "Ref: Tq7vWp2Lm9Xz", "Order ID: Tq7vWp2Lm9Xz", "[cid:image001.png@01DC2A3B]",
+                     "abcAB9=", "Summer2024!", "see https://youtu.be/dQw4w9WgXcQ ok", "commit 3f2a9c1b7e5d4a6f8b0c",
+                     "arXiv:2412.19437v1 [cs.CL]", "paid $1,234.56 today.", "Hannum,", "some text kP3vRw9ZtqLm in a sentence"):
+            with self.subTest(text=text):
+                self.assertEqual(redact(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()
