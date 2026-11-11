@@ -47,12 +47,13 @@ CARD = re.compile(r"\b(?:4\d{3}|5[1-5]\d{2}|2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720)
 CARD_WORDS = re.compile(r"(?i)\b(?:card|visa|mastercard|master card|amex|american express|discover|credit|debit|cvc|cvv|"
                         r"security code|exp(?:iry|iration|ires)?|valid thru)\b")
 WORD = re.compile(r"[a-z]+")
-# A password saved in a note usually sits alone on its line, or after a short label ("Bank: ...", "- email ..."):
-# one token of 10 to 40 characters that looks drawn at random (_random_looking). What looks like that but isn't one:
-# links, emails, paths, file names, IDs and hashes, dates, code, names made of words.
-STANDALONE = re.compile(r"(?m)^(?P<keep>[ \t]*(?:[-*+>]|\d{1,3}[.)])?[ \t]*(?:[^\s:=]{1,30}(?:[ \t][^\s:=]{1,30}){0,3}[ \t]*(?:[:=]|[ \t]-)[ \t]*)?)"
-                        r"(?P<tok>[^\s`'\"]{10,40})[ \t]*$")
-NOT_A_PASSWORD = re.compile(r"^(?:(?i:[a-z][a-z0-9+.-]*:|www\.)|\[|!\[|<|\||\(|-{2})|^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$|^\{.*\}$|://|[^@\s]+@[^@\s]+\.(?i:[a-z]{2,})$|^[/~\\]|^\.\.?/|/.*/|^[A-Za-z]+/[A-Za-z]+$|\\|"
+# A password saved in a note usually sits alone on its line, after a list or quote marker or a short label
+# ("Bank: ...", "- email = ..."): one token of 10 to 40 characters that looks like a password (_password_like).
+# What looks like that but isn't one: links, emails, paths, file names, IDs and hashes, dates, code, names made of words.
+STANDALONE = re.compile(r"(?m)^(?P<keep>[ \t]*(?:(?:[-*+>]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)*)(?P<rest>[^\n]*?)[ \t\r]*$")
+LABELLED = re.compile(r"(?P<label>[^\s:=]{1,30}(?:[ \t][^\s:=]{1,30}){0,3}[ \t]*(?:[:=]|[ \t]-)[ \t]*)(?P<tok>\S{10,42})$")
+QUOTED = re.compile(r"^([`'\"])(.+)\1$")
+NOT_A_PASSWORD = re.compile(r"^(?:(?i:(?:mailto|tel|sms|data|urn|cid|file|javascript|about|arxiv|doi|isbn|https?|ftp):|www\.)|\[|!\[|<|\||\(|-{2})|^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$|^\{.*\}$|://|[^@\s]+@[^@\s]+\.(?i:[a-z]{2,})$|^[/~\\]|^\.\.?/|/.*/|^[A-Za-z]+/[A-Za-z]+$|\\|"
                             r"\.(?i:[a-z]{2,5}|[a-z]{1,3}\d)$|^[0-9a-f-]{8,}$|^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|^[0-9:.+-]+$|"
                             r"\(\)|[)\]]$|::|->|=>|=$|=[0-9A-F]{2}|^\w+=|&#?\w+;|[^\x21-\x7e]|^v?\d+(?:\.\d+)+|^[A-Z0-9_]+$|^[a-z0-9_]+$|^[A-Za-z]+[_-][A-Za-z0-9_-]*$|\*\*|__")
 
@@ -113,8 +114,7 @@ INLINE = re.compile(r"(?<![\S])(?P<q>[`'\"]?)(?P<tok>[^\s`'\"()\[\]<>]{12,40}?)(
 
 def _inline(m):
     tok = m.group("tok")
-    if (re.search(r"[^A-Za-z0-9]", tok) and _random_looking(tok) and not NOT_A_PASSWORD.search(tok)
-            and not _wordy(tok) and not tok.startswith("[redacted")):
+    if re.search(r"[^A-Za-z0-9]", tok) and _password_like(tok, False) and not tok.startswith("[redacted"):
         return m.group("q") + "[redacted password]" + m.group("q")
     return m.group(0)
 
@@ -124,13 +124,28 @@ ID_LABEL = re.compile(r"(?i)\b(?:id|ids|ref|reference|order|invoice|ticket|case|
                       r"sku|model|part|cid|uuid|hash|commit|build|version|code)\b\W*$|[\[@<]")
 
 
+def _password_like(tok, alone):
+    """Drawn at random, Apple's format, or (alone on its line) letters, a digit and a symbol that aren't words, the
+    way people make their own: not a link, path, name or ID."""
+    tok = QUOTED.sub(r"\2", tok)
+    if not 10 <= len(tok) <= 40 or NOT_A_PASSWORD.search(tok.rstrip(".,;")) and not APPLE.match(tok):
+        return False
+    if APPLE.match(tok) or _random_looking(tok):
+        return not _wordy(tok)
+    core = tok.rstrip(".,;:")
+    # a person's own: a symbol people put in passwords, none of the ones times, money, markup and addresses use
+    return bool(alone and re.search(r"[A-Za-z]", core) and re.search(r"\d", core) and re.search(r"[!@#$%^*?~+_]", core)
+                and not re.search(r"[:;<>/&|=,\\]|\$\d", core) and not _named(core) and not _wordy(core) and len(core) >= 10)
+
+
 def _standalone(m):
-    tok = m.group("tok")
-    if ID_LABEL.search(m.group("keep")):
-        return m.group(0)
-    if not APPLE.match(tok) and (not _random_looking(tok) or NOT_A_PASSWORD.search(tok) or _wordy(tok)):
-        return m.group(0)
-    return m.group("keep") + "[redacted password]"
+    rest = m.group("rest")
+    if " " not in rest and "\t" not in rest and _password_like(rest, True):
+        return m.group("keep") + "[redacted password]"
+    lab = LABELLED.match(rest)
+    if lab and not ID_LABEL.search(m.group("keep") + lab.group("label")) and _password_like(lab.group("tok"), True):
+        return m.group("keep") + lab.group("label") + "[redacted password]"
+    return m.group(0)
 
 
 def _luhn(digits):
