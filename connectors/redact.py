@@ -8,7 +8,8 @@ What counts: private keys, API keys and tokens with a known shape (OpenAI, Anthr
 Slack, Google, AWS, Stripe, npm, Hugging Face, SendGrid), JWTs and bearer tokens, password/passcode values (also
 "the password for X is", PGPASSWORD= and the like, and the password in a link), secret-looking URL parameters, card
 numbers (Luhn-valid, with a network prefix), Social Security numbers and bank account and routing numbers said as
-such, and wallet recovery phrases (12 or more words in a row from the BIP39 list in data/bip39_english.txt, from
+such, a generated-looking password alone on its line (or after a short label like "Bank:") or with a symbol in a
+sentence, and wallet recovery phrases (12 or more words in a row from the BIP39 list in data/bip39_english.txt, from
 trezor/python-mnemonic, MIT).
 """
 
@@ -29,7 +30,7 @@ PATTERNS = [
     ("API key", re.compile(r"\b(?:AIza[0-9A-Za-z_-]{35}|AKIA[0-9A-Z]{16}|(?:sk|rk)_live_[A-Za-z0-9]{16,})")),
     ("token", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     ("token", re.compile(r"(?i)(?P<keep>\bbearer\s+)[A-Za-z0-9._~+/=-]{16,}")),
-    ("password", re.compile(rf"(?i)(?P<keep>\b(?:password|passwd|passcode|pwd)(?:\s*[:=]\s*|\s+is\s+)){_VALUE}")),
+    ("password", re.compile(rf"(?i)(?P<keep>\b(?:password|passwd|passcode|pwd)(?:\*\*|__)?(?:\s*[:=]\s*|\s+is\s+)){_VALUE}")),
     ("password", re.compile(rf"(?i)(?P<keep>\b(?:password|passwd|passcode|pin)\s+(?:for|to)\s+[^\s:=]{{1,40}}\s+(?:is\s+|[:=]\s*))(?!\[redacted){_VALUE}")),
     ("password", re.compile(rf"(?P<keep>\b[A-Z0-9_]*(?:PASSWORD|PASSWD|PASS|SECRET|TOKEN|API_KEY|APIKEY)[A-Z0-9_]*\s*=\s*)(?!\[redacted){_VALUE}")),
     ("password", re.compile(r"(?P<keep>\b[a-z][a-z0-9+.-]{1,20}://[^\s:/@]{1,64}:)[^\s@/]{1,128}(?=@)")),
@@ -46,6 +47,147 @@ CARD = re.compile(r"\b(?:4\d{3}|5[1-5]\d{2}|2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720)
 CARD_WORDS = re.compile(r"(?i)\b(?:card|visa|mastercard|master card|amex|american express|discover|credit|debit|cvc|cvv|"
                         r"security code|exp(?:iry|iration|ires)?|valid thru)\b")
 WORD = re.compile(r"[a-z]+")
+# A password saved in a note usually sits alone on its line, after a list or quote marker or a short label
+# ("Bank: ...", "- email = ..."): one token of 10 to 40 characters that looks like a password (_password_like).
+# What looks like that but isn't one: links, emails, paths, file names, IDs and hashes, dates, code, names made of words.
+STANDALONE = re.compile(r"(?m)^(?P<keep>[ \t]*(?:(?:[-*+>]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)*)(?P<rest>[^\n]*?)[ \t\r]*$")
+LABELLED = re.compile(r"(?P<label>[^\s:=]{1,30}(?:[ \t][^\s:=]{1,30}){0,3}[ \t]*(?:[:=]|[ \t]-)[ \t]*)(?P<tok>\S{10,42})$")
+QUOTED = re.compile(r"^([`'\"])(.+)\1$")
+# Each one's name says what it keeps (a check can say which fired without showing the token).
+NOT_A_PASSWORD_PARTS = {
+    "link": r"^\[?(?i:(?:mailto|tel|sms|data|urn|cid|file|javascript|about|arxiv|doi|isbn|https?|ftp):|www\.)|://",
+    "markup": r"^(?:\[|!\[|<|\||\(|-{2})|^\{.*\}$|\*\*|__|&#?\w+;",
+    "tag or variable": r"^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$|^\$\{.*\}$",
+    "email": r"[^@\s]+@[^@\s]+\.(?i:[a-z]{2,})$",
+    "path": r"^[/~\\]|^\.\.?/|/.*/|^[A-Za-z]+/[A-Za-z]+$|\\",
+    "file name": r"\.(?i:[a-z]{2,5}|[a-z]{1,3}\d)$",
+    "hex or number": r"^[0-9a-f-]{8,}$|^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|^[0-9:.+-]+$|^v?\d+(?:\.\d+)+",
+    "code": r"\(\)|[)\]]$|::|->|=>|(?i:!important)",
+    "encoded": r"=$|=[0-9A-F]{2}|^\w+=|[^\x21-\x7e]",
+    "one kind of case": r"^[A-Z0-9_]+$|^[a-z0-9_]+$",
+    "word then joiner": r"^[A-Za-z]+[_-][A-Za-z0-9_-]*$",
+}
+NOT_A_PASSWORD_EACH = {k: re.compile(v) for k, v in NOT_A_PASSWORD_PARTS.items()}
+NOT_A_PASSWORD = re.compile("|".join(f"(?:{v})" for v in NOT_A_PASSWORD_PARTS.values()))
+
+
+def why_not(tok):
+    """Names of the exclusions a token matches, for checking misses without printing the token."""
+    return [k for k, p in NOT_A_PASSWORD_EACH.items() if p.search(tok)]
+
+
+def _words():
+    """Every Mac has /usr/share/dict/words (web2, 235k words); BIP39's list stands in where it's missing."""
+    try:
+        return frozenset(w.lower() for w in Path("/usr/share/dict/words").read_text().split() if len(w) >= 3) | WORDS
+    except OSError:
+        return WORDS
+
+
+DICT = None
+SEGMENT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
+
+
+def _wordy(tok):
+    """A name made of words (iPhone15Pro, GPT4o-mini, MacBookAir2) rather than drawn at random: words of three or
+    more letters cover at least two fifths of it."""
+    global DICT
+    if DICT is None:
+        DICT = _words()
+    covered = sum(len(seg) for seg in SEGMENT.findall(tok) if len(seg) >= 3 and seg.lower() in DICT)
+    return covered * 5 >= len(tok) * 2
+
+
+RUN = re.compile(r"[a-z]+|[A-Z]+|\d+|[^A-Za-z0-9]+")
+# Apple's suggested strong password: three groups of six joined by hyphens, one capital and one digit among them.
+APPLE = re.compile(r"^(?=.*[A-Z])(?=.*\d)[A-Za-z0-9]{6}-[A-Za-z0-9]{6}-[A-Za-z0-9]{6}$")
+PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+|\d+[A-Za-z]{0,2}|[A-Za-z]{1,4}\d+[a-z]?|")
+
+
+def _named(tok):
+    """Parts joined by - _ . : each of which is a word, capitals, a number with a unit or a letters-then-number
+    (Qwen2.5-72B-Instruct, GPT4o-mini, Llama-3.1-8B): a model, part or build name."""
+    parts = re.split(r"[-_.:+]", tok)
+    return (len(parts) >= 2 and all(PART.fullmatch(p) for p in parts)
+            and any(len(p) >= 3 and p.isalpha() for p in parts))  # a word among them, unlike N7x-Qf2r-Lp8k
+
+
+def _random_looking(tok):
+    """Drawn at random rather than written: lower, upper and digit all in it, no run of one kind longer than six
+    (a word, a part number's capitals), and the kind changes at least every other character or so. Part numbers,
+    math and words with a comma after them, alone on a line in a PDF's text, fail one of these."""
+    if APPLE.match(tok):
+        return True
+    if not (re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok)) or _named(tok):
+        return False
+    runs = RUN.findall(tok)
+    # all four kinds in it is rarer by chance than three, so it may change kind less often
+    share = 0.3 if re.search(r"[^A-Za-z0-9]", tok) else 0.45
+    return max(map(len, runs)) <= 6 and len(runs) - 1 >= share * (len(tok) - 1)
+
+
+# Inside a sentence ("the db one is ... for now") a password has to look even more drawn at random: 12 or more
+# characters, a symbol among them (most IDs and hashes in prose have none), and trailing punctuation set aside.
+INLINE = re.compile(r"(?<![\S])(?P<q>[`'\"]?)(?P<tok>[^\s`'\"()\[\]<>]{12,40}?)(?P=q)(?=[.,;:!?)]*(?:\s|$))")
+
+
+def _inline(m):
+    tok = m.group("tok")
+    if re.search(r"[^A-Za-z0-9]", tok) and _password_like(tok, False) and not tok.startswith("[redacted"):
+        return m.group("q") + "[redacted password]" + m.group("q")
+    return m.group(0)
+
+
+# A label that says what the token is and it isn't a password: an ID, a reference, an order or ticket number.
+ID_LABEL = re.compile(r"(?i)\b(?:id|ids|ref|reference|order|invoice|ticket|case|tracking|booking|confirmation|serial|"
+                      r"sku|model|part|cid|uuid|hash|commit|build|version|code)\b\W*$|[\[@<]")
+
+
+# A generator's output can start with [ or ~, hold two slashes or end in ), so markup, path, number and code
+# rules catch it by accident. Links, emails, file names and tags still win.
+STRONG = re.compile("|".join(f"(?:{NOT_A_PASSWORD_PARTS[k]})" for k in ("link", "email", "file name", "tag or variable", "encoded")))
+
+
+CODEISH = re.compile(r"\([^()]*\)|\{[^{}]*\}|<[^<>]*>|\[[^\[\]]*\]|::|%[0-9A-Fa-f]{2}|[=$]|\.~|&#?\w+;|\*\*|`|/[^/]*/|\d:\d\d|^/\*|\*[^*]+\*|\|[^|]*\|")
+
+
+def _generated(tok):
+    """Mixed case, digits and three or more kinds of symbol (two will do with four symbols in all; not the . / - _
+    paths and names are made of), drawn at random: a generator's, whatever else it happens to look like, on its own
+    line or in a sentence."""
+    kinds = set(re.findall(r"[^A-Za-z0-9./_-]", tok))
+    # a backslash is LaTeX (\cite{Smith2024}) or Windows, not a password generator
+    # matched brackets, ::, %2F escapes, = and $ are code, math and URLs; a generator rarely pairs them up
+    return ("\\" not in tok and not CODEISH.search(tok) and (len(kinds) >= 3 or len(kinds) == 2 and len(re.findall(r"[^A-Za-z0-9]", tok)) >= 4) and re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok)
+            and not STRONG.search(tok) and _random_looking(tok))
+
+
+def _password_like(tok, alone):
+    """Drawn at random, Apple's format, or (alone on its line) letters, a digit and a symbol that aren't words, the
+    way people make their own: not a link, path, name or ID."""
+    tok = QUOTED.sub(r"\2", tok)
+    if not 10 <= len(tok) <= 40:
+        return False
+    if NOT_A_PASSWORD.search(tok.rstrip(".,;")) and not APPLE.match(tok) and not _generated(tok):
+        return False
+    # words in it are fine when a symbol people put in passwords is too (Purple7!Horse); without one it's a name
+    wordy = _wordy(tok) and not re.search(r"[!@#$%^*?~+]", tok)
+    if APPLE.match(tok) or _random_looking(tok):
+        return not wordy
+    core = tok.rstrip(".,;:")
+    # a person's own: a symbol people put in passwords, none of the ones times, money, markup and addresses use
+    return bool(alone and re.search(r"[A-Za-z]", core) and re.search(r"\d", core) and re.search(r"[!@#$%^*?~+_]", core)
+                and not re.search(r"[:;<>/&|=,\\]|\$\d", core) and not _named(core) and not wordy and len(core) >= 10)
+
+
+def _standalone(m):
+    rest = m.group("rest")
+    if " " not in rest and "\t" not in rest and _password_like(rest, True):
+        return m.group("keep") + "[redacted password]"
+    lab = LABELLED.match(rest)
+    if lab and not ID_LABEL.search(m.group("keep") + lab.group("label")) and _password_like(lab.group("tok"), True):
+        return m.group("keep") + lab.group("label") + "[redacted password]"
+    return m.group(0)
 
 
 def _luhn(digits):
@@ -88,6 +230,8 @@ def redact(text):
         text = text[:start] + "[redacted recovery phrase]" + text[end:]
     for kind, pat in PATTERNS:
         text = pat.sub(lambda m, k=kind: (m.groupdict().get("keep") or "") + f"[redacted {k}]", text)
+    text = STANDALONE.sub(_standalone, text)
+    text = INLINE.sub(_inline, text)
     def card(m):
         around = text[max(0, m.start() - 60):m.end() + 60]
         return "[redacted card number]" if _luhn(re.sub(r"\D", "", m.group(0))) and CARD_WORDS.search(around) else m.group(0)
