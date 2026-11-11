@@ -53,9 +53,27 @@ WORD = re.compile(r"[a-z]+")
 STANDALONE = re.compile(r"(?m)^(?P<keep>[ \t]*(?:(?:[-*+>]|\d{1,3}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)*)(?P<rest>[^\n]*?)[ \t\r]*$")
 LABELLED = re.compile(r"(?P<label>[^\s:=]{1,30}(?:[ \t][^\s:=]{1,30}){0,3}[ \t]*(?:[:=]|[ \t]-)[ \t]*)(?P<tok>\S{10,42})$")
 QUOTED = re.compile(r"^([`'\"])(.+)\1$")
-NOT_A_PASSWORD = re.compile(r"^(?:(?i:(?:mailto|tel|sms|data|urn|cid|file|javascript|about|arxiv|doi|isbn|https?|ftp):|www\.)|\[|!\[|<|\||\(|-{2})|^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$|^\{.*\}$|://|[^@\s]+@[^@\s]+\.(?i:[a-z]{2,})$|^[/~\\]|^\.\.?/|/.*/|^[A-Za-z]+/[A-Za-z]+$|\\|"
-                            r"\.(?i:[a-z]{2,5}|[a-z]{1,3}\d)$|^[0-9a-f-]{8,}$|^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|^[0-9:.+-]+$|"
-                            r"\(\)|[)\]]$|::|->|=>|=$|=[0-9A-F]{2}|^\w+=|&#?\w+;|[^\x21-\x7e]|^v?\d+(?:\.\d+)+|^[A-Z0-9_]+$|^[a-z0-9_]+$|^[A-Za-z]+[_-][A-Za-z0-9_-]*$|\*\*|__")
+# Each one's name says what it keeps (a check can say which fired without showing the token).
+NOT_A_PASSWORD_PARTS = {
+    "link": r"^(?i:(?:mailto|tel|sms|data|urn|cid|file|javascript|about|arxiv|doi|isbn|https?|ftp):|www\.)|://",
+    "markup": r"^(?:\[|!\[|<|\||\(|-{2})|^\{.*\}$|\*\*|__|&#?\w+;",
+    "tag or variable": r"^#[\w/-]+$|^@[\w.-]+$|^\$\{?\w+\}?$",
+    "email": r"[^@\s]+@[^@\s]+\.(?i:[a-z]{2,})$",
+    "path": r"^[/~\\]|^\.\.?/|/.*/|^[A-Za-z]+/[A-Za-z]+$|\\",
+    "file name": r"\.(?i:[a-z]{2,5}|[a-z]{1,3}\d)$",
+    "hex or number": r"^[0-9a-f-]{8,}$|^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|^[0-9:.+-]+$|^v?\d+(?:\.\d+)+",
+    "code": r"\(\)|[)\]]$|::|->|=>",
+    "encoded": r"=$|=[0-9A-F]{2}|^\w+=|[^\x21-\x7e]",
+    "one kind of case": r"^[A-Z0-9_]+$|^[a-z0-9_]+$",
+    "word then joiner": r"^[A-Za-z]+[_-][A-Za-z0-9_-]*$",
+}
+NOT_A_PASSWORD_EACH = {k: re.compile(v) for k, v in NOT_A_PASSWORD_PARTS.items()}
+NOT_A_PASSWORD = re.compile("|".join(f"(?:{v})" for v in NOT_A_PASSWORD_PARTS.values()))
+
+
+def why_not(tok):
+    """Names of the exclusions a token matches, for checking misses without printing the token."""
+    return [k for k, p in NOT_A_PASSWORD_EACH.items() if p.search(tok)]
 
 
 def _words():
@@ -83,14 +101,15 @@ def _wordy(tok):
 RUN = re.compile(r"[a-z]+|[A-Z]+|\d+|[^A-Za-z0-9]+")
 # Apple's suggested strong password: three groups of six joined by hyphens, one capital and one digit among them.
 APPLE = re.compile(r"^(?=.*[A-Z])(?=.*\d)[A-Za-z0-9]{6}-[A-Za-z0-9]{6}-[A-Za-z0-9]{6}$")
-PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+|\d+[A-Za-z]{0,2}|[A-Za-z]{1,4}\d+|")
+PART = re.compile(r"[A-Z]?[a-z]+|[A-Z]+|\d+[A-Za-z]{0,2}|[A-Za-z]{1,4}\d+[a-z]?|")
 
 
 def _named(tok):
     """Parts joined by - _ . : each of which is a word, capitals, a number with a unit or a letters-then-number
-    (Qwen2.5-72B-Instruct, GPT-4o, RTX-4090, 12:30:45): a model, part or build name."""
+    (Qwen2.5-72B-Instruct, GPT4o-mini, Llama-3.1-8B): a model, part or build name."""
     parts = re.split(r"[-_.:+]", tok)
-    return len(parts) >= 2 and all(PART.fullmatch(p) for p in parts)
+    return (len(parts) >= 2 and all(PART.fullmatch(p) for p in parts)
+            and any(len(p) >= 4 and p.isalpha() for p in parts))  # a word among them, unlike N7x-Qf2r-Lp8k
 
 
 def _random_looking(tok):
@@ -130,12 +149,14 @@ def _password_like(tok, alone):
     tok = QUOTED.sub(r"\2", tok)
     if not 10 <= len(tok) <= 40 or NOT_A_PASSWORD.search(tok.rstrip(".,;")) and not APPLE.match(tok):
         return False
+    # words in it are fine when a symbol people put in passwords is too (Purple7!Horse); without one it's a name
+    wordy = _wordy(tok) and not re.search(r"[!@#$%^*?~+]", tok)
     if APPLE.match(tok) or _random_looking(tok):
-        return not _wordy(tok)
+        return not wordy
     core = tok.rstrip(".,;:")
     # a person's own: a symbol people put in passwords, none of the ones times, money, markup and addresses use
     return bool(alone and re.search(r"[A-Za-z]", core) and re.search(r"\d", core) and re.search(r"[!@#$%^*?~+_]", core)
-                and not re.search(r"[:;<>/&|=,\\]|\$\d", core) and not _named(core) and not _wordy(core) and len(core) >= 10)
+                and not re.search(r"[:;<>/&|=,\\]|\$\d", core) and not _named(core) and not wordy and len(core) >= 10)
 
 
 def _standalone(m):

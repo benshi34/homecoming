@@ -75,7 +75,7 @@ class StandalonePasswordTests(unittest.TestCase):
                            ("use `Ab/.@#CDEFGH9J` there", "CDEFGH9J"), ("#Ab9cd-E#FGH!=+k", "FGH!=+k"),
                            ("**Password**: hunter2abc!", "hunter2abc"), ("notes\nkP3vRw9ZtqLm\nmore", "kP3vRw9ZtqLm"),
                            ("- Ab\"9#k`Q2!x@Lm", "Q2!x@Lm"), ("- Ab:9#kQ2!x@Lmzz", "Ab:9#"), ("> - [ ] Zqxjvk12!w", "Zqxjvk12"),
-                           ("\tdbpass - Rr4!kd93LsQ0x", "Rr4!kd93LsQ0x"), ("- qwzxkvbn47!", "qwzxkvbn")]:
+                           ("\tdbpass - Rr4!kd93LsQ0x", "Rr4!kd93LsQ0x"), ("- qwzxkvbn47!", "qwzxkvbn"), ("- Purple7!Horse", "Purple7"), ("Summer2024!", "Summer2024")]:
             with self.subTest(text=text):
                 self.assertNotIn(gone, redact(text))
                 self.assertIn("[redacted password]", redact(text))
@@ -85,9 +85,9 @@ class StandalonePasswordTests(unittest.TestCase):
                      "v1.2.3-beta", "IMG_1234.JPG", "Report.PDF", "src/Main9Ab.tsx", "~/dev/Ab9cdEfg1", "#projectTag2",
                      "a1b2c3d4-e5f6-7a8b-9c0d-112233445566", "getUserById()", "2024-07-01", "ada@example.com",
                      "https://ex.com/aB3x9Kq2", "Ref: Tq7vWp2Lm9Xz", "Order ID: Tq7vWp2Lm9Xz", "[cid:image001.png@01DC2A3B]",
-                     "abcAB9=", "Summer2024!", "see https://youtu.be/dQw4w9WgXcQ ok", "commit 3f2a9c1b7e5d4a6f8b0c",
+                     "abcAB9=", "see https://youtu.be/dQw4w9WgXcQ ok", "commit 3f2a9c1b7e5d4a6f8b0c",
                      "arXiv:2412.19437v1 [cs.CL]", "paid $1,234.56 today.", "Hannum,", "some text kP3vRw9ZtqLm in a sentence",
-                     "- Meeting 10:30am-11:00am", "- $1,299.99", "- banana12!x", "- RTX4090_24GB", "time: 12:30:45pm"):
+                     "- Meeting 10:30am-11:00am", "- $1,299.99", "- RTX4090_24GB", "GPT4o-mini", "time: 12:30:45pm"):
             with self.subTest(text=text):
                 self.assertEqual(redact(text), text)
 
