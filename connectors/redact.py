@@ -148,16 +148,17 @@ ID_LABEL = re.compile(r"(?i)\b(?:id|ids|ref|reference|order|invoice|ticket|case|
 STRONG = re.compile("|".join(f"(?:{NOT_A_PASSWORD_PARTS[k]})" for k in ("link", "email", "file name", "tag or variable", "encoded")))
 
 
-CODEISH = re.compile(r"\([^()]*\)|\{[^{}]*\}|<[^<>]*>|\[[^\[\]]*\]|::|%[0-9A-Fa-f]{2}|[=$]|\.~|&#?\w+;|\*\*|`|/[^/]*/")
+CODEISH = re.compile(r"\([^()]*\)|\{[^{}]*\}|<[^<>]*>|\[[^\[\]]*\]|::|%[0-9A-Fa-f]{2}|[=$]|\.~|&#?\w+;|\*\*|`|/[^/]*/|\d:\d\d|^/\*|\*[^*]+\*|\|[^|]*\|")
 
 
 def _generated(tok):
-    """Mixed case, digits and three or more kinds of symbol (not the . / - _ paths and names are made of), drawn at
-    random: a generator's, whatever else it happens to look like."""
+    """Mixed case, digits and three or more kinds of symbol (two will do with four symbols in all; not the . / - _
+    paths and names are made of), drawn at random: a generator's, whatever else it happens to look like, on its own
+    line or in a sentence."""
     kinds = set(re.findall(r"[^A-Za-z0-9./_-]", tok))
     # a backslash is LaTeX (\cite{Smith2024}) or Windows, not a password generator
     # matched brackets, ::, %2F escapes, = and $ are code, math and URLs; a generator rarely pairs them up
-    return ("\\" not in tok and not CODEISH.search(tok) and len(kinds) >= 3 and re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok)
+    return ("\\" not in tok and not CODEISH.search(tok) and (len(kinds) >= 3 or len(kinds) == 2 and len(re.findall(r"[^A-Za-z0-9]", tok)) >= 4) and re.search(r"[a-z]", tok) and re.search(r"[A-Z]", tok) and re.search(r"\d", tok)
             and not STRONG.search(tok) and _random_looking(tok))
 
 
@@ -167,7 +168,7 @@ def _password_like(tok, alone):
     tok = QUOTED.sub(r"\2", tok)
     if not 10 <= len(tok) <= 40:
         return False
-    if NOT_A_PASSWORD.search(tok.rstrip(".,;")) and not APPLE.match(tok) and not (alone and _generated(tok)):
+    if NOT_A_PASSWORD.search(tok.rstrip(".,;")) and not APPLE.match(tok) and not _generated(tok):
         return False
     # words in it are fine when a symbol people put in passwords is too (Purple7!Horse); without one it's a name
     wordy = _wordy(tok) and not re.search(r"[!@#$%^*?~+]", tok)

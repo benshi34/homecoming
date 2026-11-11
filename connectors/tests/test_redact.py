@@ -76,7 +76,8 @@ class StandalonePasswordTests(unittest.TestCase):
                            ("**Password**: hunter2abc!", "hunter2abc"), ("notes\nkP3vRw9ZtqLm\nmore", "kP3vRw9ZtqLm"),
                            ("- Ab\"9#k`Q2!x@Lm", "Q2!x@Lm"), ("- Ab:9#kQ2!x@Lmzz", "Ab:9#"), ("> - [ ] Zqxjvk12!w", "Zqxjvk12"),
                            ("\tdbpass - Rr4!kd93LsQ0x", "Rr4!kd93LsQ0x"), ("- qwzxkvbn47!", "qwzxkvbn"), ("- Purple7!Horse", "Purple7"), ("Summer2024!", "Summer2024"),
-                           ("- [Qx7#vR2!mK9p", "Qx7#vR2"), ("> ~k8!Tz/Q3#pLw9", "Tz/Q3"), ("- 12.7Kq!x#Rv9w%P", "Kq!x#Rv9"), ("- Wp4!z#Lq8Rm(", "Wp4!z#")]:
+                           ("- [Qx7#vR2!mK9p", "Qx7#vR2"), ("> ~k8!Tz/Q3#pLw9", "Tz/Q3"), ("- 12.7Kq!x#Rv9w%P", "Kq!x#Rv9"), ("- Wp4!z#Lq8Rm(", "Wp4!z#"),
+                           ("- 12.7Kq!x#Rv9w!P#z", "Kq!x#Rv9"), ("then use ~k8!Tz/Q3#pLw9 for it", "Tz/Q3")]:
             with self.subTest(text=text):
                 self.assertNotIn(gone, redact(text))
                 self.assertIn("[redacted password]", redact(text))
@@ -88,7 +89,7 @@ class StandalonePasswordTests(unittest.TestCase):
                      "https://ex.com/aB3x9Kq2", "Ref: Tq7vWp2Lm9Xz", "Order ID: Tq7vWp2Lm9Xz", "[cid:image001.png@01DC2A3B]",
                      "abcAB9=", "see https://youtu.be/dQw4w9WgXcQ ok", "commit 3f2a9c1b7e5d4a6f8b0c",
                      "arXiv:2412.19437v1 [cs.CL]", "paid $1,234.56 today.", "Hannum,", "some text kP3vRw9ZtqLm in a sentence",
-                     "- Meeting 10:30am-11:00am", "- $1,299.99", "- RTX4090_24GB", "GPT4o-mini", "- 10-Nov-2026", "x: 9!important;", "time: 12:30:45pm", "- [cid:Ab9#cd!Ef@x.Y2]", "- ~/a!b#c$Dd9Xq/x.txt", "- Eq.~(A1)--(B2))].", "- ABCD9(core::ops9::IndexMut),", "- Ab&#8217;Cd9!x#q?", "**`ab-c12-defghi:A-9`**", "Smith~\\cite{key:abc12}", r"9.981234~\\mathrm{Ab/\\AB^2}"):
+                     "- Meeting 10:30am-11:00am", "- $1,299.99", "- RTX4090_24GB", "GPT4o-mini", "- 10-Nov-2026", "x: 9!important;", "time: 12:30:45pm", "- [cid:Ab9#cd!Ef@x.Y2]", "- ~/a!b#c$Dd9Xq/x.txt", "- Eq.~(A1)--(B2))].", "- ABCD9(core::ops9::IndexMut),", "- Ab&#8217;Cd9!x#q?", "**`ab-c12-defghi:A-9`**", "at 2026.111.11:10:30:45.12#alpha#Bravo ok", "- /*Field#12Abc#34Defgh-56789", "- 9.8*bravo*C3^2", "a |Alpha|1-23ab|<456c| row", "Smith~\\cite{key:abc12}", r"9.981234~\\mathrm{Ab/\\AB^2}"):
             with self.subTest(text=text):
                 self.assertEqual(redact(text), text)
 
