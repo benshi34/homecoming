@@ -337,6 +337,12 @@ def after_notes(text):
     return text[m.end():] if m else ""
 
 
+def csv_columns(e):
+    """A CSV's header when it has no rows under it: a LinkedIn member with no connections yet still gets Connections.csv,
+    and known by its columns it's read as that (nothing), not as a stray file whose notes become records."""
+    return set(next(csv.reader(io.StringIO(after_notes(e.text().replace("\x00", "")))), []))
+
+
 def read_csv(e):
     text = e.text().replace("\x00", "")  # csv refuses a line with a NUL in it
     return list(csv.DictReader(io.StringIO(after_notes(text))))
@@ -2773,7 +2779,7 @@ def csv_exports(es, W, used):
             rows = read_csv(e)
         except (csv.Error, UnicodeDecodeError, *DAMAGED):  # a damaged one is left to the ledger, as not read
             continue
-        cols = set(rows[0].keys()) if rows else set()
+        cols = set(rows[0].keys()) if rows else csv_columns(e)
         n = re.sub(r"_\d+(?=\.csv$)", "", e.name.lower())  # LinkedIn now appends a member id: Shares_<member id>.csv
         if {"CONVERSATION ID", "FROM", "CONTENT"} <= cols:
             used.add(e.path)
