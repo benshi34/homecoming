@@ -208,6 +208,25 @@ class PhoneTests(unittest.TestCase):
             self.assertEqual(rows[0]['author'], 'me')
             self.assertEqual(rows[0]['thread'], 'chat')
 
+    def test_ileapp_leaves_out_device_and_sim_ids(self):
+        # Made-up values, shaped like the real ones.
+        con = self.db()
+        con.execute('create table device_data(property, property_value)')
+        con.executemany('insert into device_data values (?, ?)', [
+            ('ProductVersion', '18.7'), ('imeis', "['350000000000017']"), ('ReportedPhoneNumber', '+14155550100'),
+            ('SerialNumber', 'XQ17SERIAL'), ('Unique Identifier', '00008101-TEST')])
+        con.execute('create table backup_info(device_name, imei, iccid, phone_number)')
+        con.execute('insert into backup_info values ("Ada\'s iPhone", "350000000000017", "8901260000000000017", "+14155550100")')
+        ileapp.write_module('deviceDatam', [('Device Information', {'name': 'Device Data', 'tablename': 'device_data',
+                            'artifact_key': 'deviceDatam', 'column_map': {}, 'object_columns': []})], con, {}, 'fixture', {}, {})
+        ileapp.write_module('iTunesBackupInfo', [('iTunes Backup', {'name': 'iTunes Backup Information', 'tablename': 'backup_info',
+                            'artifact_key': 'iTunesBackupInfo', 'column_map': {}, 'object_columns': []})], con, {}, 'fixture', {}, {})
+        raw = json.dumps(self.records('phone_devicedatam') + self.records('phone_itunesbackupinfo'))
+        for value in ('350000000000017', '8901260000000000017', 'XQ17SERIAL', '00008101-TEST'):
+            self.assertNotIn(value, raw)
+        self.assertIn('18.7', raw)
+        self.assertIn('+14155550100', raw)  # your own number stays
+
     def test_wechat_group_sender_and_compressed_text(self):
         conv = ileapp.CONVERSATIONS['weChatMessages']
         row = {'type_as_stored':1, 'message':'wxid_test:\nHello', 'chat_partner':'group@chatroom'}
