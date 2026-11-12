@@ -45,7 +45,8 @@ class DevicesTests(unittest.TestCase):
         }))
 
     def run_devices(self):
-        env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_PHONE_REGION": "US"}
+        env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_PHONE_REGION": "US",
+               "UMP_VOLUMES": str(self.home / "no-volumes")}  # never this Mac's own drives
         subprocess.run([sys.executable, "devices.py"], cwd=CONNECTORS, env=env, check=True, capture_output=True)
         out = self.corpus / "normalized/devices.jsonl"
         return out.read_text(), {r["id"]: r for r in map(json.loads, out.read_text().splitlines())}
@@ -73,6 +74,29 @@ class DevicesTests(unittest.TestCase):
         for value in (ICCID, IMSI, IMEI, MEID, SERIAL):
             self.assertNotIn(value, raw)
         self.assertNotIn("iccid", raw.lower())
+
+    def test_drives_plugged_in_are_kept_after_unplugging(self):
+        volumes = self.home / "volumes"
+        (volumes / "Photo Archive").mkdir(parents=True)
+        (volumes / "Mounted Image").mkdir()
+        code = ("import documents, devices; from pathlib import Path; "
+                f"documents.VOLUMES = Path({str(volumes)!r}); documents._mounted_fs_types = lambda: {{}}; "
+                "documents._backup_mounts = lambda: set(); "
+                "documents._diskutil_info = lambda p: {'Photo Archive': {'VolumeName': 'Photo Archive', 'VolumeUUID': 'pa-1', "
+                "'BusProtocol': 'USB', 'FilesystemType': 'exfat', 'Encryption': False}, 'Mounted Image': {'VolumeName': "
+                "'Mounted Image', 'VolumeUUID': 'img-1', 'BusProtocol': 'Disk Image'}}.get(Path(p).name); devices.main()")
+        env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_PHONE_REGION": "US"}
+        run = lambda: subprocess.run([sys.executable, "-c", code], cwd=CONNECTORS, env=env, check=True, capture_output=True)
+        run()
+        out = self.corpus / "normalized/devices.jsonl"
+        recs = {r["id"]: r for r in map(json.loads, out.read_text().splitlines())}
+        self.assertEqual(recs["drive:pa-1"]["title"], "Photo Archive")
+        self.assertFalse(recs["drive:pa-1"]["meta"]["encrypted"])
+        self.assertNotIn("drive:img-1", recs)
+        (volumes / "Photo Archive").rmdir()
+        run()
+        recs = {r["id"]: r for r in map(json.loads, out.read_text().splitlines())}
+        self.assertIn("drive:pa-1", recs)
 
     def test_no_backup_no_phone_records(self):
         import shutil

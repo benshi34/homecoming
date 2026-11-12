@@ -1,6 +1,7 @@
 """Your devices: each iPhone backed up to this Mac (its name, model, iOS and number), each phone line it has had (the
 number, the carrier, the label you gave it such as Personal or Travel, eSIM or not, and when it was added), and this
-Mac. Kept as records, so what you had, and when, can be looked up and asked about.
+Mac, and each drive you've plugged into it (its name, size, how full, encrypted or not, and when it was last
+connected). Kept as records, so what you had, and when, can be looked up and asked about.
 
 The SIM's own identifiers (ICCID, IMSI, IMEI, MEID, the serial number) are never read into a record: they say
 nothing about you, and they're what someone asks a carrier for to move your number to their SIM."""
@@ -23,7 +24,9 @@ LINES = Path("WirelessDomain/Library/Preferences/com.apple.commcenter.data.plist
 AVENUE = ("Each iPhone backup's Info.plist in ~/Library/Application Support/MobileSync/Backup (unencrypted: Device "
           "Name, Product Type, Product Version, Phone Number, Last Backup Date); the phone lines from the decrypted "
           "backup's WirelessDomain com.apple.commcenter.data.plist (PersonalWallet: mdn, esim, cb_id, label-id, ts; "
-          "unique-sim-label-store: the label's text); this Mac from sysctl hw.model, sw_vers and scutil. ICCID, IMSI, "
+          "unique-sim-label-store: the label's text); this Mac from sysctl hw.model, sw_vers and scutil; each drive the "
+          "documents reader would read (documents.drives(): not the startup disk, disk images, network shares, Time "
+          "Machine or installers) from diskutil and its free space. ICCID, IMSI, "
           "IMEI, MEID and serial numbers are left out.")
 
 
@@ -120,12 +123,35 @@ def mac(w):
           meta={"device": "Mac", "product": model, "os": f"macOS {version}" if version else None, "this_mac": True})
 
 
+def drives(w):
+    """One record per drive plugged in now: kept after it's unplugged, with when it was last seen."""
+    import shutil
+    import documents
+    from datetime import datetime
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for name, mount, uuid in documents.drives():
+        info = documents._diskutil_info(mount) or {}
+        try:
+            du = shutil.disk_usage(mount)
+        except OSError:
+            du = None
+        size = f"{du.total / 1e12:.1f} TB" if du and du.total >= 1e12 else f"{du.total / 1e9:.0f} GB" if du else None
+        fs = info.get("FilesystemUserVisibleName") or info.get("FilesystemType")
+        locked = bool(info.get("Encryption") or info.get("FileVault"))
+        text = f"{name}: drive" + (f", {size}" if size else "") + (f", {du.used / du.total:.0%} full" if du and du.total else "") + \
+            (f", {fs}" if fs else "") + (", encrypted" if locked else "") + f", last connected {now[:10]}"
+        w.add(id=f"drive:{uuid or name}", kind="device", ts=now, author="me", is_me=True, title=name, text=text,
+              meta={"device": "drive", "bytes": du.total if du else None, "used": du.used if du else None, "filesystem": fs,
+                    "encrypted": locked, "connection": info.get("BusProtocol"), "drive_id": uuid, "last_connected": now})
+
+
 def main():
     with Writer("devices", AVENUE) as w:
         phones(w)
         lines(w)
         if os.uname().sysname == "Darwin":
             mac(w)
+            drives(w)
 
 
 if __name__ == "__main__":

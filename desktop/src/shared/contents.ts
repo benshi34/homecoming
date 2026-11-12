@@ -11,7 +11,7 @@ const KINDS: Record<string, Record<string, string>> = {
   app_usage: { app_usage: 'Which app was open, and for how long', app_usage_day: 'Days with a daily total', media: 'Songs, podcasts and videos played' },
   ai_coding: { ai_turn: 'Your prompts and the replies' },
   editor_history: { file_edit: 'Saved versions of files' },
-  devices: { device: 'Your Mac and the iPhones backed up to it', phone_line: 'Phone lines: number, carrier, label, eSIM or SIM card' },
+  devices: { device: 'Your Mac, your drives and the iPhones backed up to it', phone_line: 'Phone lines: number, carrier, label, eSIM or SIM card' },
   podcasts: { listen: 'Episodes played', subscription: 'Shows you follow' },
   whatsapp: { message: 'Messages', event: 'Group chat changes', post: 'Your status updates' },
   setup: { config: 'Configs you wrote, each version', preference: 'Mac and app settings', layout: 'Your windows, tabs and panes', inventory: 'Apps, background jobs and machines' },

@@ -202,7 +202,7 @@ export const CATALOG: Source[] = [
   { id: 'documents', name: 'Documents', group: 'mac', connector: 'documents', produces: ['documents'],
     blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
   { id: 'devices', name: 'Your devices', group: 'mac', connector: 'devices', produces: ['devices'],
-    blurb: 'This Mac, each iPhone backed up to it with its number, and the phone lines it has had: the number, the carrier, your label for it (Personal, Travel), eSIM or SIM card, and when it was added. Not the SIM\'s own ID numbers.' },
+    blurb: 'This Mac, the drives you plug in (size, how full, encrypted or not, when last connected), each iPhone backed up to it with its number, and the phone lines it has had: the number, the carrier, your label for it (Personal, Travel), eSIM or SIM card, and when it was added. Not the SIM\'s own ID numbers.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
     blurb: 'Your commits across every repository under Documents, Desktop and your code folders (Developer, Code, Projects...).' },
 
