@@ -86,6 +86,7 @@ MAC_PATHS = {
     "zotero": [HOME / "Zotero/zotero.sqlite"],  # or wherever its prefs.js says (zotero.py)
     # and Obsidian vaults wherever they are, read with these (not looked for alone: see PROTECTED)
     "documents": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents", LIB / "CloudStorage", HOME / "Dropbox"],
+    "devices": [LIB / "Application Support/MobileSync/Backup"],
     "git_commits": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents/com~apple~CloudDocs",
                     *(HOME / d for d in ("Developer", "Code", "code", "Projects", "projects", "src", "dev", "git", "repos", "workspace"))],
 }
