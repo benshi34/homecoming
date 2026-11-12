@@ -90,13 +90,47 @@ before(async () => {
   sb = sandbox({ identity: true });
   browsersAt(sb.home);
   execFileSync('python3', ['-c', BACKUPS, sb.home]);
+  const volumes = path.join(sb.root, 'volumes');
+  const travel = path.join(volumes, 'Travel SSD');
+  const fakeBin = path.join(sb.root, 'bin');
+  fs.mkdirSync(travel, { recursive: true });
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(path.join(fakeBin, 'diskutil'), "#!/usr/bin/env python3\nimport plistlib, sys\nif sys.argv[1:3] == ['info', '-plist']:\n    print(plistlib.dumps({'VolumeName': 'Travel SSD', 'VolumeUUID': 'TRAVEL-UUID', 'MountPoint': sys.argv[3], 'BusProtocol': 'USB', 'FilesystemType': 'apfs', 'WritableVolume': True}).decode())\n");
+  fs.chmodSync(path.join(fakeBin, 'diskutil'), 0o755);
+  fs.writeFileSync(path.join(sb.corpus, 'drives.json'), JSON.stringify({ auto: true, read: ['KEEP-UUID'], skip: ['OLD-UUID'], custom: 'keep' }));
+  // A drive read before and unplugged since: its documents are in the library under "drive:<uuid>/".
+  execFileSync('python3', ['-c', "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('create table records (source text, id text, meta text, unique(source, id))'); c.execute(\"insert into records values ('documents', 'drive:AWAY-UUID/notes.md', '{\\\"drive\\\": \\\"Away Drive\\\", \\\"drive_id\\\": \\\"AWAY-UUID\\\"}')\"); c.commit()", path.join(sb.corpus, 'corpus.db')]);
   const mods = path.join(sb.root, 'mods');
   fs.mkdirSync(mods);
   fs.writeFileSync(path.join(mods, 'fake_iphone.py'), FAKE_IPHONE);
-  run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_CLAUDE_CMD: path.join(DESKTOP, 'test/fakes/fake_claude.py'),
+  run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_VOLUMES: volumes, PATH: `${fakeBin}:${process.env.PATH}`, UMP_CLAUDE_CMD: path.join(DESKTOP, 'test/fakes/fake_claude.py'),
     UMP_IPHONE_MODULE: 'fake_iphone', UMP_EXTRA_PYPATH: mods }));
   await run.page.emulateMedia({ reducedMotion: 'reduce' });
   await until(run.page, 'first probe', (x) => !!x.probeTime && x.setup.browsers.length > 0);
+});
+
+test('drives show connected and unplugged volumes, and their switches preserve drive policy', async () => {
+  const p = run.page;
+  await p.locator('[data-testid=nav-yoursetup]').click();
+  const page = p.locator('[data-testid=your-setup]');
+  const drives = page.locator('[data-testid=setup-drives]');
+  await drives.waitFor();
+  assert.match(await drives.innerText(), /Travel SSD[\s\S]*used[\s\S]*total/);
+  assert.match(await drives.innerText(), /Away Drive[\s\S]*Not connected/);
+  const travel = drives.locator('[data-testid=toggle-drive-TRAVEL-UUID]');
+  const away = drives.locator('[data-testid=toggle-drive-AWAY-UUID]');
+  assert.equal(await travel.getAttribute('aria-checked'), 'true');
+  assert.equal(await away.getAttribute('aria-checked'), 'true');
+  await travel.click();
+  await until(p, 'travel off', (x) => x.setup.drives.find((d) => d.uuid === 'TRAVEL-UUID')?.read === false);
+  let config = JSON.parse(fs.readFileSync(path.join(sb.corpus, 'drives.json'), 'utf8'));
+  assert.deepEqual(config, { auto: true, custom: 'keep', read: ['KEEP-UUID'], skip: ['OLD-UUID', 'TRAVEL-UUID'] });
+  await travel.click();
+  await until(p, 'travel on', (x) => x.setup.drives.find((d) => d.uuid === 'TRAVEL-UUID')?.read === true);
+  config = JSON.parse(fs.readFileSync(path.join(sb.corpus, 'drives.json'), 'utf8'));
+  assert.deepEqual(config, { auto: true, custom: 'keep', read: ['KEEP-UUID', 'TRAVEL-UUID'], skip: ['OLD-UUID'] });
+  if (process.env.UMP_SHOT) await drives.screenshot({ path: process.env.UMP_SHOT });
+  assert.deepEqual(run.errors, []);
 });
 after(async () => {
   await run?.close();

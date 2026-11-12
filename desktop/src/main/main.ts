@@ -1198,7 +1198,7 @@ async function handleDownloadsFile(p: string, size: number) {
 // ---------------------------------------------------------------- actions
 
 type Payload = { inbox?: string; mode?: string; offset?: number; q?: string; dismissed?: string[]; password?: string; reason?: string; identity?: Identity; name?: string; index?: number; paths?: string[]; confirmed?: boolean; key?: string; value?: unknown;
-  slugs?: string[]; domains?: string[]; url?: string; slug?: string; examples?: boolean; prompt?: string; text?: string; mapping?: unknown; share?: boolean; reply?: string;
+  slugs?: string[]; domains?: string[]; url?: string; slug?: string; examples?: boolean; prompt?: string; text?: string; mapping?: unknown; share?: boolean; reply?: string; uuid?: string; read?: boolean;
   ids?: string[]; send?: boolean };
 
 // The browser export pages open in ("Open in Safari"): the one chosen in Your Setup, else the Mac's default for web links.
@@ -1239,7 +1239,7 @@ function setupView(): Snapshot['setup'] {
   const s = store.state.settings;
   const b = claudeBrowser();
   return {
-    browsers: probe?.browsers ?? [], macBrowser: macBrowser(), macBrowserId: macFound()?.id ?? null, pageBrowser: chosenPageBrowser()?.id ?? null,
+    browsers: probe?.browsers ?? [], drives: probe?.drives ?? [], macBrowser: macBrowser(), macBrowserId: macFound()?.id ?? null, pageBrowser: chosenPageBrowser()?.id ?? null,
     agentBrowser: b ? { id: b.id, name: b.name } : null, agent: agentReadiness(), phone: probe?.phone ?? null,
     mail: { accounts: probe?.mail_accounts ?? [], checks: s.mailChecks !== false, notifications: s.notificationChecks !== false },
     inboxes: (probe?.identity?.emails ?? []).map((e) => ({ email: e, app: inboxesFor([e], false)[0]?.app ?? 'Other email',
@@ -1363,7 +1363,7 @@ function sendToWindow(channel: string, arg?: string) {
   else send();
 }
 
-const MUTATING = new Set(['forget-phone', 'agent-request', 'agent-download', 'agent-continue', 'add-service', 'choose-services', 'remove-service', 'save-mapping', 'remove-mapping', 'run', 'run-all-mac', 'iphone-run', 'save-identity', 'exclude-icloud', 'fix-claude-retention', 'fix-shell-retention']);
+const MUTATING = new Set(['forget-phone', 'agent-request', 'agent-download', 'agent-continue', 'add-service', 'choose-services', 'remove-service', 'save-mapping', 'remove-mapping', 'run', 'run-all-mac', 'iphone-run', 'save-identity', 'exclude-icloud', 'fix-claude-retention', 'fix-shell-retention', 'drive-set']);
 
 const NOT_USED = 'I don\'t use it';
 // "I don't have an iPhone": its backup, the checks about it and its contacts card, all at once.
@@ -1399,6 +1399,13 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
   }
   const st = () => store.source(sourceId);
   switch (action) {
+    case 'drive-set': {
+      if (!payload.uuid) return { ok: false, error: 'drive uuid is required' };
+      const result = await bridge.json<{ ok: boolean; error?: string }>(['drive-set', payload.uuid, ...(payload.read ? ['--read'] : [])]);
+      if (!result.ok) return result;
+      await refreshProbe();
+      break;
+    }
     case 'recheck':
       delete process.env.UMP_PYTHON_MODULES; // a package just installed in Terminal, say
       await refresh();
