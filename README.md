@@ -29,7 +29,7 @@ The first time you use `git`, macOS offers to install its command line tools: sa
 Homecoming is made for one kind of setup, and works best inside it:
 
 - **A Mac with Apple silicon** (M1 or later). It's built and tested on macOS 26 (Tahoe).
-- **Apple's own apps**, read on this Mac: Messages, Mail, Photos, Notes, Calendar, Contacts, Reminders, Voice Memos, Podcasts, Books, Maps, Screen Time and call history. Also WhatsApp for Mac, and the documents in your cloud drives (OneDrive, Google Drive, Dropbox, Box), eligible mounted external drives, and Obsidian vaults.
+- **Apple's own apps**, read on this Mac: Messages, Mail, Photos, Notes, Calendar, Contacts, Reminders, Voice Memos, Podcasts, Books, Maps, Screen Time and call history. Also WhatsApp for Mac, and the documents in your cloud drives (OneDrive, Google Drive, Dropbox, Box), on the drives you plug in, and in Obsidian vaults.
 - **An iPhone**, read from an encrypted backup made in Finder. Android phones aren't read; Google Takeout still brings in what Google keeps from one (location, Fit, Chrome).
 - **English.** The app is in English, and it reads exports as English-language accounts write them. Google, Instagram, Facebook and the others name their files and labels in your account's language, so an export in another language can come in with less in it (searches as plain page visits, say, or no dates on chats). If an account is set to another language, switch it to English before you request its export.
 - **Browsers:** browsing history from Safari, Chrome, Arc, Edge, Brave, Vivaldi, Opera, Firefox and Zen, every profile. Do It for Me works in Chrome, Edge, Brave, Arc, Vivaldi or Opera (the ones the Claude in Chrome extension runs in).
