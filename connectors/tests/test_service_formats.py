@@ -285,6 +285,14 @@ class LinkedInTests(Base):
         self.assertEqual((got["Grace Hopper"]["ts"], got["Alan Turing"]["ts"]), ("2024-01-01T00:00:00", "2024-01-15T00:00:00"))
         self.assertNotIn("linkedin_other", self.recs)
 
+    def test_no_connections_yet_is_read_as_nothing(self):
+        # a new member's export: the notes and a header, no rows; and an empty messages.csv beside it
+        self.zip(LI, {"Connections.csv": "\ufeff" + NOTES + "First Name,Last Name,URL,Email Address,Company,Position,Connected On\r\n",
+                      "messages.csv": "CONVERSATION ID,CONVERSATION TITLE,FROM,TO,DATE,SUBJECT,CONTENT\n"})
+        self.run_import()
+        self.assertNotIn("linkedin_other", self.recs)
+        self.assertFalse({"Connections.csv", "messages.csv"} & self.unclaimed(), self.unclaimed())
+
     def test_connections_of_an_older_export_without_notes_or_links(self):
         self.zip("linkedin/Basic_LinkedInDataExport_2021.zip", {"Connections.csv": csv_text(
             ["First Name", "Last Name", "Email Address", "Company", "Position", "Connected On"], [["Grace", "Hopper", "", "Navy", "Admiral", "15 Mar 2021"]])})
