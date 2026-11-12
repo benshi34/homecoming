@@ -80,6 +80,7 @@ MAC_PATHS = {
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
     "books": [LIB / "Containers/com.apple.iBooksX/Data/Documents/BKLibrary", LIB / "Containers/com.apple.iBooksX/Data/Documents/AEAnnotation"],
     "photos": [p / "database/Photos.sqlite" for p in photos_libraries(HOME)],
+    "drive_photos": [Path("/Volumes")],
     "apple_maps": [LIB / "Containers/com.apple.Maps/Data/Maps/MapsSync_0.0.1"],
     "voice_memos": [LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"],
     "notion_local": [LIB / "Application Support/Notion/notion.db"],
