@@ -1,9 +1,11 @@
-"""Personal documents on disk, in iCloud Drive and in cloud drives (OneDrive, Google Drive, Dropbox, Box), plus
-Obsidian vaults kept anywhere: text from PDFs, Word/RTF, PowerPoint, Excel, CSV, web pages, Pages/Keynote/Numbers,
-notebooks, Markdown/TeX/text; metadata-only records for creative projects (Ableton, GarageBand, MuseScore, Logic)
-and Google Docs (only a link on disk). Skips code dependencies, datasets and build output."""
+"""Personal documents on disk, in iCloud Drive, cloud drives and mounted external drives, plus Obsidian vaults
+kept anywhere: text from PDFs, Word/RTF, PowerPoint, Excel, CSV, web pages, Pages/Keynote/Numbers, notebooks,
+Markdown/TeX/text; metadata-only records for creative projects (Ableton, GarageBand, MuseScore, Logic) and Google
+Docs (only a link on disk). External drives are read when mounted, except for boot, system, installer, backup,
+network and disk-image volumes. Skips code dependencies, datasets, build output and macOS index folders."""
 
 import json
+import errno
 import os
 import plistlib
 import re
@@ -14,13 +16,15 @@ from collections import Counter
 from pathlib import Path
 
 from apple_notes import _fields, _varint
-from common import HOME, LIB, NORM, RAW, ROOT, Writer, cloud_only, from_unix, ids_in, read_json, write_atomic
+from common import CORPUS, HOME, LIB, NORM, RAW, ROOT, Writer, cloud_only, from_unix, ids_in, read_json, write_atomic
 from email_parse import html_to_text
 
 AVENUE = ("Filesystem walk of ~/Documents, ~/Desktop, ~/Downloads, ~/Library/Mobile Documents (iCloud Drive "
           "+ app containers like com~apple~Pages), each cloud drive's folder in ~/Library/CloudStorage (OneDrive, Google "
           "Drive, Dropbox, Box...) and ~/Dropbox, and the Obsidian vaults in ~/Library/Application Support/obsidian/"
           "obsidian.json that aren't inside those. A folder reached twice (~/Dropbox is often a link) is read once. "
+          "Mounted external drives are read by name when selected in corpus/drives.json (all eligible drives by default); "
+          "boot, disk-image, network, Time Machine, installer/recovery and read-only system volumes are skipped. "
           "Text: pypdf for PDF, macOS textutil for doc/docx/rtf/odt, zip+XML for pptx and xlsx (sheet names and cell "
           "text), IWA (snappy+protobuf) string walk for Pages/Keynote/Numbers, cell text for ipynb, tags stripped for "
           "html and webarchive. Heuristics drop dependencies, datasets (>5 .txt/.csv/.html per folder), exports and "
@@ -36,6 +40,7 @@ AVENUE = ("Filesystem walk of ~/Documents, ~/Desktop, ~/Downloads, ~/Library/Mob
 
 ROOTS = {"Documents": HOME / "Documents", "Desktop": HOME / "Desktop", "Downloads": HOME / "Downloads",
          "iCloud": HOME / "Library/Mobile Documents"}
+VOLUMES = Path(os.environ.get("UMP_VOLUMES") or "/Volumes")  # where drives are mounted (tests: a folder of their own)
 CLOUD_STORAGE = HOME / "Library/CloudStorage"  # <Provider>-<account> folders, one per cloud drive app account
 CLOUD_NAMES = {"OneDrive": "OneDrive", "GoogleDrive": "Google Drive", "Dropbox": "Dropbox", "Box": "Box",
                "ProtonDrive": "Proton Drive", "pCloud": "pCloud", "Nextcloud": "Nextcloud", "SynologyDrive": "Synology Drive"}
@@ -44,6 +49,11 @@ SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "env", "__pycache__", "sit
              "Library", ".Trash", "build", "dist", ".next", ".cache", "target", "DerivedData", "Pods", "_site",
              "Backup", "Samples", "Ableton Project Info", "imessage_export_mac", "babi_tasks", "LlamaFactory",
              "SWE-agent", "eval_output", "experiment_output", "train_output", "vendor", "third_party"}
+DRIVE_SKIP_DIRS = {".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems", ".DocumentRevisions-V100",
+                   "Backups.backupdb"}
+PROJECT_FILES = {"package.json", "pyproject.toml", "setup.py", "Cargo.toml", "go.mod", "CMakeLists.txt", "pom.xml",
+                 "build.gradle", "Gemfile", "composer.json", "Package.swift", "tsconfig.json"}
+NETWORK_FS = {"smbfs", "afpfs", "nfs", "webdav", "webdavfs"}
 VAULT_SKIP = {"node_modules"}  # a vault is notes: its "Library" or "Backup" folder is yours (.obsidian, .trash: hidden)
 TEXT_EXT = {".pdf", ".docx", ".doc", ".rtf", ".odt", ".pptx", ".pages", ".key", ".numbers", ".ipynb", ".md",
             ".markdown", ".tex", ".txt", ".org", ".rst", ".xlsx", ".xlsm", ".csv", ".tsv", ".html", ".htm", ".webarchive"}
@@ -290,6 +300,116 @@ def cloud_drives():
     return out
 
 
+def _mounted_fs_types():
+    """Return the filesystem type reported by ``mount`` for mounted paths.
+
+    ``diskutil info -plist`` has the type on macOS too, but mount is useful for
+    network filesystems and remains a harmless best effort when DiskArbitration
+    is unavailable (as it is in some test environments).
+    """
+    try:
+        result = subprocess.run(["mount"], capture_output=True, text=True, check=False)
+    except OSError:
+        return {}
+    text = result.stdout if isinstance(result.stdout, str) else (result.stdout or b"").decode(errors="replace")
+    out = {}
+    for line in text.splitlines():
+        if " on " not in line or " (" not in line:
+            continue
+        _, rest = line.split(" on ", 1)
+        mount, options = rest.rsplit(" (", 1)
+        mount = mount.replace(r"\040", " ").replace(r"\011", "\t")
+        out[mount] = options.split(",", 1)[0].strip().lower()
+    return out
+
+
+def _diskutil_info(mount):
+    """Best-effort ``diskutil info -plist`` for one mounted volume."""
+    try:
+        result = subprocess.run(["diskutil", "info", "-plist", str(mount)], capture_output=True, check=False)
+    except OSError:
+        return None
+    data = result.stdout
+    if not data:
+        return None
+    try:
+        return plistlib.loads(data)
+    except (plistlib.InvalidFileException, ValueError, TypeError):
+        return None
+
+
+TM_SNAPSHOT = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{6}\.(backup|previous|inprogress)$")  # a Time Machine APFS disk's root
+
+
+def classify_volume(info, fs_type=None, top=(), backups=()):
+    """(eligible, reason) for a mounted volume: info is its `diskutil info -plist`, top the names at its root,
+    backups the mount points Time Machine backs up to. Keys as macOS 26 reports them: an external SSD has
+    BusProtocol "PCI-Express" or "USB", a mounted .dmg "Disk Image"."""
+    info = info if isinstance(info, dict) else {}
+    fs = str(fs_type or info.get("FilesystemType") or "").lower()
+    top = set(top)
+    if fs in NETWORK_FS:
+        return False, "network_share"
+    if info.get("BusProtocol") == "Disk Image":
+        return False, "disk_image"
+    if str(info.get("MountPoint") or "") in backups or "Backups.backupdb" in top or any(TM_SNAPSHOT.match(n) for n in top):
+        return False, "time_machine"
+    if "System" in top and info.get("WritableVolume") is False:  # an installer, a recovery or another Mac's system
+        return False, "installer_or_system"
+    return True, None
+
+
+def _backup_mounts():
+    """Where Time Machine backs up to, from tmutil (no prompt; empty when it isn't set up)."""
+    try:
+        out = subprocess.run(["tmutil", "destinationinfo", "-X"], capture_output=True, check=False, timeout=20).stdout
+        return {d.get("MountPoint") for d in plistlib.loads(out).get("Destinations", []) if d.get("MountPoint")}
+    except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException, ValueError, AttributeError):
+        return set()
+
+
+def _volume_uuid(info):
+    return str(info.get("VolumeUUID") or info.get("APFSVolumeUUID") or info.get("UUID") or info.get("DiskUUID") or "")
+
+
+def _note_drive_skip(notes, reason):
+    key = f"drives_skipped_{reason}"
+    notes[key] = notes.get(key, 0) + 1
+
+
+def drives(notes=None):
+    """(name, mount, volume UUID) for each drive plugged in whose documents are read; each one left out is counted in
+    notes by why (drives_skipped_<reason>). A volume diskutil can't describe is left out."""
+    notes = {} if notes is None else notes
+    try:
+        entries = sorted(VOLUMES.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return []
+    fs_types, backups, out = _mounted_fs_types(), None, []
+    for mount in entries:
+        if Path(os.path.realpath(mount)) == Path("/"):
+            continue  # the startup disk, read through its own folders above
+        if fs_types.get(str(mount)) in NETWORK_FS:
+            _note_drive_skip(notes, "network_share")
+            continue
+        info = _diskutil_info(mount) if mount.is_dir() else None
+        if not isinstance(info, dict) or not info:
+            _note_drive_skip(notes, "unknown")
+            continue
+        try:
+            top = os.listdir(mount)
+        except OSError:
+            top = []
+        if backups is None:
+            backups = _backup_mounts()
+        eligible, reason = classify_volume({"MountPoint": str(mount), **info}, fs_types.get(str(mount)), top, backups)
+        if not eligible:
+            _note_drive_skip(notes, reason)
+            continue
+        out.append((str(info.get("VolumeName") or mount.name), mount, _volume_uuid(info)))
+    return out
+
+
 def not_mine(label, root):
     """A drive's folders of other people's files, left out: Google Drive's shared drives and other computers."""
     return {Path(root) / d for d in GOOGLE_NOT_MINE} if label == "Google Drive" else set()
@@ -330,15 +450,18 @@ def obsidian_vaults():
     return [Path(v["path"]).expanduser() for v in vaults.values() if isinstance(v, dict) and v.get("path")]
 
 
-def roots(notes=None):
+def roots(notes=None, selected_drive_paths=()):
     """(label, folder) for every folder read: the usual ones, each cloud drive, then Obsidian vaults; and their real
     paths. A folder that is another one, or inside one (a vault in Documents, ~/Dropbox linking to CloudStorage),
     isn't read again."""
     notes = {} if notes is None else notes
+    selected_drive_paths = {Path(os.path.realpath(p)) for p in selected_drive_paths}
     out, real = [], []
     for label, p in [*ROOTS.items(), *cloud_drives(), *(("Obsidian", v) for v in obsidian_vaults())]:
         r = Path(os.path.realpath(p))
         if label == "Obsidian" and r.parts[1:2] == ("Volumes",):  # another disk: macOS would ask first
+            if any(r == q or q in r.parents for q in selected_drive_paths):
+                continue  # the drive walk below reads this vault as part of its volume
             notes["vaults_on_other_disks"] = notes.get("vaults_on_other_disks", 0) + 1
             continue
         if not r.is_dir() or any(r == q or q in r.parents for q in real):
@@ -348,7 +471,7 @@ def roots(notes=None):
     return out, set(real)
 
 
-def walk(root, skip=SKIP_DIRS, others=(), notes=None, left=None, downloads=False):
+def walk(root, skip=SKIP_DIRS, others=(), notes=None, left=None, downloads=False, drive=False):
     """Every file under root, with how many of each kind its folder has. A folder that is another root (OneDrive
     holding Documents) is left to that one. Not walked: a folder only in the cloud (listing it would download the list,
     and its files aren't here to read), and an unzipped export (left, with its path, in `left`)."""
@@ -357,16 +480,32 @@ def walk(root, skip=SKIP_DIRS, others=(), notes=None, left=None, downloads=False
     if cloud_only(root):
         notes["folders_in_the_cloud_only"] = notes.get("folders_in_the_cloud_only", 0) + 1
         return
-    for dp, dns, fns in os.walk(root):
+    skip = set(skip) | (DRIVE_SKIP_DIRS if drive else set())
+    corpus_real = Path(os.path.realpath(CORPUS))
+    def onerror(error):
+        if drive and _not_allowed(error):
+            notes["drives_not_allowed"] = notes.get("drives_not_allowed", 0) + 1
+            return
+        raise error
+
+    for dp, dns, fns in os.walk(root, onerror=onerror):
+        if drive and dp != str(root) and (".git" in dns + fns or PROJECT_FILES & set(fns)):  # code (a repo, a worktree,
+            # a copy of one without its .git): what ~/dev or ~/code is on the Mac, read by git_commits, not as documents
+            notes["drive_repos"] = notes.get("drive_repos", 0) + 1
+            dns[:] = []
+            continue
         if dp != str(root) and looks_like_export(dp, dns, fns, downloads):
             left.append(dp)
             notes["unzipped_exports"] = notes.get("unzipped_exports", 0) + 1
             dns[:] = []
             continue
         dns[:] = [d for d in dns if d not in skip and not d.startswith(".")
+                  and not (drive and d.endswith(".noindex"))
                   and not d.endswith((".app", ".photoslibrary", ".framework", ".bundle", ".xcodeproj", ".logicx"))
                   and not (d.endswith("_files") and {d[:-6] + ".html", d[:-6] + ".htm"} & set(fns))  # a saved page's parts
-                  and not (Path(dp, d) == ROOT / "corpus") and Path(dp, d) not in others]
+                  and not (Path(dp, d) == ROOT / "corpus")
+                  and not (Path(os.path.realpath(Path(dp, d))) == corpus_real)
+                  and Path(dp, d) not in others]
         for d in [d for d in dns if cloud_only(os.path.join(dp, d))]:
             dns.remove(d)
             notes["folders_in_the_cloud_only"] = notes.get("folders_in_the_cloud_only", 0) + 1
@@ -379,6 +518,46 @@ def walk(root, skip=SKIP_DIRS, others=(), notes=None, left=None, downloads=False
         for d in list(dns):  # .logicx / package-style projects appear as directories
             if d.endswith(".logicx"):
                 yield Path(dp, d), counts
+
+
+def drive_config():
+    """Read the optional external-drive policy from ``corpus/drives.json``."""
+    config = read_json(CORPUS / "drives.json", {})
+    return config if isinstance(config, dict) else {}
+
+
+def selected_drives(available, config=None):
+    """Apply the drives.json policy; a matching skip always wins over read."""
+    config = drive_config() if config is None else config
+    auto = config.get("auto", True) is not False
+    read_values = config.get("read", [])
+    skip_values = config.get("skip", [])
+    read_values = [read_values] if isinstance(read_values, (str, int)) else read_values or []
+    skip_values = [skip_values] if isinstance(skip_values, (str, int)) else skip_values or []
+    read = {str(v) for v in read_values if v is not None}
+    skip = {str(v) for v in skip_values if v is not None}
+
+    def matches(values, name, volume_uuid):
+        return any(value == candidate or value.casefold() == candidate.casefold()
+                   for value in values for candidate in (name, volume_uuid) if candidate)
+
+    return [entry for entry in available
+            if not matches(skip, entry[0], entry[2])
+            and (auto or matches(read, entry[0], entry[2]))]
+
+
+def _vault_meta(path, vaults):
+    real = Path(os.path.realpath(path))
+    for vault in vaults:
+        root = Path(os.path.realpath(vault))
+        if real == root or root in real.parents:
+            return {"vault": root.name}
+    return {}
+
+
+def _not_allowed(error):
+    return isinstance(error, PermissionError) or getattr(error, "errno", None) == errno.EPERM \
+        or "operation not permitted" in str(error).lower()
 
 
 def main():
@@ -394,20 +573,48 @@ def main():
     forget = lambda rec: any(str((rec.get("meta") or {}).get("path") or rec.get("id") or "").startswith(d.rstrip("/") + "/")  # noqa: E731
                              for d in left)
     with Writer("documents", AVENUE, forget=forget) as w:
-        folders, real = roots(w.notes)
+        available_drives = drives(w.notes)
+        selected = selected_drives(available_drives)
+        selected_paths = [mount for _, mount, _ in selected]
+        folders, real = roots(w.notes, selected_paths)
+        drive_by_root = {}
+        for name, mount, volume_uuid in selected:
+            root_real = Path(os.path.realpath(mount))
+            if not any(root_real == existing or existing in root_real.parents for existing in real):
+                folders.append((name, mount))
+                real.add(root_real)
+            drive_by_root[root_real] = (name, volume_uuid)
         real |= {Path(p) for _, p in folders}  # each root as found too: a walk meets them by that path, not the real one
+        vaults = obsidian_vaults()
         for label, root in folders:
-            drive = label not in ROOTS and label != "Obsidian"  # a cloud drive's folder
-            away = label if drive else "iCloud" if label in ROOTS else "the cloud"  # where a file not downloaded is
-            only = "in_cloud_drive_only" if drive else "in_icloud_only"
+            root_real = Path(os.path.realpath(root))
+            external = drive_by_root.get(root_real)
+            cloud_drive = label not in ROOTS and label != "Obsidian" and external is None
+            away = label if cloud_drive else "iCloud" if label in ROOTS else "the cloud"  # where a file not downloaded is
+            only = "in_cloud_drive_only" if cloud_drive else "in_icloud_only"
             vault = {"vault": Path(root).name} if label == "Obsidian" else {}
-            others = real - {Path(os.path.realpath(root)), Path(root)} | not_mine(label, root)
+            drive_meta = {"drive": external[0], "drive_id": external[1]} if external else {}
+            drive_vaults = [v for v in vaults if external and Path(os.path.realpath(v)).is_relative_to(root_real)]
+            others = real - {root_real, Path(root)} | not_mine(label, root)
             if label == "Obsidian" and LIB.is_relative_to(Path(root)):
                 others |= {LIB}  # a vault set at your home folder: never ~/Library
             left += [str(p) for p in others - real]
+            if external:
+                try:
+                    with os.scandir(root):
+                        pass
+                except OSError as e:
+                    if _not_allowed(e):
+                        w.notes["drives_not_allowed"] = w.notes.get("drives_not_allowed", 0) + 1
+                        continue
+                    if not Path(root).exists():
+                        continue  # unplugged between discovery and the walk
+                    raise
             for path, counts in walk(root, VAULT_SKIP if label == "Obsidian" else SKIP_DIRS, others, w.notes, left,
-                                     downloads=label == "Downloads"):
+                                     downloads=label == "Downloads" or external is not None, drive=external is not None):
                 name = path.name
+                path_vault = (vault or _vault_meta(path, drive_vaults)) if drive_vaults else vault
+                record_drive = drive_meta
                 if name.endswith(".icloud"):  # not downloaded: ".Name.ext.icloud"
                     real_name = name[1:-len(".icloud")] if name.startswith(".") else name[:-len(".icloud")]
                     ext = os.path.splitext(real_name)[1].lower()
@@ -415,7 +622,8 @@ def main():
                         st = path.stat()
                         w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=real_name,
                               text=f"{real_name} (in iCloud, not downloaded)", thread=label, thread_name=str(path.parent),
-                              meta={"root": label, "path": str(path.parent / real_name), "downloaded": False, **vault})
+                              meta={"root": label, "path": str(path.parent / real_name), "downloaded": False,
+                                    **record_drive, **path_vault})
                     continue
                 ext = path.suffix.lower()
                 try:
@@ -427,14 +635,16 @@ def main():
                           text=f"{ONLINE_EXT[ext]}: {path.stem}\nFolder: {path.parent.name}", thread=label,
                           thread_name=str(path.parent),
                           meta={"root": label, "path": str(path), "type": ONLINE_EXT[ext], "online": True,
-                                "created": from_unix(getattr(st, "st_birthtime", 0))})
+                                "created": from_unix(getattr(st, "st_birthtime", 0)),
+                                **record_drive, **path_vault})
                     continue
                 if cloud_only(path):  # reading it would download it: its name and dates only
                     if (ext in TEXT_EXT or ext in CREATIVE_EXT) and str(path) not in before \
                             and not (ext in FEW_PER_FOLDER and counts[ext] > 5):
                         w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=name,
                               text=f"{name} (in {away}, not downloaded)", thread=label, thread_name=str(path.parent),
-                              meta={"root": label, "path": str(path), "downloaded": False, "bytes": st.st_size, **vault})
+                              meta={"root": label, "path": str(path), "downloaded": False, "bytes": st.st_size,
+                                    **record_drive, **path_vault})
                     w.notes[only] = w.notes.get(only, 0) + 1
                     continue
                 if ext in CREATIVE_EXT:
@@ -442,7 +652,8 @@ def main():
                           title=path.stem, text=f"{CREATIVE_EXT[ext]}: {path.stem}\nFolder: {path.parent.name}",
                           thread=label, thread_name=str(path.parent),
                           meta={"root": label, "path": str(path), "type": CREATIVE_EXT[ext], "bytes": st.st_size,
-                                "created": from_unix(getattr(st, "st_birthtime", 0))})
+                                "created": from_unix(getattr(st, "st_birthtime", 0)),
+                                **record_drive, **path_vault})
                     continue
                 if ext not in TEXT_EXT or st.st_size > MAX_BYTES or st.st_size == 0:
                     continue
@@ -472,7 +683,7 @@ def main():
                                               ("created", from_unix(getattr(st, "st_birthtime", 0))),
                                               ("error", err), ("chars", len(text)),
                                               ("left_out", "passwords or codes: only its name is kept" if secret else None),
-                                              *vault.items()) if v})
+                                              *record_drive.items(), *path_vault.items()) if v})
     write_atomic(READ, json.dumps({"reader": READER, "files": files}))
 
 
