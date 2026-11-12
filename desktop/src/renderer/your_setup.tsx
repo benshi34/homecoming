@@ -1,9 +1,10 @@
 // Your Setup: who you are and what's on this Mac that Homecoming uses, each with a way to change it. Who you are (seen
-// and changed here, with any new finds to look at), the region your phone numbers are in, your iPhone, the browsers
-// it reads and opens pages in, and Mail's accounts. Everything starts as what was found; a choice here replaces it
+// and changed here, with any new finds to look at), the region your phone numbers are in, your iPhone, your drives,
+// the browsers it reads and opens pages in, and Mail's accounts. Everything starts as what was found; a choice here replaces it
 // (src/shared/setup.ts). How Homecoming works is in General; what AI does (Claude's browser and inboxes too), in AI Settings.
 
 import { type ReactNode, useEffect, useState } from 'react';
+import { bytes } from '../shared/format.ts';
 import type { Settings, Snapshot } from '../shared/types.ts';
 import { api } from './api.ts';
 import { GlyphTile } from './icons.tsx';
@@ -41,14 +42,36 @@ export function YourSetupPage({ snap, toolbar, onSource, editing, onEdited }: { 
       <div className="scroll">
         <div className="ai-page">
           <div className="ai-hero"><GlyphTile glyph="laptop" color="gray" size={40} /><h2>Your Setup</h2>
-            <p>Who you are, and what's on this Mac that Homecoming uses: your iPhone, your browsers and Mail. Change anything that's wrong; the rest stays as found.</p></div>
+            <p>Who you are, and what's on this Mac that Homecoming uses: your iPhone, your drives, your browsers and Mail. Change anything that's wrong; the rest stays as found.</p></div>
           <You snap={snap} editing={editing} onEdited={onEdited} />
           <Phone snap={snap} />
+          <Drives snap={snap} />
           <Browsers snap={snap} />
           <Email snap={snap} onSource={onSource} />
         </div>
       </div>
     </div>
+  );
+}
+
+function Drives({ snap }: { snap: Snapshot }) {
+  const drives = snap.setup.drives;
+  if (!drives.length) return null;
+  return (
+    <Group title="Drives" testId="setup-drives">
+      {drives.map((d) => {
+        const key = d.uuid || d.name;
+        const subtitle = d.connected && d.size !== null && d.used !== null
+          ? `${bytes(d.used)} used · ${bytes(d.size)} total`
+          : 'Not connected';
+        return (
+          <GroupRow key={key} icon={<GlyphTile glyph="drive" color={d.read ? 'blue' : 'gray'} />} title={d.name}
+            subtitle={subtitle} chevron={false} testId={`setup-drive-${key}`}
+            trailing={<Toggle checked={d.read} label={`Read ${d.name}`} testId={`toggle-drive-${key}`}
+              onChange={(read) => void api.action('*', 'drive-set', { uuid: d.uuid, read })} />} />
+        );
+      })}
+    </Group>
   );
 }
 
