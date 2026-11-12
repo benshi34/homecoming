@@ -614,13 +614,15 @@ def main():
                                      downloads=label == "Downloads" or external is not None, drive=external is not None):
                 name = path.name
                 path_vault = (vault or _vault_meta(path, drive_vaults)) if drive_vaults else vault
+                # On a drive, kept by the drive's UUID and the path on it: renaming the drive doesn't make every file new
+                rid = f"drive:{external[1]}/{path.relative_to(root)}" if external and external[1] else str(path)
                 record_drive = drive_meta
                 if name.endswith(".icloud"):  # not downloaded: ".Name.ext.icloud"
                     real_name = name[1:-len(".icloud")] if name.startswith(".") else name[:-len(".icloud")]
                     ext = os.path.splitext(real_name)[1].lower()
                     if (ext in TEXT_EXT or ext in CREATIVE_EXT) and not (ext in FEW_PER_FOLDER and counts[ext] > 5):
                         st = path.stat()
-                        w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=real_name,
+                        w.add(id=rid, kind="document", ts=from_unix(st.st_mtime), author="me", title=real_name,
                               text=f"{real_name} (in iCloud, not downloaded)", thread=label, thread_name=str(path.parent),
                               meta={"root": label, "path": str(path.parent / real_name), "downloaded": False,
                                     **record_drive, **path_vault})
@@ -631,7 +633,7 @@ def main():
                 except OSError:
                     continue
                 if ext in ONLINE_EXT:  # the document itself is online: on disk, only a link to it (not opened)
-                    w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=path.stem,
+                    w.add(id=rid, kind="document", ts=from_unix(st.st_mtime), author="me", title=path.stem,
                           text=f"{ONLINE_EXT[ext]}: {path.stem}\nFolder: {path.parent.name}", thread=label,
                           thread_name=str(path.parent),
                           meta={"root": label, "path": str(path), "type": ONLINE_EXT[ext], "online": True,
@@ -639,16 +641,16 @@ def main():
                                 **record_drive, **path_vault})
                     continue
                 if cloud_only(path):  # reading it would download it: its name and dates only
-                    if (ext in TEXT_EXT or ext in CREATIVE_EXT) and str(path) not in before \
+                    if (ext in TEXT_EXT or ext in CREATIVE_EXT) and rid not in before \
                             and not (ext in FEW_PER_FOLDER and counts[ext] > 5):
-                        w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=name,
+                        w.add(id=rid, kind="document", ts=from_unix(st.st_mtime), author="me", title=name,
                               text=f"{name} (in {away}, not downloaded)", thread=label, thread_name=str(path.parent),
                               meta={"root": label, "path": str(path), "downloaded": False, "bytes": st.st_size,
                                     **record_drive, **path_vault})
                     w.notes[only] = w.notes.get(only, 0) + 1
                     continue
                 if ext in CREATIVE_EXT:
-                    w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", is_me=True,
+                    w.add(id=rid, kind="document", ts=from_unix(st.st_mtime), author="me", is_me=True,
                           title=path.stem, text=f"{CREATIVE_EXT[ext]}: {path.stem}\nFolder: {path.parent.name}",
                           thread=label, thread_name=str(path.parent),
                           meta={"root": label, "path": str(path), "type": CREATIVE_EXT[ext], "bytes": st.st_size,
@@ -664,7 +666,7 @@ def main():
                     continue
                 sig = [st.st_size, st.st_mtime_ns]
                 files[str(path)] = sig
-                if was.get(str(path)) == sig and str(path) in before:
+                if was.get(str(path)) == sig and rid in before:
                     continue  # unchanged since it was read: its record carries over
                 try:
                     text = extract(path, ext) or ""
@@ -677,7 +679,7 @@ def main():
                     text = ""
                     w.notes["password_files"] = w.notes.get("password_files", 0) + 1
                 text = re.sub(r"[ \t]+", " ", text).strip()[:MAX_CHARS]
-                w.add(id=str(path), kind="document", ts=from_unix(st.st_mtime), author="me", title=name,
+                w.add(id=rid, kind="document", ts=from_unix(st.st_mtime), author="me", title=name,
                       text=text or name, thread=label, thread_name=str(path.parent),
                       meta={k: v for k, v in (("root", label), ("path", str(path)), ("ext", ext), ("bytes", st.st_size),
                                               ("created", from_unix(getattr(st, "st_birthtime", 0))),

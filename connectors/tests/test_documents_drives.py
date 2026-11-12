@@ -122,6 +122,20 @@ class DriveTests(unittest.TestCase):
         self.run_documents()
         self.assertEqual([r["text"] for r in records(self.corpus)], ["stays after unplug"])
 
+    def test_renaming_a_drive_keeps_one_record_per_file(self):
+        drive = self.volumes / "Old Name"
+        drive.mkdir()
+        (drive / "letters").mkdir()
+        (drive / "letters/to-grandma.md").write_text("dear grandma")
+        info = lambda name: {name: {"VolumeName": name, "VolumeUUID": "same-uuid"}}
+        self.run_documents(info("Old Name"))
+        drive.rename(self.volumes / "New Name")
+        self.run_documents(info("New Name"))
+        rs = records(self.corpus)
+        self.assertEqual([r["id"] for r in rs], ["drive:same-uuid/letters/to-grandma.md"])
+        self.assertEqual(rs[0]["meta"]["drive"], "New Name")
+        self.assertTrue(rs[0]["meta"]["path"].endswith("/New Name/letters/to-grandma.md"))
+
     def test_corpus_inside_drive_is_not_walked_and_vault_meta_survives(self):
         drive = self.volumes / "VaultDrive"
         drive.mkdir()
