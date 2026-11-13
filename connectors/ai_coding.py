@@ -4,12 +4,13 @@ Keeps the user's prompts, the assistant's visible replies, and tool calls the us
 (with their stated reason), which are direct preference signals. Thinking blocks and tool
 I/O are dropped."""
 
+import fnmatch
 import json
 import os
 import sqlite3
 from pathlib import Path
 
-from common import HOME, LIB, Writer, from_unix, snapshot_sqlite
+from common import CORPUS, HOME, LIB, Writer, from_unix, snapshot_sqlite
 
 AVENUE = ("Local JSONL. Claude Code: ~/.claude/projects/<cwd-slug>/<session>.jsonl (CLI and the desktop "
           "app's Code tab share this). Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, thread names in "
@@ -26,6 +27,43 @@ AGENT_FOLDER = "homecoming-agent-"  # export_agent.ts's working folders; Claude 
 NOISE_PREFIXES = ("<command-", "<local-command", "<task-notification", "<system-reminder", "Caveat: The messages",
                   "[Request interrupted", "<environment_context", "<user_instructions", "# AGENTS.md",
                   "<permissions instructions", "<turn_aborted")
+
+
+def _folder(path):
+    """A folder as one spelling: ~ expanded, macOS's /private/var and /private/tmp read as /var and /tmp."""
+    path = os.path.normpath(os.path.expanduser(str(path))) if path else ""
+    for alias in ("/private/var", "/private/tmp"):
+        if path == alias or path.startswith(alias + "/"):
+            return path[len("/private"):]
+    return path
+
+
+def leave_out():
+    """Folders whose sessions aren't read, from $CORPUS_DIR/ai_coding.json: {"leave_out": ["~/dev/scratch-*", ...]}.
+    Each is a folder or a glob (fnmatch), and a session run there or anywhere under it is left out. For sessions
+    that aren't yours to keep, such as eval runs and scripted agents' throwaway folders."""
+    try:
+        conf = json.loads((CORPUS / "ai_coding.json").read_text())
+    except (OSError, ValueError):
+        return []
+    pats = conf.get("leave_out") if isinstance(conf, dict) else None
+    return [_folder(p) for p in pats if isinstance(p, str) and p.strip()] if isinstance(pats, list) else []
+
+
+LEAVE_OUT = leave_out()
+
+
+def left_out(cwd):
+    cwd = _folder(cwd)
+    return bool(cwd) and any(fnmatch.fnmatchcase(cwd, p) or fnmatch.fnmatchcase(cwd, p.rstrip("/") + "/*")
+                             for p in LEAVE_OUT)
+
+
+def _skip(w, cwd):
+    if left_out(cwd):
+        w.notes["sessions_in_folders_left_out"] = w.notes.get("sessions_in_folders_left_out", 0) + 1
+        return True
+    return False
 
 
 def _lines(f):
@@ -60,6 +98,8 @@ def claude_code(w):
             w.notes["homecoming_agent_sessions"] = w.notes.get("homecoming_agent_sessions", 0) + 1
             continue
         lines = _lines(f)
+        if _skip(w, next((r.get("cwd") for r in lines if r.get("cwd")), None)):
+            continue
         title = next((r.get("customTitle") or r.get("title") for r in reversed(lines) if r.get("type") == "custom-title"), None)
         tool_names = {}
         for r in lines:
@@ -150,11 +190,14 @@ def codex(w):
         ready = [x for x in files if x[0] not in done and (not x[3] or x[3] not in sessions or x[3] in said or x[3] == x[1])]
         for f, sid, cwd, forked, start, msgs in ready or [x for x in files if x[0] not in done]:
             done.add(f)
+            out = _skip(w, cwd)  # still read into said: a fork elsewhere begins with a copy of it, left out too
             skip = _copied(msgs, said.get(forked, []), start) if forked and forked != sid else 0
             mine = said.setdefault(sid, [])
             rest = msgs[skip:]
             for role, text, ts in rest[_copied(rest, mine, start):]:
                 mine.append((role, text, ts))
+                if out:
+                    continue
                 me = role == "user"
                 w.add(id=f"codex:{sid}:{len(mine)}", kind="ai_turn", ts=ts, author="me" if me else "codex",
                       is_me=me, thread=sid, thread_name=names.get(sid), text=text, meta={"cwd": cwd, "tool": "codex"})
@@ -277,8 +320,13 @@ def agent_session(rec):
     return meta.get("tool") == "claude-code" and AGENT_FOLDER in str(meta.get("cwd") or "")
 
 
+def forget(rec):
+    """What an earlier run kept that isn't read any more: Do It for Me's sessions, and those in a left-out folder."""
+    return agent_session(rec) or left_out((rec.get("meta") or {}).get("cwd"))
+
+
 def main():
-    with Writer("ai_coding", AVENUE, forget=agent_session) as w:
+    with Writer("ai_coding", AVENUE, forget=forget) as w:
         claude_code(w)
         codex(w)
         cursor(w)
