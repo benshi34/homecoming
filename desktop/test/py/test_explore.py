@@ -488,6 +488,17 @@ class ExploreCited(unittest.TestCase):
         self.assertEqual(by["Loved “Yes! 7:30, I booked a table.”"]["kind"], "reaction")
         self.assertIsNone(t["messages"][0]["ts"], "the one whose time was lost: no made-up time")
 
+    def test_a_tapback_shows_on_its_message_and_a_reply_what_it_answers(self):
+        t = self.run_explore("thread", str(self.rowid("Yes! 7:30%")))
+        by = {m["text"]: m for m in t["messages"]}
+        yes = by["Yes! 7:30, I booked a table."]
+        self.assertEqual((yes["reply"], yes["reactions"]), ("Are we still on for dinner at Tasca on Friday?", [{"who": "Grace Hopper", "reaction": "‼️"}]))
+        self.assertNotIn("Emphasized “Yes! 7:30, I booked a table.”", by, "on its message, not a line of its own")
+        self.assertNotIn("Liked “Yes! 7:30, I booked a table.”", by, "nor the one it replaced")
+        self.assertIn("Loved “Yes! 7:30, I booked a table.”", by, "one whose message isn't known still is")
+        opened = self.run_explore("thread", str(self.rowid("Emphasized%")))
+        self.assertIn("Emphasized “Yes! 7:30, I booked a table.”", [m["text"] for m in opened["messages"]], "the one opened is shown")
+
     def test_reactions_kept_on_a_message_and_a_group(self):
         t = self.run_explore("thread", str(self.rowid("Chapter 7%")))
         self.assertEqual((t["name"], t["app"], t["group"]), ("Book club", "Instagram", True))

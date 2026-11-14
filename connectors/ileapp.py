@@ -523,6 +523,14 @@ def write_artifact(w, module, category, a, con, media, nicknames, names, chosen,
                 if "senders" not in cache:
                     cache["senders"] = whatsapp.group_senders()
                 sender = whatsapp.group_sender(cache["senders"], chat, text, r.get(conv.get("timeColumn"))) or "someone in the group"
+            if key == "whatsAppMessages":
+                # what iLEAPP doesn't read: its reactions and what it replies to, from WhatsApp's database, by chat, text and time
+                if "extras" not in cache:
+                    cache["extras"] = whatsapp.phone_extras()
+                found = whatsapp.group_sender({(chat, text or ""): [(u, json.dumps(m)) for u, m in cache["extras"].get((chat, text or ""), [])]},
+                                              chat, text, r.get(conv.get("timeColumn")))
+                if found:
+                    meta.update(json.loads(found))
             if files and not text:
                 text = f"[{len(files)} attachment{'s' * (len(files) > 1)}]"
             w.add(id=rid, kind="message", ts=iso(r.get(conv.get("timeColumn")), plausible=True), is_me=sent,
