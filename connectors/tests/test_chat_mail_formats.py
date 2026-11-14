@@ -84,6 +84,46 @@ class Base(unittest.TestCase):
         return {x for g in self.manifest.get("_imports_unclaimed", []) for x in g["examples"]}
 
 
+# ---------------------------------------------------------------- Telegram
+
+class TelegramTests(Base):
+    def export(self):
+        U = 1767600000
+        chat = {"name": "Theo Laurent", "type": "personal_chat", "id": 4401, "messages": [
+            {"id": 1, "type": "message", "date": "2026-01-05T08:00:00", "date_unixtime": str(U), "from": "Theo Laurent", "from_id": "user77",
+             "text": ["Tide at ", {"type": "bold", "text": "six"}, "?"],
+             "reactions": [{"type": "emoji", "count": 3, "emoji": "👍", "recent": [{"from": "Ada Lovelace", "from_id": "user11", "date": "2026-01-05T08:01:00"}]}]},
+            {"id": 2, "type": "message", "date_unixtime": str(U + 60), "from": "Ada Lovelace", "from_id": "user11", "text": "yes, at the pier",
+             "reply_to_message_id": 1, "edited_unixtime": str(U + 90)},
+            {"id": 3, "type": "message", "date_unixtime": str(U + 120), "from": "Theo Laurent", "from_id": "user77", "text": "",
+             "photo": "photos/photo_1@05-01-2026_08-02-00.jpg", "width": 800, "height": 600},
+            {"id": 4, "type": "service", "date_unixtime": str(U + 180), "actor": "Theo Laurent", "actor_id": "user77", "action": "phone_call", "text": ""}]}
+        group = {"name": "Pier club", "type": "private_supergroup", "id": 5502, "messages": [
+            {"id": 9, "type": "message", "date_unixtime": str(U + 300), "from": "Mo Reyes", "from_id": "user88", "text": "who's in?",
+             "reply_to_message_id": 1, "reply_to_peer_id": "channel999"}]}
+        self.files("Telegram Desktop/DataExport_2026-01-06", {
+            "result.json": {"personal_information": {"user_id": 11, "first_name": "Ada"}, "chats": {"list": [chat, group]}},
+            "photos/photo_1@05-01-2026_08-02-00.jpg": b"\xff\xd8\xff\xe0 a made-up jpeg"})
+
+    def test_chats_replies_reactions_edits_and_files(self):
+        self.export()
+        self.run_import()
+        msgs = {r["id"]: r for r in self.of("telegram")}
+        one, two, three = msgs["4401:1"], msgs["4401:2"], msgs["4401:3"]
+        self.assertEqual((one["text"], one["author"], one["thread_name"], one["participants"]), ("Tide at six?", "Theo Laurent", "Theo Laurent", ["Theo Laurent"]))
+        self.assertEqual(one["meta"]["reactions"], [{"who": "me", "reaction": "👍", "ts": "2026-01-05T08:01:00"}, {"reaction": "👍"}, {"reaction": "👍"}],
+                         "each person listed, the rest by count")
+        self.assertEqual((two["author"], two["is_me"], two["meta"]["reply_to"], two["meta"]["reply_text"]), ("me", True, "4401:1", "Tide at six?"))
+        self.assertEqual(two["meta"]["edited"], "2026-01-05T08:01:30Z")
+        self.assertEqual(three["text"], "[photo: photo_1@05-01-2026_08-02-00.jpg]")
+        self.assertTrue((self.corpus / three["meta"]["files"][0]).exists() if not three["meta"]["files"][0].startswith("/") else Path(three["meta"]["files"][0]).exists())
+        self.assertEqual(msgs["4401:4"]["kind"], "event")
+        g = msgs["5502:9"]
+        self.assertEqual((g["meta"]["group"], g.get("participants")), (True, None))
+        self.assertNotIn("reply_to", g["meta"], "a reply to another chat's message isn't one to this chat's")
+        self.assertNotIn("photos/photo_1@05-01-2026_08-02-00.jpg", self.unclaimed())
+
+
 # ---------------------------------------------------------------- Slack
 
 T = 1767600000  # 2026-01-05T08:00:00Z
@@ -136,8 +176,8 @@ class SlackTests(Base):
         self.assertEqual((say_(0)["author"], say_(0)["text"], say_(0)["ts"]), ("me", "standup in 5", "2026-01-05T08:00:00Z"))
         self.assertNotIn(ts(1), got, "who joined isn't a message")
         self.assertEqual(say_(2)["text"], "Plan for #random? See the doc (https://example.com/doc) & @here")
-        self.assertEqual((say_(2)["author"], say_(2)["thread_name"], say_(2)["meta"]["reactions"]), ("Theo Laurent", "#general", {"thumbsup": 1}))
-        self.assertEqual((say_(3)["text"], say_(3)["meta"]["reply_to"]), ("Yes, @Theo Laurent, and @U09", ts(2)))
+        self.assertEqual((say_(2)["author"], say_(2)["thread_name"], say_(2)["meta"]["reactions"]), ("Theo Laurent", "#general", [{"who": "me", "reaction": "👍"}]))
+        self.assertEqual((say_(3)["text"], say_(3)["meta"]["reply_to"]), ("Yes, @Theo Laurent, and @U09", f"general:{ts(2)}"), "a reply names its parent's record")
         self.assertTrue(say_(4)["meta"]["edited"].startswith("2026-01-05T08:05"))
         self.assertEqual(say_(5)["text"], "Also here")
         self.assertEqual((say_(6)["author"], say_(6)["text"], say_(6)["meta"]["bot"], say_(6).get("is_me")),
@@ -148,6 +188,45 @@ class SlackTests(Base):
         self.assertEqual((say_(10)["meta"]["tier"], say_(10)["author"]), ("deleted", "Slackbot"))
         self.assertEqual(say_(11)["author"], "Riley Park")
         self.assertEqual(say_(12)["text"], "with a link preview https://example.com/x", "a link's preview is the link's, not the message's")
+
+    def test_slackdumps_export_files_and_a_reply_the_next_day(self):
+        jpeg = b"\xff\xd8\xff\xe0 made-up"
+        pic = {"id": "F0AAAAAAA", "name": "pier.jpg", "title": "pier.jpg", "mimetype": "image/jpeg"}
+        doc = {"id": "F0BBBBBBB", "name": "notes.txt", "title": "notes", "mimetype": "text/plain"}
+        self.zip("slack/slackdump_20260106_120000.zip", {
+            "users.json": USERS, "channels.json": [{"id": "C01", "name": "general", "members": ["U01", "U02"]}],
+            "dms.json": [{"id": "D01", "members": ["U01", "U02"]}],
+            "general/2026-01-05.json": [say(0, "U02", "the pier at dawn", thread_ts=ts(0), reply_count=1, files=[pic],
+                                            reactions=[{"name": "heart", "users": ["U01", "U02"], "count": 2}])],
+            "general/2026-01-06.json": [say(1500, "U01", "worth the early start", thread_ts=ts(0), parent_user_id="U02")],
+            "__uploads/F0AAAAAAA/pier.jpg": jpeg,  # slackdump's default (Mattermost) layout
+            "D01/2026-01-05.json": [say(5, "U01", "", files=[doc])],
+            "D01/attachments/F0BBBBBBB-notes.txt": "bring the tripod",  # its standard layout
+            "__uploads/F0CCCCCCC/stray.bin": b"no message names it"})
+        self.run_import()
+        got = {r["id"]: r for r in self.of("slack")}
+        first, reply = got[f"general:{ts(0)}"], got[f"general:{ts(1500)}"]
+        self.assertEqual(first["meta"]["reactions"], [{"who": "me", "reaction": "❤️"}, {"who": "Theo Laurent", "reaction": "❤️"}])
+        self.assertEqual(first["meta"]["attachments"], ["pier.jpg"], "a file's name, whatever reactions it has")
+        self.assertEqual((first["meta"].get("group"), got[f"D01:{ts(5)}"]["meta"].get("group")), (True, None), "a channel is a group, a DM isn't")
+        self.assertEqual((reply["meta"]["reply_to"], reply["meta"]["reply_text"]), (f"general:{ts(0)}", "the pier at dawn"), "the file's copied: it shows as itself")
+        self.assertEqual(got[f"D01:{ts(5)}"]["text"], "[file: notes]", "nothing but a file: said in words")
+        for r, want in ((first, jpeg), (got[f"D01:{ts(5)}"], b"bring the tripod")):
+            with self.subTest(r["id"]):
+                f = Path(r["meta"]["files"][0])
+                self.assertEqual((f if f.is_absolute() else self.corpus / f).read_bytes(), want, "copied out of the export")
+        self.assertNotIn("__uploads/F0AAAAAAA/pier.jpg", self.unclaimed())
+
+    def test_slackdumps_dump_a_file_a_conversation(self):
+        first = say(0, "U02", "who's driving?", thread_ts=ts(0), reply_count=1)
+        first["slackdump_thread_replies"] = [dict(first), say(1, "U01", "I can", thread_ts=ts(0))]
+        self.files("slack/dump", {"users.json": USERS, "C0DUMP001.json": {"channel_id": "C0DUMP001", "name": "trips", "messages": [first]},
+                                  "C0NOTONE1.json": {"channel_id": "C0NOTONE1", "rows": []}})
+        self.run_import()
+        got = {r["id"]: r for r in self.of("slack")}
+        self.assertEqual(sorted(got), [f"C0DUMP001:{ts(0)}", f"C0DUMP001:{ts(1)}"], "the first message once, its reply from inside it")
+        reply = got[f"C0DUMP001:{ts(1)}"]
+        self.assertEqual((reply["author"], reply["thread_name"], reply["meta"]["reply_text"]), ("me", "#trips", "who's driving?"))
 
     def test_every_conversation_private_channels_dms_and_group_dms(self):
         self.files("slack/Lumen Labs export", {

@@ -101,6 +101,7 @@ AV = {
     "spotify": f"Spotify account > Privacy settings > Download your data: Account data (playlists, library, searches, ~5 days) and Extended streaming history (every play, ~days-30 days), which arrive separately. {DROP}",
     "whatsapp_export": f"WhatsApp on phone > chat > Export chat (without media), per chat. History retained on the phone comes from connectors/iphone.py via iLEAPP (phone_whatsapp). {DROP}",
     "slack": f"Slack workspace export (admin) or slackdump. {DROP}",
+    "telegram": f"Telegram Desktop > Settings > Advanced > Export Telegram data, Format: Machine-readable JSON (every chat, or one chat's > Export chat history). {DROP}",
     "zoom": f"Zoom web > Recordings > Cloud recordings > download transcript (.vtt). {DROP}",
     "notion_export": f"Notion > Settings > General > Export all workspace content (Markdown & CSV, include subpages). {DROP}",
     "imported_documents": f"Any other files (Google Drive via Takeout, Notion 'Export all workspace content'). {DROP}",
@@ -3336,6 +3337,98 @@ SLACK_EVENTS = {"channel_topic", "channel_purpose", "channel_name", "channel_arc
 SLACK_LINE = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] <([^<>\n]{1,80})> ?(.*)$")
 
 
+TELEGRAM_GROUPS = {"private_group", "private_supergroup", "public_supergroup", "private_channel", "public_channel"}
+
+
+def telegram_text(t):
+    """A message's text: a string, or a list of strings and entities ({type, text}), as Telegram writes it."""
+    if isinstance(t, str):
+        return t
+    return "".join(x if isinstance(x, str) else str(x.get("text") or "") if isinstance(x, dict) else "" for x in listish(t))
+
+
+def telegram(es, W, used):
+    """Telegram Desktop's export, as JSON (result.json): every chat (chats.list, and left_chats) or one chat's history,
+    each message's sender, the message it replies to (reply_to_message_id, in the same chat) and what it said, the
+    reactions on it (each person's, from reactions[].recent; past what's listed, by count), when it was edited, what
+    came with it (copied out, like other exports' attachments); service messages (joins, renames, calls) as events."""
+    by_path = {e.path: e for e in es}
+    for e in es:
+        if e.name != "result.json" or e.path in used:
+            continue
+        d = guarded(e, used, lambda e: e.json())
+        if not isinstance(d, dict):
+            continue
+        chats = [c for k in ("chats", "left_chats") for c in listish((d.get(k) or {}).get("list") if isinstance(d.get(k), dict) else None)]
+        if not chats and isinstance(d.get("messages"), list):
+            chats = [d]  # one chat's export
+        chats = [c for c in chats if isinstance(c, dict) and isinstance(c.get("messages"), list)]
+        if not chats:
+            continue
+        used.add(e.path)
+        me = (d.get("personal_information") or {}) if isinstance(d.get("personal_information"), dict) else {}
+        me_id = f"user{me['user_id']}" if me.get("user_id") else None
+        folder = posixpath.dirname(e.path)
+        w = W("telegram")
+        for c in chats:
+            cid = str(c.get("id") or c.get("name") or "chat")
+            group = c.get("type") in TELEGRAM_GROUPS
+            said = {}
+            people = sorted({str(m.get("from")) for m in c["messages"] if isinstance(m, dict) and m.get("from") and m.get("type") != "service"
+                             and not ((me_id and m.get("from_id") == me_id) or is_me_name(m.get("from")))})
+            for m in c["messages"]:
+                if not isinstance(m, dict) or m.get("id") is None:
+                    continue
+                mine = (me_id is not None and m.get("from_id") == me_id) or (c.get("type") == "saved_messages")
+                author = "me" if mine or is_me_name(m.get("from") or m.get("actor")) else m.get("from") or m.get("actor") or c.get("name")
+                ts = from_unix(number(m.get("date_unixtime"))) or m.get("date")
+                text = telegram_text(m.get("text"))
+                files = []
+                for k in ("photo", "file", "thumbnail"):
+                    rel = m.get(k)
+                    if isinstance(rel, str) and not rel.startswith("(") and k != "thumbnail":
+                        f = by_path.get(posixpath.join(folder, rel) if folder else rel)
+                        if f:
+                            used.add(f.path)
+                            saved = save_media(f, MEDIA / "telegram" / f.path, ts)
+                            if saved:
+                                files.append(saved)
+                        what = m.get("media_type") or ("photo" if k == "photo" else "file")
+                        text = "\n".join(x for x in (text, f"[{what.replace('_', ' ')}: {posixpath.basename(rel)}]") if x)
+                if m.get("sticker_emoji") and not text:
+                    text = f"[sticker {m['sticker_emoji']}]"
+                if isinstance(m.get("poll"), dict):
+                    text = f"[poll] {m['poll'].get('question') or ''}: " + " / ".join(str(a.get("text")) for a in listish(m["poll"].get("answers")) if isinstance(a, dict))
+                key = f"{cid}:{m['id']}"
+                said[m["id"]] = text
+                reactions = []
+                for r in listish(m.get("reactions")):
+                    if not isinstance(r, dict):
+                        continue
+                    shown = r.get("emoji") or ("custom emoji" if r.get("type") == "custom_emoji" else "paid" if r.get("type") == "paid" else None)
+                    recent = [x for x in listish(r.get("recent")) if isinstance(x, dict)]
+                    for x in recent:
+                        who = "me" if (me_id and x.get("from_id") == me_id) or is_me_name(x.get("from")) else x.get("from") or x.get("from_id")
+                        reactions.append({k: v for k, v in {"who": who, "reaction": shown, "ts": x.get("date")}.items() if v})
+                    reactions += [{"reaction": shown}] * max(0, int(number(r.get("count")) or 0) - len(recent))
+                reply = m.get("reply_to_message_id")
+                event = m.get("type") == "service"
+                if event:
+                    text = text or " ".join(x for x in (author, str(m.get("action") or "").replace("_", " "), m.get("title") or "") if x)
+                meta = {"group": group or None, "chat_type": c.get("type"),
+                        "reply_to": f"{cid}:{reply}" if reply is not None and not m.get("reply_to_peer_id") else None,
+                        "reply_text": (said.get(reply) or "")[:200] or None if reply is not None else None,
+                        "reactions": reactions or None, "edited": from_unix(number(m.get("edited_unixtime"))) or m.get("edited"),
+                        "forwarded_from": m.get("forwarded_from"), "via_bot": m.get("via_bot"), "files": files or None,
+                        "action": m.get("action") if event else None}
+                if w.has(key):
+                    continue
+                w.add(id=key, kind="event" if event else "message", ts=ts, author=author, is_me=author == "me",
+                      thread=cid, thread_name=c.get("name") or ("Saved Messages" if c.get("type") == "saved_messages" else cid),
+                      participants=people if not group else None, text=text or "[empty message]",
+                      meta={k: v for k, v in meta.items() if v is not None})
+
+
 def slack(es, W, used):
     """Slack exports (a workspace admin's, or slackdump's): users.json (org_users.json in an Enterprise Grid org's) names
     its people; channels.json, groups.json (private channels), dms.json and mpims.json (group DMs) its conversations;
@@ -3346,6 +3439,8 @@ def slack(es, W, used):
     for e in es:
         if e.name in SLACK_USERS or e.name in SLACK_LISTS:
             lists[(e.origin, posixpath.dirname(e.path))][e.name] = e
+    # slackdump's downloaded files: __uploads/<file id>/<name> (its default) or <conversation>/attachments/<file id>-<name>
+    uploads = {(e.origin, m.group(1) or m.group(2)): e for e in es for m in [SLACK_UPLOAD.search(e.path)] if m}
     exports = collections.defaultdict(list)
     for e in es:
         if not SLACK_DAY.search(e.path):
@@ -3361,8 +3456,50 @@ def slack(es, W, used):
             up = posixpath.dirname(up)
             found.update((n, x) for n, x in lists.get((origin, up), {}).items() if n in SLACK_USERS)
         if found or slack_days(days[0]):
-            slack_workspace(found, days, W, used)
+            slack_workspace(found, days, W, used, uploads)
+    slack_dumps(es, W, used, lists, uploads)
     slack_text(es, W, used)
+
+
+def slack_dump(e):
+    """slackdump's dump of one conversation, <id>.json: {channel_id, name, messages}, a thread's replies in its first
+    message's slackdump_thread_replies. None when it isn't one."""
+    d = e.json()
+    if not (isinstance(d, dict) and isinstance(d.get("channel_id"), str) and isinstance(d.get("messages"), list)):
+        return None
+    out = []
+    for m in d["messages"]:
+        if isinstance(m, dict):
+            out.append(m)
+            out += [r for r in listish(m.get("slackdump_thread_replies")) if isinstance(r, dict)]  # its first again: kept once
+    return d, out
+
+
+def slack_dumps(es, W, used, lists, uploads):
+    """slackdump's dump (slackdump dump <channel>): a file a conversation, named by its id, the people named by a
+    users.json beside it when there is one."""
+    for e in es:
+        if e.path in used or not re.fullmatch(r"[CDG][A-Z0-9]{6,}\.json", e.name):
+            continue
+        got = guarded(e, used, slack_dump)
+        if not got:
+            continue
+        used.add(e.path)
+        d, msgs = got
+        found = lists.get((e.origin, posixpath.dirname(e.path)), {})
+        users = {"USLACKBOT": "Slackbot"}
+        for n in SLACK_USERS:
+            if n in found:
+                used.add(found[n].path)
+                for u in guarded(found[n], used, slack_list) or []:
+                    p = u.get("profile") if isinstance(u.get("profile"), dict) else {}
+                    who = u.get("real_name") or p.get("real_name") or p.get("display_name") or u.get("name")
+                    if isinstance(u.get("id"), str) and who:
+                        users.setdefault(u["id"], str(who))
+        cid = d["channel_id"]
+        dm = cid.startswith("D")
+        convs = {cid: (str(d.get("name") or cid) if dm else f"#{d.get('name') or cid}", "dm" if dm else "channel", [])}
+        guarded(e, used, slack_day, W("slack"), users, convs, {cid: d.get("name") or cid}, {}, uploads, used, msgs, cid)
 
 
 def slack_days(e):
@@ -3378,7 +3515,10 @@ def slack_list(e):
     return [x for x in listish(e.json()) if isinstance(x, dict)]
 
 
-def slack_workspace(found, days, W, used):
+SLACK_UPLOAD = re.compile(r"(?:^|/)(?:__uploads/(F[A-Z0-9]{6,})/[^/]+|attachments/(F[A-Z0-9]{6,})-[^/]+)$")
+
+
+def slack_workspace(found, days, W, used, uploads=None):
     users = {"USLACKBOT": "Slackbot"}
     for n in SLACK_USERS:
         if n in found:
@@ -3404,9 +3544,10 @@ def slack_workspace(found, days, W, used):
             if c.get("id"):
                 names[c["id"]] = folder if what != "dm" else name
     w = W("slack")
-    for e in days:
+    said = {}  # a message's record id -> its text, for the replies to it (a thread's first message comes first)
+    for e in sorted(days, key=lambda e: e.path):
         used.add(e.path)
-        guarded(e, used, slack_day, w, users, convs, names)
+        guarded(e, used, slack_day, w, users, convs, names, said, uploads or {}, used)
 
 
 def slack_markup(s, users, names):
@@ -3463,13 +3604,26 @@ def slack_blocks(blocks, users, names):
     return "".join(out).strip()
 
 
-def slack_day(e, w, users, convs, names):
+# Slack's names for the emoji most used as reactions; another (a workspace's own) stays :its-name:
+SLACK_EMOJI = {"+1": "👍", "thumbsup": "👍", "-1": "👎", "thumbsdown": "👎", "heart": "❤️", "joy": "😂", "laughing": "😆",
+               "tada": "🎉", "eyes": "👀", "fire": "🔥", "pray": "🙏", "white_check_mark": "✅", "heavy_check_mark": "✔️",
+               "100": "💯", "raised_hands": "🙌", "clap": "👏", "smile": "😄", "slightly_smiling_face": "🙂", "rocket": "🚀",
+               "thinking_face": "🤔", "ok_hand": "👌", "sob": "😭", "wave": "👋", "sweat_smile": "😅", "heart_eyes": "😍",
+               "muscle": "💪", "pinched_fingers": "🤌", "saluting_face": "🫡", "skull": "💀", "x": "❌", "star": "⭐"}
+
+
+def slack_emoji(name):
+    base = name.split("::", 1)[0]  # "+1::skin-tone-3"
+    return SLACK_EMOJI.get(base, f":{base}:")
+
+
+def slack_day(e, w, users, convs, names, said=None, uploads=None, used=None, msgs=None, folder=None):
     """One conversation's day: its messages, threads (thread_ts, and a reply's own), edits, files, reactions and bots'
     posts. Who joined or left isn't kept; a channel's new topic or a pin is an event; a deleted message whose replies
     stay (tombstone) is kept, tagged as deleted mail is."""
-    folder = PurePosixPath(e.path).parent.name
+    folder = folder or PurePosixPath(e.path).parent.name
     name, what, people = convs.get(folder, (f"#{folder}", None, []))
-    for m in listish(e.json()):
+    for m in listish(e.json()) if msgs is None else msgs:
         if not isinstance(m, dict):
             continue
         sub, ts, uid = (m.get(k) if isinstance(m.get(k), str) else None for k in ("subtype", "ts", "user"))
@@ -3489,15 +3643,34 @@ def slack_day(e, w, users, convs, names):
                  if isinstance(a, dict) and (is_bot or not text or a.get("is_share") or a.get("is_msg_unfurl"))]
         files = [f for f in listish(m.get("files")) or ([m["file"]] if isinstance(m.get("file"), dict) else []) if isinstance(f, dict)]
         shown = [f.get("title") or f.get("name") for f in files]
-        text = "\n".join(x for x in (text, *notes, *(f"[file: {n}]" if n else "[a file Slack no longer keeps]" for n in shown)) if x)
+        saved, copied = [], set()
+        for f, n in zip(files, shown):
+            up = (uploads or {}).get((e.origin, f.get("id")))
+            if up and (path := save_media(up, MEDIA / "slack" / up.path, from_unix(number(ts)))):
+                used.add(up.path) if used is not None else None
+                saved.append(path)
+                copied.add(n)
+        # a file that's here shows as itself; one only named, or a message that's nothing but files, says so in words
+        text = "\n".join(x for x in (text, *notes, *(f"[file: {n}]" if n else "[a file Slack no longer keeps]"
+                                                      for n in shown if not (text and n in copied))) if x)
         thread = m.get("thread_ts")
         edited = m.get("edited") if isinstance(m.get("edited"), dict) else {}
-        reactions = {r["name"]: r.get("count") or len(listish(r.get("users"))) for r in listish(m.get("reactions"))
-                     if isinstance(r, dict) and isinstance(r.get("name"), str)}
+        # each person's, {who, reaction}, as every chat source keeps them; one with no users listed, once per count
+        reactions = []
+        for r in listish(m.get("reactions")):
+            if isinstance(r, dict) and isinstance(r.get("name"), str):
+                emoji = slack_emoji(r["name"])
+                who = [u for u in listish(r.get("users")) if isinstance(u, str)]
+                reactions += [{"who": "me" if is_me_name(users.get(u)) else users.get(u) or u, "reaction": emoji} for u in who] or \
+                    [{"reaction": emoji}] * max(1, int(r.get("count") or 1))
         me = is_me_name(author) and not is_bot
-        meta = {"thread_ts": thread, "reply_to": thread if thread and thread != ts else None, "replies": m.get("reply_count"),
-                "edited": from_unix(number(edited.get("ts"))), "reactions": reactions or None, "files": [n for n in shown if n] or None,
-                "bot": True if is_bot else None, "type": sub, "conversation": what,
+        parent = f"{folder}:{thread}" if thread and thread != ts else None
+        if said is not None:
+            said[key] = text
+        meta = {"thread_ts": thread, "reply_to": parent, "reply_text": (said or {}).get(parent, "")[:200] or None if parent else None,
+                "replies": m.get("reply_count"), "edited": from_unix(number(edited.get("ts"))), "reactions": reactions or None,
+                "attachments": [n for n in shown if n] or None, "files": saved or None,
+                "bot": True if is_bot else None, "type": sub, "conversation": what, "group": True if what and what != "dm" else None,
                 "tier": "deleted" if sub == "tombstone" else None}
         w.add(id=key, kind="event" if sub in SLACK_EVENTS else "message", ts=from_unix(number(ts)), author="me" if me else author,
               is_me=me, thread=folder, thread_name=name, participants=people if what in ("dm", "group dm") else None, text=text,
@@ -4435,7 +4608,7 @@ def other_files(es, W, used):
                       meta={"files": [path]})
 
 
-PARSERS = [ai_exports, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, zoom,
+PARSERS = [ai_exports, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, telegram, zoom,
            notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
 
 
