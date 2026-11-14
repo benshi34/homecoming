@@ -16,6 +16,15 @@ await Promise.all([
 ]);
 fs.copyFileSync('src/renderer/index.html', 'dist/renderer/index.html');
 fs.copyFileSync('src/renderer/styles.css', 'dist/renderer/styles.css');
+// Pictures and recordings of each export (../guides/<source id>/), shown beside its steps
+for (const id of fs.existsSync('../guides') ? fs.readdirSync('../guides') : []) {
+  const dir = path.join('../guides', id);
+  if (!fs.statSync(dir).isDirectory()) continue;
+  for (const f of fs.readdirSync(dir).filter((f) => /\.(png|jpe?g|webp|mp4|webm)$/i.test(f))) {
+    fs.mkdirSync(path.join('dist/renderer/guides', id), { recursive: true });
+    fs.copyFileSync(path.join(dir, f), path.join('dist/renderer/guides', id, f));
+  }
+}
 if (fs.existsSync('../CHANGELOG.md')) fs.copyFileSync('../CHANGELOG.md', 'dist/CHANGELOG.md');
 fs.writeFileSync('dist/build.json', JSON.stringify(buildInfo()));
 console.log('built dist/');

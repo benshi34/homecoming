@@ -2795,7 +2795,7 @@ export function Conversation({ rowid, onRecord, onDone, onExplore, onNone }: {
 
 // One message's bubbles, as Messages draws them: its picture (picture: undefined while it comes, null when it isn't
 // on this Mac), anything else that came with it by name, its text (up to three emoji alone, large), the reactions
-// kept on it, and "Edited", which shows what it said before where that's kept. In a conversation, and in the few
+// kept on it, what it replies to, and "Edited", which shows what it said before where that's kept. In a conversation, and in the few
 // messages an Ask answer shows (embeds.tsx).
 export function MessageBody({ m, picture, onRecord }: { m: ThreadMessage; picture: string | null | undefined; onRecord: (n: number) => void }) {
   const [earlier, setEarlier] = useState(false);
@@ -2809,6 +2809,7 @@ export function MessageBody({ m, picture, onRecord }: { m: ThreadMessage; pictur
         ? <div className={`bubble ${side} attachment`}><Glyph name="photo" size={13} />Photo</div>
         : <button className="msg-image" onClick={() => onRecord(m.rowid)} title="Open this message">{picture ? <img src={picture} alt="" draggable={false} /> : <Glyph name="photo" size={20} />}</button>)}
       {attached.map((a) => <div key={a} className={`bubble ${side} attachment`} data-testid="msg-attachment"><Glyph name={PICTURE.test(a) ? 'photo' : 'doc'} size={13} /><span className="truncate">{a}</span></div>)}
+      {m.reply && <div className={`msg-reply ${side}`} data-testid="msg-reply">{m.reply}</div>}
       {(m.text || (!m.image && !attached.length)) && (emojiOnly(m.text) ? <div className="bubble-emoji">{m.text}</div>
         : <div className={`bubble ${side} ${m.text ? '' : 'attachment'}`}>{m.text || <><Glyph name="doc" size={13} />Attachment</>}</div>)}
       {reactions.length > 0 && (

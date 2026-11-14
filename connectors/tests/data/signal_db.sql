@@ -19,7 +19,7 @@ INSERT INTO conversations VALUES ('c-alan', '{"type":"private"}', 0, 'private', 
 INSERT INTO conversations VALUES ('c-club', '{"type":"group","membersV2":[{"aci":"aaaaaaaa-0000-4000-8000-000000000001"},{"aci":"aaaaaaaa-0000-4000-8000-000000000002"},{"aci":"aaaaaaaa-0000-4000-8000-000000000003"}]}', 0, 'group', NULL, 'Tide club', NULL, NULL, NULL, NULL, NULL, 'group-1');
 
 INSERT INTO messages VALUES (1, 'm1', '{"reactions":[{"emoji":"❤️","fromId":"c-me","targetTimestamp":1767261600000,"timestamp":1767261700000}]}', 1767261600000, 'c-grace', 'incoming', 'high tide at 6?', 0, 0, 'aaaaaaaa-0000-4000-8000-000000000002', 0);
-INSERT INTO messages VALUES (2, 'm2', '{"quote":{"id":1767261600000,"authorAci":"aaaaaaaa-0000-4000-8000-000000000002"},"editHistory":[{"body":"yes"},{"body":"ys"}]}', 1767261660000, 'c-grace', 'outgoing', 'yes', 0, 0, NULL, 0);
+INSERT INTO messages VALUES (2, 'm2', '{"quote":{"id":1767261600000,"authorAci":"aaaaaaaa-0000-4000-8000-000000000002","text":"high tide at 6?"},"editHistory":[{"body":"yes"},{"body":"ys"}]}', 1767261660000, 'c-grace', 'outgoing', 'yes', 0, 0, NULL, 0);
 INSERT INTO messages VALUES (3, 'm3', '{}', 1767265200000, 'c-club', 'incoming', 'see you there', 0, 0, 'aaaaaaaa-0000-4000-8000-000000000003', 1);
 INSERT INTO messages VALUES (4, 'm4', '{"deletedForEveryone":true}', 1767265260000, 'c-club', 'incoming', NULL, 0, 0, 'aaaaaaaa-0000-4000-8000-000000000002', 0);
 INSERT INTO messages VALUES (5, 'm5', '{"poll":{"question":"Dinner?","options":["Thai","Pizza"],"allowMultiple":false,"votes":[]}}', 1767265320000, 'c-club', 'outgoing', NULL, 0, 0, NULL, 0);
