@@ -20,6 +20,7 @@ import { identityKeys, setPhoneRegion } from '../shared/identity.ts';
 import { inboxesFor, inboxUrl } from '../shared/inbox.ts';
 import { agentBrowser, agentProvider, agentReady, claudeInboxes, macDefault, pageBrowser, setupEnv, type AgentReady } from '../shared/setup.ts';
 import { buildNote, compareVersions, parseChangelog, type Release, whatsNewSince } from '../shared/version.ts';
+import { networkFile } from '../shared/network.ts';
 import type { AgentMode, AgentState, AppState, BuildInfo, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats, UpdateView } from '../shared/types.ts';
 import { agentLink } from '../shared/agent_link.ts';
 import { agentProfile, Ask, findClaude, findCodex, addShellPath } from './ask.ts';
@@ -357,10 +358,13 @@ function agentInstalled(): boolean {
 // sign-in of its own, so it's only Claude Code being there.
 const claudeBrowser = () => agentBrowser(probe?.browsers ?? [], store.state.settings.agentBrowser);
 const browserWord = () => claudeBrowser()?.name ?? 'Chrome';
+const OFFLINE_AGENT = 'Homecoming is offline. Turn on Use the internet to use Do It for Me.';
+const offline = () => store.state.settings.offline === true;
 function agentReadiness(): AgentReady {
   // The AI picked in AI Settings first: Do It for Me uses it, as Ask and making sense of a download do.
   const picked = agentProvider(store.state.ask.provider, providerLabel(store.state.ask.provider));
   if (!picked.ok) return picked;
+  if (offline()) return { ok: false, why: OFFLINE_AGENT, fix: 'offline' };
   if (process.env.UMP_AGENT_CMD) return agentInstalled() ? { ok: true } : agentReady({ claudeCode: false, browser: null });
   return agentReady({ claudeCode: agentInstalled(), browser: claudeBrowser(), signIn: (ask as Ask | undefined)?.signInState()['claude-code'] });
 }
@@ -379,8 +383,8 @@ const claudeKind = (): Snapshot['claude'] => {
 // model's address (checked now). Null when it can.
 async function agentBlocked(): Promise<string | null> {
   installed = null;
-  if (store.state.ask.provider === 'local' && (await ask.checkLocal(true)).changed) push();
-  const need = agentNeed({ ...askView(), local: ask.localStatus() });
+  if (!offline() && store.state.ask.provider === 'local' && (await ask.checkLocal(true)).changed) push();
+  const need = agentNeed({ ...askView(), local: ask.localStatus(), offline: offline() });
   return need && needText(need);
 }
 
@@ -692,6 +696,14 @@ function settingsView(): Snapshot['settings'] {
   return { ...s, background, openAtLogin: s.openAtLogin ?? background };
 }
 
+function writeNetworkFile() {
+  const file = path.join(P.corpus, 'network.json');
+  const tmp = `${file}.tmp`;
+  fs.mkdirSync(P.corpus, { recursive: true });
+  fs.writeFileSync(tmp, `${JSON.stringify(networkFile(store.state.settings), null, 2)}\n`);
+  fs.renameSync(tmp, file);
+}
+
 // ---------------------------------------------------------------- the Ask assistant
 
 let ask: Ask;
@@ -708,10 +720,10 @@ function askView(): Snapshot['ask'] {
     if (has[other]) store.update((s) => (s.ask.provider = other));
   }
   // The local model's server: looked at again now and then while it's the one picked (on this Mac only).
-  if (store.state.ask.provider === 'local') void ask.checkLocal().then((r) => r.changed && push());
+  if (!offline() && store.state.ask.provider === 'local') void ask.checkLocal().then((r) => r.changed && push());
   // Whether Claude Code and Codex are signed in: asked of them now and then (each says from what's on this Mac).
   void checkSignIns();
-  return { settings: store.state.ask, installed: installed.v, keys: { anthropic: ask.hasKey('anthropic'), openai: ask.hasKey('openai') }, local: ask.localStatus(),
+  return { settings: store.state.ask, offline: offline(), installed: installed.v, keys: { anthropic: ask.hasKey('anthropic'), openai: ask.hasKey('openai') }, local: ask.localStatus(),
     signIn: ask.signInState(), signingIn: signInView() };
 }
 
@@ -838,7 +850,7 @@ async function askOp(a: AskOp): Promise<unknown> {
     case 'check':
       // Look again: installed since, signed in since, or the local model's server opened.
       installed = null;
-      await Promise.all([ask.checkLocal(true), checkSignIns(true)]);
+      await Promise.all([offline() ? Promise.resolve() : ask.checkLocal(true), checkSignIns(true)]);
       push();
       return askView();
     case 'stop': return a.id && ask.stop(a.id);
@@ -1763,6 +1775,7 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
     // Ask for Everything: Claude asks for each of these, a few at once, unattended (what needs you comes in one notification at the end).
     case 'request-all': {
       if (aiOff()) return { ok: false, error: 'AI is off. Turn it on in AI Settings.' };
+      if (offline()) return { ok: false, error: OFFLINE_AGENT };
       if (!store.state.settings.agentExports) return { ok: false, error: 'Turn on Do It for Me first.' };
       if (!agentCan()) return { ok: false, error: cantAgent() };
       if (!claudeSettingsOk()) return CONFIRM;
@@ -1794,6 +1807,7 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       await checkBrowserSignIns();
       break;
     case 'open-sign-ins': {
+      if (offline()) return { ok: false, error: OFFLINE_AGENT };
       const ids = (payload.ids ?? []).filter((id) => BY_ID[id]?.url);
       if (DEMO) {
         demoSignIn(ids);
@@ -1842,6 +1856,7 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
     case 'agent-request':
     case 'agent-download':
       if (aiOff()) return { ok: false, error: 'AI is off. Turn it on in AI Settings.' };
+      if (offline()) return { ok: false, error: OFFLINE_AGENT };
       if (src.agentBlocked) return { ok: false, error: src.agentBlocked };
       if (!store.state.settings.agentExports) return { ok: false, error: 'Turn on Do It for Me first.' };
       if (!agentCan()) return { ok: false, error: cantAgent() };
@@ -1855,6 +1870,7 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
     case 'agent-continue': {
       if (!st().agent) return { ok: false, error: 'nothing to continue' };
       if (aiOff()) return { ok: false, error: 'AI is off. Turn it on in AI Settings.' };
+      if (offline()) return { ok: false, error: OFFLINE_AGENT };
       if (!store.state.settings.agentExports) return { ok: false, error: 'Turn on Do It for Me first.' };
       if (!agentCan()) return { ok: false, error: cantAgent() };
       if (!claudeSettingsOk()) return CONFIRM;
@@ -2045,7 +2061,7 @@ async function checkSignals() {
 
 // Downloading by itself on a "ready" email: AI, Do It for Me and its downloads on, Claude able to run (the data settings
 // checked once), and a site it may work on. (The same email twice, or Mail's notification of it, isn't news: checkSignals.)
-const readyAuto = (sourceId: string) => !aiOff() && !!store.state.settings.agentExports && store.state.settings.agentDownloads !== false && agentCan()
+const readyAuto = (sourceId: string) => !offline() && !aiOff() && !!store.state.settings.agentExports && store.state.settings.agentDownloads !== false && agentCan()
   && claudeSettingsOnce() && !BY_ID[sourceId]?.agentBlocked;
 const readyAfter = new Set<string>();
 
@@ -2122,7 +2138,7 @@ const agentIds = () => [...afterVisit, ...agents.ids()];
 const quietStops = new Set<string>();
 
 function startAgent(sourceId: string, mode: AgentMode, resume = false, reply?: string, auto?: AgentState['auto']) {
-  if (!BY_ID[sourceId] || agentBusy(sourceId)) return;
+  if (offline() || !BY_ID[sourceId] || agentBusy(sourceId)) return;
   store.update(() => {
     const st = store.source(sourceId);
     st.agent = { mode, status: 'queued', at: new Date().toISOString(), session: resume ? st.agent?.session : undefined, ...(auto ? { auto } : {}) };
@@ -2150,6 +2166,7 @@ let visiting: AgentRun | null = null;
 let visitNow: { sites: string[]; step?: string; waiting?: string } | null = null;
 const afterVisit = new Set<string>();
 async function visitSites(ids: string[]) {
+  if (offline()) return;
   const bin = agentBin();
   if (!bin) return;
   const pages = ids.map((id) => ({ id, name: BY_ID[id].name, url: urlFor(BY_ID[id])! }));
@@ -2297,7 +2314,7 @@ function stopAgents(which: (id: string) => boolean = () => true) {
 function pumpAgents() {
   if (visiting || !agents.queue.length || quitting) return;
   // Still waiting when AI or Do It for Me went off, or an AI it can't use was picked: set aside, not started.
-  if (aiOff() || !store.state.settings.agentExports || agentReadiness().fix === 'provider') return stopAgents();
+  if (offline() || aiOff() || !store.state.settings.agentExports || agentReadiness().fix === 'provider') return stopAgents();
   agents.fill(startRun);
 }
 
@@ -2305,6 +2322,7 @@ function pumpAgents() {
 function startRun(next: AgentJob): AgentRun | undefined {
   const src = BY_ID[next.sourceId]!;
   const st = store.source(next.sourceId);
+  if (offline()) return void stopped(next.sourceId, true);
   // Skipped while it waited ("I don't use it"): not started.
   if (st.skipped) return void stopped(next.sourceId, true);
   const bin = agentBin();
@@ -2373,7 +2391,7 @@ function saidLately(sourceId: string, note: string): boolean {
 }
 function maybeCheckExports() {
   const s = store.state.settings;
-  if (READONLY || aiOff() || !s.agentExports || s.agentDownloads === false || s.agentChecks === false) return;
+  if (READONLY || offline() || aiOff() || !s.agentExports || s.agentDownloads === false || s.agentChecks === false) return;
   // Wanted, but Claude can't run (signed out, say): said once, while an export is on its way, rather than stopping quietly.
   const can = agentCan();
   if (can && store.state.agentPausedAt) store.update((st) => delete st.agentPausedAt);
@@ -2783,6 +2801,10 @@ async function checkForUpdate(manual = false) {
     if (manual) toast('Homecoming doesn\'t look for updates in the demo or read-only mode.');
     return;
   }
+  if (offline()) {
+    if (manual) toast('Homecoming is offline.');
+    return;
+  }
   const last = store.state.update?.tried ?? store.state.update?.at;
   if (checking || (!manual && (store.state.settings.updateChecks === false || (last && Date.now() - Date.parse(last) < UPDATE_EVERY)))) return;
   checking = true;
@@ -3034,6 +3056,7 @@ function wireIpc() {
     const was = { ...store.state.settings };
     if ('agentsAtOnce' in patch) patch.agentsAtOnce = agentsAtOnce(patch); // 1 to 5
     store.update((s) => Object.assign(s.settings, patch));
+    if ('offline' in patch || 'networkOn' in patch) writeNetworkFile();
     setupChanged(was, store.state.settings);
     if ('background' in patch || 'openAtLogin' in patch) syncLoginItem();
     // No longer working with the window closed: its menu bar icon goes (the window is open: it's where this was changed).
@@ -3043,6 +3066,10 @@ function wireIpc() {
     }
     // AI or Do It for Me turned off: nothing more goes to one, including what Claude is in the middle of in Chrome.
     if (patch.aiOn === false || patch.agentExports === false) stopAgents();
+    if (patch.offline === true) {
+      stopAgents();
+      visiting?.stop();
+    }
     // Do It for Me turned on: it tells you in notifications when it needs you, so they're asked for now, while you're looking.
     if (patch.agentExports === true && !was.agentExports) void checkNotifications(true);
     // Its checks (or downloads, which they need) turned off: a look under way stops too; downloads off, a download it
@@ -3053,7 +3080,7 @@ function wireIpc() {
     }
     if (patch.aiOn === false) ask.stopAll();
     // More at once: the ones waiting start now. Fewer: the ones running finish first, and the rest start as they do.
-    if (patch.agentsAtOnce !== undefined) pumpAgents();
+    if (patch.agentsAtOnce !== undefined || patch.offline === false) pumpAgents();
     if (patch.aiOn === true && was.aiOn !== true) void checkBrowserSignIns().then(push); // checked only while AI is on
     // Watch Downloads back on: what landed while it was off is looked at now.
     if (patch.watchDownloads === true && !was.watchDownloads) watchAgain();
@@ -3171,6 +3198,7 @@ if (!app.requestSingleInstanceLock()) {
     setRunBase(path.join(app.getPath('userData'), 'runs'));
     pruneRuns();
     store = new Store(path.join(app.getPath('userData'), 'state.json'));
+    writeNetworkFile();
     lookAtVersion();
     // A newer version found before, until this is it; how this copy updates; and a look once a day, from a moment after
     // the launch's own work.

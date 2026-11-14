@@ -155,6 +155,9 @@ export interface FoundFile extends Identified {
 export interface Settings {
   autoRefresh: boolean;
   watchDownloads: boolean;
+  // The network switch is off until the person turns it on. Connector sources are opt-in too.
+  offline?: boolean;
+  networkOn?: string[];
   // "Do It for Me" is on (the person said yes once), and downloads start by themselves once an export is ready.
   agentExports?: boolean;
   agentDownloads?: boolean;
@@ -419,6 +422,7 @@ export interface SetupView {
 // The Ask assistant's settings, and what this Mac has for it.
 export interface AskView {
   settings: AskSettings;
+  offline?: boolean;
   installed: { 'claude-code': boolean; codex: boolean };
   keys: { anthropic: boolean; openai: boolean };
   local?: LocalStatus; // whether the local model's server answers (checked on this Mac only)

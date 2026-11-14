@@ -35,7 +35,7 @@ export function pageBrowser(found: BrowserFound[], chosen?: string): BrowserFoun
 const HOW: Record<string, string> = { api_key: 'an API key', api_key_helper: 'an API key', oauth_token: 'a long-lived token', third_party: 'a cloud provider (Bedrock, Vertex or Foundry)' };
 
 // soon: with fix 'provider', Do It for Me is coming with the AI picked (Codex); without, it can't be (an API key).
-export interface AgentReady { ok: boolean; why?: string; fix?: 'install' | 'browser' | 'sign-in' | 'plan' | 'provider'; soon?: boolean }
+export interface AgentReady { ok: boolean; why?: string; fix?: 'install' | 'browser' | 'sign-in' | 'plan' | 'provider' | 'offline'; soon?: boolean }
 
 // Do It for Me follows the AI picked in AI Settings, as everything AI does: for now only Claude Code with a claude.ai
 // account can work in a browser (Claude in Chrome). With Codex it's coming, and says so; with an Anthropic API key,
@@ -81,11 +81,12 @@ export function claudeInboxes(emails: string[], off: string[] = [], to?: string)
 }
 
 // What Your Setup tells the connectors (connectors/browsers.py, phones.py) and bridge.py's ready checks.
-export function setupEnv(s: { historyOff?: string[]; phoneRegion?: string; mailChecks?: boolean; notificationChecks?: boolean }): Record<string, string> {
+export function setupEnv(s: { historyOff?: string[]; phoneRegion?: string; mailChecks?: boolean; notificationChecks?: boolean; offline?: boolean }): Record<string, string> {
   return {
     UMP_BROWSERS_SKIP: (s.historyOff ?? []).join(','),
     ...(s.phoneRegion ? { UMP_PHONE_REGION: s.phoneRegion } : {}),
     ...(s.mailChecks === false ? { UMP_READY_MAIL: '0' } : {}),
     ...(s.notificationChecks === false ? { UMP_READY_NOTIFICATIONS: '0' } : {}),
+    ...(s.offline === true ? { UMP_OFFLINE: '1' } : {}),
   };
 }
