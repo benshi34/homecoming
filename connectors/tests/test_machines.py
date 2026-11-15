@@ -79,6 +79,11 @@ esac""")
             self.assertIn("off in Network", out)
             self.assertEqual(self.records("shell_history@box"), before)  # what an earlier read brought stays
 
+    def test_settings_for_what_is_read_go_along_and_network_json_never_does(self):
+        (self.corpus / "ai_coding.json").write_text('{"leave_out": ["~/evals"]}')
+        out = self.py("import io, tarfile, machines; print(sorted(n for n in tarfile.open(fileobj=io.BytesIO(machines.bundle())).getnames() if n.startswith('corpus/')))")
+        self.assertEqual(out.strip(), "['corpus/ai_coding.json']")
+
     def test_a_machine_read_beside_this_mac(self):
         self.py("import shell_history; shell_history.main()")
         self.py("import machines; machines.main()", UMP_MACHINES="box nopython lab")
