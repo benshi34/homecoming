@@ -53,7 +53,8 @@ esac""")
 
     def env(self, **extra):
         env = {k: v for k, v in os.environ.items() if not k.startswith("UMP_")}
-        env.update({"HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "PATH": f"{self.bin}:/usr/bin:/bin", "UMP_MACHINE_SOURCES": "shell_history", **extra})
+        env.update({"HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "PATH": f"{self.bin}:/usr/bin:/bin", "UMP_MACHINE_SOURCES": "shell_history",
+                    "UMP_VOLUMES": str(self.root / "no-volumes"), **extra})  # not this Mac's own drives
         return env
 
     def py(self, code, *args, **extra):
@@ -83,6 +84,31 @@ esac""")
         (self.corpus / "ai_coding.json").write_text('{"leave_out": ["~/evals"]}')
         out = self.py("import io, tarfile, machines; print(sorted(n for n in tarfile.open(fileobj=io.BytesIO(machines.bundle())).getnames() if n.startswith('corpus/')))")
         self.assertEqual(out.strip(), "['corpus/ai_coding.json']")
+
+    @unittest.skipUnless(sys.platform == "darwin", "Full Disk Access is a Mac's")
+    def test_check_says_what_remote_login_cant_read_and_the_steps(self):
+        mail, vols = self.box / "Library/Mail", self.root / "volumes"
+        (vols / "Travel SSD").mkdir(parents=True)
+        (vols / "Open Drive").mkdir()
+        mail.mkdir(parents=True)
+        for d in (mail, vols / "Travel SSD"):
+            d.chmod(0)
+            self.addCleanup(d.chmod, 0o755)
+        out = json.loads(self.py(None, "machines.py", "--check", "box", UMP_VOLUMES=str(vols)))
+        self.assertEqual((out["full_disk_access"], out["blocked"], out["drives_blocked"]), (False, ["Mail"], ["Travel SSD"]))
+        self.assertIn("Remote Login", out["fix"])
+        self.assertEqual(json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]["box"]["sources"]["_access"], out)
+        for d in (mail, vols / "Travel SSD"):
+            d.chmod(0o755)
+        out = json.loads(self.py(None, "machines.py", "--check", "box", UMP_VOLUMES=str(vols)))
+        self.assertEqual((out["full_disk_access"], out.get("fix")), (True, None))
+
+    def test_fix_steps_follow_the_macos_version(self):
+        out = self.py("import remote_run as r; print(r.fix_steps('15.2')); print(r.fix_steps('14.7'))")
+        new, old = out.strip().split("\n")
+        self.assertIn("General > Sharing", new)
+        self.assertIn("Allow full disk access for remote users", new)
+        self.assertIn("sshd-keygen-wrapper", old)
 
     def test_a_machine_read_beside_this_mac(self):
         self.py("import shell_history; shell_history.main()")
@@ -130,7 +156,8 @@ esac""")
         self.addCleanup(db.chmod, 0o644)
         self.py("import machines; machines.main()", UMP_MACHINES="box")
         box = json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]["box"]["sources"]
-        self.assertIn("Full Disk Access for Remote Login", box["_access"]["not_read"])
+        self.assertEqual((box["_access"]["full_disk_access"], box["_access"]["blocked"]), (False, ["Messages"]))
+        self.assertIn("Remote Login", box["_access"]["fix"])
 
     def test_what_a_machine_no_longer_has_is_kept(self):
         self.py("import machines; machines.main()", UMP_MACHINES="box")

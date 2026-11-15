@@ -374,8 +374,9 @@ def read(machine, fetched=None):
             if n or same:
                 sources[source] = {"count": n, **({"also_on_this_mac": same} if same else {}),
                                    **({"notes": there[source]["notes"]} if isinstance(there.get(source), dict) and there[source].get("notes") else {})}
-    if isinstance(there.get("machines"), dict) and there["machines"].get("not_read"):
-        sources["_access"] = {"not_read": there["machines"]["not_read"]}
+    a = there.get("_access")
+    if isinstance(a, dict) and a.get("full_disk_access") is False:  # what Remote Login can't read there, and the fix
+        sources["_access"] = a
     for name, said in there.items():  # one that couldn't run there, and why
         if isinstance(said, dict) and said.get("not_read") and name not in sources:
             sources[name] = {"not_read": said["not_read"]}
@@ -418,8 +419,28 @@ def main():
     write_manifest(manifest)
 
 
+def check_access(machine):
+    """Only whether Remote Login there can read what's behind Full Disk Access (no connector runs): after the steps
+    were followed. Kept in the manifest with the machine, as a read keeps it."""
+    if not online("machines"):
+        return {"not_read": "Other machines is off in Network"}
+    files, _ = fetch(machine, [])
+    a = json.loads(files.get("manifest.json") or b"{}").get("_access")
+    manifest = read_manifest()
+    entry = manifest.setdefault("machines", {}).setdefault("machines", {}).setdefault(machine, {})
+    a = a if isinstance(a, dict) else {"full_disk_access": None}  # None: not a Mac, nothing to give
+    if a.get("full_disk_access") is False:
+        entry.setdefault("sources", {})["_access"] = a
+    else:
+        entry.get("sources", {}).pop("_access", None)  # fixed: the steps go
+    write_manifest(manifest)
+    return a
+
+
 if __name__ == "__main__":
-    if "--find" in sys.argv:
+    if "--check" in sys.argv:
+        print(json.dumps(check_access(sys.argv[sys.argv.index("--check") + 1])))
+    elif "--find" in sys.argv:
         for m in find(with_ssh="--ssh" in sys.argv, also=[str(h) for h in config().get("read") or []]):
             state = (f"{m.get('system')}, {'python3' if m.get('python') else 'no python3'}" if m.get("reachable")
                      else m.get("why") or "not checked")
