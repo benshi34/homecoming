@@ -155,7 +155,7 @@ class LeaveOutTests(unittest.TestCase):
         self.assertNotIn("HELDOUT", " ".join(r["text"] for r in recs))
         self.assertIn("fix the login bug", " ".join(r["text"] for r in recs))
 
-    def test_a_session_that_moves_into_a_left_out_folder_leaves_that_part_out(self):
+    def test_a_session_that_ever_works_in_a_left_out_folder_is_left_out_whole(self):
         h = str(self.home)
         d = self.home / ".claude/projects/-home"
         d.mkdir(parents=True)
@@ -163,10 +163,13 @@ class LeaveOutTests(unittest.TestCase):
                  "message": {"role": "user", "content": text}}
                 for i, (cwd, text) in enumerate([(h, "plan the week"), (f"{h}/evals/run-9", "HELDOUT-DELTA")])]
         (d / "mv.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        before = " ".join(r["text"] for r in run(self.home, self.corpus))
+        self.assertIn("plan the week", before)  # nothing set: all of it
         self.configure(["~/evals"])
         texts = " ".join(r["text"] for r in run(self.home, self.corpus))
-        self.assertIn("plan the week", texts)
         self.assertNotIn("HELDOUT-DELTA", texts)
+        self.assertNotIn("plan the week", texts)  # said elsewhere, by the same session, and kept by the run before: gone too
+        self.assertIn("fix the login bug", texts)
 
     def test_a_folder_only_sharing_a_prefix_stays(self):
         self.configure(["~/src/ap"])

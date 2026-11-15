@@ -98,7 +98,10 @@ def claude_code(w):
             w.notes["homecoming_agent_sessions"] = w.notes.get("homecoming_agent_sessions", 0) + 1
             continue
         lines = _lines(f)
-        if _skip(w, next((r.get("cwd") for r in lines if r.get("cwd")), None)):
+        # A session that worked in a left-out folder at any point is left out whole: what it said elsewhere is about it too.
+        if any(left_out(r.get("cwd")) for r in lines if r.get("cwd")):
+            LEFT_OUT_SESSIONS.add(next((r.get("sessionId") for r in lines if r.get("sessionId")), f.stem))
+            w.notes["sessions_in_folders_left_out"] = w.notes.get("sessions_in_folders_left_out", 0) + 1
             continue
         title = next((r.get("customTitle") or r.get("title") for r in reversed(lines) if r.get("type") == "custom-title"), None)
         tool_names = {}
@@ -107,9 +110,6 @@ def claude_code(w):
                 continue
             if not r.get("uuid") or w.has(r.get("uuid")):
                 continue  # resumed sessions repeat earlier messages
-            if left_out(r.get("cwd")):  # a session that moved into a left-out folder: what was said there stays out
-                w.notes["messages_in_folders_left_out"] = w.notes.get("messages_in_folders_left_out", 0) + 1
-                continue
             msg = r.get("message") or {}
             content = msg.get("content")
             base = dict(ts=r.get("timestamp"), thread=r.get("sessionId") or f.stem, thread_name=title,
@@ -323,9 +323,13 @@ def agent_session(rec):
     return meta.get("tool") == "claude-code" and AGENT_FOLDER in str(meta.get("cwd") or "")
 
 
+LEFT_OUT_SESSIONS = set()  # this run's: sessions that worked in a left-out folder at some point (claude_code fills it)
+
+
 def forget(rec):
-    """What an earlier run kept that isn't read any more: Do It for Me's sessions, and those in a left-out folder."""
-    return agent_session(rec) or left_out((rec.get("meta") or {}).get("cwd"))
+    """What an earlier run kept that isn't read any more: Do It for Me's sessions, and those in a left-out folder (any
+    record of a session that was ever in one)."""
+    return agent_session(rec) or left_out((rec.get("meta") or {}).get("cwd")) or rec.get("thread") in LEFT_OUT_SESSIONS
 
 
 def main():
