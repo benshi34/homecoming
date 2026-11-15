@@ -104,7 +104,7 @@ esac""")
         self.assertEqual((out["full_disk_access"], out.get("fix")), (True, None))
 
     def test_fix_steps_follow_the_macos_version(self):
-        out = self.py("import remote_run as r; print(r.fix_steps('15.2')); print(r.fix_steps('14.7'))")
+        out = self.py("import remote_run as r; print(r.fix_steps('13.0')); print(r.fix_steps('12.7'))")  # Ventura added the switch
         new, old = out.strip().split("\n")
         self.assertIn("General > Sharing", new)
         self.assertIn("Allow full disk access for remote users", new)
