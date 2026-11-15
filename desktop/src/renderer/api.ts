@@ -1,6 +1,6 @@
 import type { AskConversation, AskEvent, AskProvider, AskSettings, AskSummary } from '../shared/ask.ts';
 import type { ExploreProgress } from '../shared/explore.ts';
-import type { AskView, DirectoryEntry, ExportPart, LibrarySizes, Onboarding, Settings, Snapshot } from '../shared/types.ts';
+import type { AskView, DirectoryEntry, ExportPart, LibrarySizes, MachineAccess, MachineView, Onboarding, Settings, Snapshot } from '../shared/types.ts';
 import type { Release } from '../shared/version.ts';
 
 export interface Api {
@@ -11,6 +11,9 @@ export interface Api {
   action(sourceId: string, action: string, payload?: unknown): Promise<{ ok: boolean; error?: string; id?: string; ids?: string[]; data?: unknown }>;
   dropFiles(files: File[], sourceId: string | null): Promise<{ ok: boolean; error?: string }>;
   settings(patch: Partial<Settings>): Promise<Settings>;
+  machines(): Promise<MachineView[]>;
+  machineSet(name: string, read: boolean): Promise<{ name: string; read: boolean }>;
+  machineCheck(name: string): Promise<MachineAccess>;
   onboarding(patch: Partial<Onboarding>): Promise<Onboarding>;
   jobLog(sourceId: string): Promise<string[]>;
   directory(): Promise<DirectoryEntry[]>;

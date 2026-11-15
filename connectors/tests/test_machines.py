@@ -110,6 +110,14 @@ esac""")
         self.assertIn("Allow full disk access for remote users", new)
         self.assertIn("sshd-keygen-wrapper", old)
 
+    def test_listing_for_settings_contacts_no_machine(self):
+        (self.corpus / "machines.json").write_text('{"skip": ["box"], "read": ["lab"]}')
+        out = json.loads(self.py("import json, machines; print(json.dumps(machines.listed()))"))
+        read = {m["name"]: m["read"] for m in out}
+        self.assertEqual({k: read.get(k) for k in ("box", "old", "lab", "theirs", "coworker")},
+                         {"box": False, "old": True, "lab": True, "theirs": False, "coworker": False})  # skipped, yours, named, not yours
+        self.assertFalse((self.root / "ssh.log").exists() and (self.root / "ssh.log").read_text().strip(), "no ssh while listing")
+
     def test_a_machine_read_beside_this_mac(self):
         self.py("import shell_history; shell_history.main()")
         self.py("import machines; machines.main()", UMP_MACHINES="box nopython lab")
@@ -238,6 +246,7 @@ esac""")
         self.assertEqual(sorted(read), ["box"], "your own machine, not one shared with you, a coworker's, one offline, nor an ssh host")
         self.assertEqual([r["text"] for r in self.records("shell_history@box")], ["git status", "make train"])
         self.assertNotIn("lab", (self.root / "ssh.log").read_text())
+        self.assertFalse({"theirs", "coworker"} & set((self.root / "ssh.log").read_text().split()), "no sign-in tried at a machine not yours")
         # machines.json adds one, takes one out, or turns it off
         (self.corpus / "machines.json").write_text(json.dumps({"read": ["lab"], "skip": ["box"]}))
         boxes = (self.root / "ssh.log").read_text().split().count("box")

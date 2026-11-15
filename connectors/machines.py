@@ -69,6 +69,20 @@ def chosen():
     return _chosen
 
 
+def listed():
+    """For a settings page, without contacting any machine: each one found, with "read" (whether a run reads it). One
+    found by itself counts as read unless skipped; the run still passes over it if it turns out not to sign in or have
+    python3."""
+    if os.environ.get("UMP_MACHINES") is not None:
+        named, found_too, skip = set(os.environ["UMP_MACHINES"].split()), False, set()
+    else:
+        c = config()
+        named, skip = {str(h) for h in c.get("read") or []}, {str(h) for h in c.get("skip") or []}
+        found_too = c.get("auto", True) is not False
+    return [{**m, "read": m["name"] not in skip and (m["name"] in named or (found_too and bool(m.get("mine"))))}
+            for m in find(contact=False)]
+
+
 def auto():
     return [m["name"] for m in find() if m.get("mine") and m.get("reachable") and m.get("python")]
 
@@ -164,7 +178,9 @@ def resolved(name):
     return dict(l.split(" ", 1) for l in r.stdout.splitlines() if " " in l and l.split(" ", 1)[0] in ("hostname", "user", "proxycommand"))
 
 
-def find(with_ssh=False, also=()):
+def find(with_ssh=False, also=(), contact=True):
+    """The machines there are to read. contact=False lists them from Tailscale's and the ssh config's own state and
+    sends nothing to any of them (for a settings page to draw)."""
     peers = tailscale_peers()
     found = {}
     hosts = ssh_hosts()
@@ -186,11 +202,16 @@ def find(with_ssh=False, also=()):
     for m in found.values():
         if m["via"] == "tailscale" and not m.get("online"):
             m["why"] = "offline"
+    if not contact:
+        return sorted(found.values(), key=lambda m: m["name"])
     if not online("machines"):  # listed from Tailscale's and the ssh config's own state; nothing is sent to any of them
         for m in found.values():
             m.setdefault("why", "not tried: Other machines is off in Network")
         return sorted(found.values(), key=lambda m: m["name"])
-    to_check = [n for n, m in found.items() if (m["via"] in ("tailscale", "VM on this Mac") and m.get("online", True)) or with_ssh or n in also]
+    # Never a sign-in attempt at a Tailscale machine that isn't yours (shared with you, a coworker's) unless you named it
+    theirs = lambda m: m["via"] == "tailscale" and not m.get("mine")
+    to_check = [n for n, m in found.items() if n in also or not theirs(m) and (
+        (m["via"] in ("tailscale", "VM on this Mac") and m.get("online", True)) or with_ssh)]
     with concurrent.futures.ThreadPoolExecutor(16) as pool:
         for name, res in zip(to_check, pool.map(check, to_check)):
             found[name].update(res)
