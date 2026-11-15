@@ -28,16 +28,16 @@ VOLUMES = Path(os.environ.get("UMP_VOLUMES") or "/Volumes")
 
 
 def fix_steps(macos):
-    """Where Remote Login gets Full Disk Access on this macOS: its own switch since macOS 15, the list before."""
+    """Where Remote Login gets Full Disk Access on this macOS: its own switch since macOS 13 (Ventura), the list before."""
     try:
         major = int(str(macos).split(".")[0])
     except ValueError:
         major = 0
-    if major >= 15:
+    if major >= 13:
         return ("System Settings > General > Sharing, click (i) next to Remote Login, and turn on Allow full disk "
                 "access for remote users. It asks for this Mac's password.")
-    return ("System Settings > Privacy & Security > Full Disk Access: turn on sshd-keygen-wrapper (if it isn't listed, "
-            "click +, press Command-Shift-G, and choose /usr/libexec/sshd-keygen-wrapper).")
+    return ("System Preferences > Security & Privacy > Privacy > Full Disk Access: click the lock, then turn on "
+            "sshd-keygen-wrapper (if it isn't listed, click +, press Command-Shift-G, and choose /usr/libexec/sshd-keygen-wrapper).")
 
 
 def blocked(p):
