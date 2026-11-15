@@ -69,6 +69,20 @@ def chosen():
     return _chosen
 
 
+def listed():
+    """For a settings page, without contacting any machine: each one found, with "read" (whether a run reads it). One
+    found by itself counts as read unless skipped; the run still passes over it if it turns out not to sign in or have
+    python3."""
+    if os.environ.get("UMP_MACHINES") is not None:
+        named, found_too, skip = set(os.environ["UMP_MACHINES"].split()), False, set()
+    else:
+        c = config()
+        named, skip = {str(h) for h in c.get("read") or []}, {str(h) for h in c.get("skip") or []}
+        found_too = c.get("auto", True) is not False
+    return [{**m, "read": m["name"] not in skip and (m["name"] in named or (found_too and bool(m.get("mine"))))}
+            for m in find(contact=False)]
+
+
 def auto():
     return [m["name"] for m in find() if m.get("mine") and m.get("reachable") and m.get("python")]
 
@@ -164,7 +178,9 @@ def resolved(name):
     return dict(l.split(" ", 1) for l in r.stdout.splitlines() if " " in l and l.split(" ", 1)[0] in ("hostname", "user", "proxycommand"))
 
 
-def find(with_ssh=False, also=()):
+def find(with_ssh=False, also=(), contact=True):
+    """The machines there are to read. contact=False lists them from Tailscale's and the ssh config's own state and
+    sends nothing to any of them (for a settings page to draw)."""
     peers = tailscale_peers()
     found = {}
     hosts = ssh_hosts()
@@ -186,11 +202,16 @@ def find(with_ssh=False, also=()):
     for m in found.values():
         if m["via"] == "tailscale" and not m.get("online"):
             m["why"] = "offline"
+    if not contact:
+        return sorted(found.values(), key=lambda m: m["name"])
     if not online("machines"):  # listed from Tailscale's and the ssh config's own state; nothing is sent to any of them
         for m in found.values():
             m.setdefault("why", "not tried: Other machines is off in Network")
         return sorted(found.values(), key=lambda m: m["name"])
-    to_check = [n for n, m in found.items() if (m["via"] in ("tailscale", "VM on this Mac") and m.get("online", True)) or with_ssh or n in also]
+    # Never a sign-in attempt at a Tailscale machine that isn't yours (shared with you, a coworker's) unless you named it
+    theirs = lambda m: m["via"] == "tailscale" and not m.get("mine")
+    to_check = [n for n, m in found.items() if n in also or not theirs(m) and (
+        (m["via"] in ("tailscale", "VM on this Mac") and m.get("online", True)) or with_ssh)]
     with concurrent.futures.ThreadPoolExecutor(16) as pool:
         for name, res in zip(to_check, pool.map(check, to_check)):
             found[name].update(res)
@@ -374,8 +395,9 @@ def read(machine, fetched=None):
             if n or same:
                 sources[source] = {"count": n, **({"also_on_this_mac": same} if same else {}),
                                    **({"notes": there[source]["notes"]} if isinstance(there.get(source), dict) and there[source].get("notes") else {})}
-    if isinstance(there.get("machines"), dict) and there["machines"].get("not_read"):
-        sources["_access"] = {"not_read": there["machines"]["not_read"]}
+    a = there.get("_access")
+    if isinstance(a, dict) and a.get("full_disk_access") is False:  # what Remote Login can't read there, and the fix
+        sources["_access"] = a
     for name, said in there.items():  # one that couldn't run there, and why
         if isinstance(said, dict) and said.get("not_read") and name not in sources:
             sources[name] = {"not_read": said["not_read"]}
@@ -418,8 +440,28 @@ def main():
     write_manifest(manifest)
 
 
+def check_access(machine):
+    """Only whether Remote Login there can read what's behind Full Disk Access (no connector runs): after the steps
+    were followed. Kept in the manifest with the machine, as a read keeps it."""
+    if not online("machines"):
+        return {"not_read": "Other machines is off in Network"}
+    files, _ = fetch(machine, [])
+    a = json.loads(files.get("manifest.json") or b"{}").get("_access")
+    manifest = read_manifest()
+    entry = manifest.setdefault("machines", {}).setdefault("machines", {}).setdefault(machine, {})
+    a = a if isinstance(a, dict) else {"full_disk_access": None}  # None: not a Mac, nothing to give
+    if a.get("full_disk_access") is False:
+        entry.setdefault("sources", {})["_access"] = a
+    else:
+        entry.get("sources", {}).pop("_access", None)  # fixed: the steps go
+    write_manifest(manifest)
+    return a
+
+
 if __name__ == "__main__":
-    if "--find" in sys.argv:
+    if "--check" in sys.argv:
+        print(json.dumps(check_access(sys.argv[sys.argv.index("--check") + 1])))
+    elif "--find" in sys.argv:
         for m in find(with_ssh="--ssh" in sys.argv, also=[str(h) for h in config().get("read") or []]):
             state = (f"{m.get('system')}, {'python3' if m.get('python') else 'no python3'}" if m.get("reachable")
                      else m.get("why") or "not checked")

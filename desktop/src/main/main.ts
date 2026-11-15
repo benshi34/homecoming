@@ -21,7 +21,7 @@ import { inboxesFor, inboxUrl } from '../shared/inbox.ts';
 import { agentBrowser, agentProvider, agentReady, claudeInboxes, macDefault, pageBrowser, setupEnv, type AgentReady } from '../shared/setup.ts';
 import { buildNote, compareVersions, parseChangelog, type Release, whatsNewSince } from '../shared/version.ts';
 import { networkFile } from '../shared/network.ts';
-import type { AgentMode, AgentState, AppState, BuildInfo, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats, UpdateView } from '../shared/types.ts';
+import type { AgentMode, AgentState, AppState, BuildInfo, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MachineAccess, MachineView, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats, UpdateView } from '../shared/types.ts';
 import { agentLink } from '../shared/agent_link.ts';
 import { agentProfile, Ask, findClaude, findCodex, addShellPath } from './ask.ts';
 import { NO_HOOKS, pruneRuns, runDir, runRoot, setRunBase } from './run_dirs.ts';
@@ -3089,6 +3089,11 @@ function wireIpc() {
     maybeAutoRefresh();
     return settingsView();
   });
+  ipcMain.handle('machines', () => bridge.json<MachineView[]>(['machines']));
+  ipcMain.handle('machine-set', (_e, a: { name: string; read: boolean }) =>
+    bridge.json<{ name: string; read: boolean }>(['machine-set'], JSON.stringify(a)));
+  ipcMain.handle('machine-check', (_e, name: string) =>
+    bridge.json<MachineAccess>(['machine-check', String(name)], undefined, 300_000));
   // What's new: this version's (to show from the menu), or seen (the sheet closed: it isn't shown again).
   ipcMain.handle('whats-new', (_e, op: 'get' | 'seen') => {
     if (op === 'get') return thisRelease();
