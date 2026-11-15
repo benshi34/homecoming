@@ -23,23 +23,64 @@ def said(name, why):
 
 
 # What macOS keeps behind Full Disk Access: there but unreadable means Remote Login wasn't given it.
-PROTECTED = ("Library/Messages/chat.db", "Library/Safari/History.db", "Library/Mail")
+PROTECTED = {"Messages": "Library/Messages/chat.db", "Safari": "Library/Safari/History.db", "Mail": "Library/Mail"}
+VOLUMES = Path(os.environ.get("UMP_VOLUMES") or "/Volumes")
+
+
+def fix_steps(macos):
+    """Where Remote Login gets Full Disk Access on this macOS: its own switch since macOS 15, the list before."""
+    try:
+        major = int(str(macos).split(".")[0])
+    except ValueError:
+        major = 0
+    if major >= 15:
+        return ("System Settings > General > Sharing, click (i) next to Remote Login, and turn on Allow full disk "
+                "access for remote users. It asks for this Mac's password.")
+    return ("System Settings > Privacy & Security > Full Disk Access: turn on sshd-keygen-wrapper (if it isn't listed, "
+            "click +, press Command-Shift-G, and choose /usr/libexec/sshd-keygen-wrapper).")
+
+
+def blocked(p):
+    try:
+        if p.is_dir():
+            os.listdir(p)
+        elif p.exists():
+            open(p, "rb").close()
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def access():
+    """What Remote Login can't read on this Mac, and how to fix it: {full_disk_access, blocked, drives_blocked, macos,
+    fix}. Each external drive is tried too: macOS keeps them behind the same permission (ssh gets "operation not
+    permitted")."""
+    if sys.platform != "darwin":
+        return None
+    import platform
+    macos = platform.mac_ver()[0]
+    apps = [name for name, rel in PROTECTED.items() if blocked(Path.home() / rel)]
+    try:
+        drives = sorted(d.name for d in VOLUMES.iterdir() if d.is_dir() and not d.is_symlink() and blocked(d))
+    except OSError:
+        drives = []
+    out = {"full_disk_access": not (apps or drives), "blocked": apps, "drives_blocked": drives, "macos": macos}
+    if apps or drives:
+        out["fix"] = fix_steps(macos)
+    return out
 
 
 def full_disk_access():
-    if sys.platform != "darwin":
+    from common import NORM, read_manifest, write_manifest
+    NORM.mkdir(parents=True, exist_ok=True)  # so a check that reads nothing still sends its manifest back
+    a = access()
+    if a is None:
         return
-    for rel in PROTECTED:
-        p = Path.home() / rel
-        try:
-            if p.is_dir():
-                os.listdir(p)
-            elif p.exists():
-                open(p, "rb").close()
-        except PermissionError:
-            said("machines", "this Mac's Messages, Mail and Safari need Full Disk Access for Remote Login (System Settings > "
-                             "Privacy & Security > Full Disk Access: sshd-keygen-wrapper)")
-            return
+    m = read_manifest()
+    m["_access"] = a
+    write_manifest(m)
 
 
 def main(names):

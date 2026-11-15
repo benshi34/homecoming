@@ -381,6 +381,24 @@ export interface Snapshot {
   whatsNew?: Release[] | null;
 }
 
+export interface MachineAccess {
+  full_disk_access?: boolean | null;
+  blocked?: string[];
+  drives_blocked?: string[];
+  macos?: string;
+  fix?: string;
+  not_read?: string;
+}
+
+export interface MachineView {
+  name: string;
+  via: string;
+  read: boolean;
+  access: MachineAccess | null;
+  lastRead: boolean;
+  why?: string | null;
+}
+
 // Export Your Library (main library_export.ts, py/export_library.py): the library in one .zip, saved where you choose.
 // records is always in it; media is the photos and attachments; originals is each download as it came, and what was
 // read from this Mac as it was.

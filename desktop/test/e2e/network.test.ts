@@ -23,13 +23,27 @@ before(async () => {
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/CHANGELOG.md`;
   sb = sandbox();
   fs.mkdirSync(sb.userData, { recursive: true });
+  fs.mkdirSync(path.join(sb.home, '.ssh'), { recursive: true });
+  fs.writeFileSync(path.join(sb.home, '.ssh', 'config'), 'Host devbox\n  HostName 192.0.2.1\n');
+  fs.writeFileSync(path.join(sb.corpus, 'machines.json'), JSON.stringify({ read: ['devbox'], auto: false }));
+  fs.writeFileSync(path.join(sb.corpus, 'manifest.json'), JSON.stringify({ machines: { machines: {
+    devbox: { sources: { _access: {
+      full_disk_access: false, blocked: ['Messages', 'Mail'], drives_blocked: ['U35 Bolt+'], macos: '15.2',
+      fix: 'System Settings > General > Sharing, click (i) next to Remote Login, turn on Full Disk Access.'
+    } }, seconds: 1 }
+  } } }));
   fs.writeFileSync(path.join(sb.userData, 'state.json'), JSON.stringify({
     version: 1,
     onboarding: { done: true },
     settings: { autoRefresh: true, watchDownloads: true, aiOn: true, aiAgreedAt: new Date().toISOString(), updateChecks: true, offline: true },
     ask: { provider: 'claude-code', models: {}, localServer: 'ollama', localUrl: 'http://localhost:11434/v1', retention: { 'claude-code': new Date().toISOString() } },
   }));
-  run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_UPDATE_URL: url }));
+  // A made-up Tailscale network first on PATH: the rows are the test's, never the Mac running it.
+  const bin = path.join(sb.home, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  const status = { Self: { UserID: 1 }, Peer: { a: { DNSName: 'studio-mini.tail.ts.net.', HostName: 'studio-mini', OS: 'macOS', UserID: 1, Online: true, TailscaleIPs: ['100.64.0.9'] } } };
+  fs.writeFileSync(path.join(bin, 'tailscale'), `#!/bin/sh\necho '${JSON.stringify(status)}'\n`, { mode: 0o755 });
+  run = await launch(sandboxEnv(sb, { UMP_NO_AUTORUN: '1', UMP_UPDATE_URL: url, PATH: `${bin}:${process.env.PATH}` }));
   await until(run.page, 'first probe', (x) => !!x.probeTime);
 });
 
@@ -71,10 +85,19 @@ test('back online: network.json follows and the look for updates goes out', asyn
   assert.deepEqual(run.errors, []);
 });
 
-test('Other machines: off until switched on, and its switch is what network.json says', async () => {
+test('Other machines: rows explain access, and its switch is what network.json says', async () => {
   const sw = run.page.locator('[data-testid=toggle-network-machines]');
   assert.equal(await sw.getAttribute('aria-checked'), 'false');
   await sw.click();
+  await run.page.locator('[data-testid=machine-row-studio-mini]').waitFor();
+  assert.deepEqual(await run.page.locator('[data-testid^=machine-row-]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid'))),
+    ['machine-row-devbox', 'machine-row-studio-mini'], 'only the made-up machines');
+  const machine = run.page.locator('[data-testid=machine-row-devbox]');
+  await machine.waitFor();
+  assert.match(await machine.innerText(), /Can't read Messages and Mail, or the drive U35 Bolt\+, over ssh/);
+  assert.match(await machine.innerText(), /System Settings > General > Sharing, click \(i\) next to Remote Login/);
+  await machine.locator('[data-testid=toggle-machine-devbox]').click();
+  await until(run.page, 'machine skipped', () => readJson(path.join(sb.corpus, 'machines.json')).skip?.includes('devbox'));
   if (process.env.UMP_SHOT) await run.page.locator('[data-testid=general-network]').screenshot({ path: process.env.UMP_SHOT });
   await until(run.page, 'machines on', () => readJson(path.join(sb.corpus, 'network.json')).sources?.machines === true);
   await sw.click();

@@ -218,6 +218,46 @@ class ProbeTests(Sandbox):
         self.assertFalse(jsonout(bridge(["probe"], self.home, nosync))["corpus"]["in_icloud"])
 
 
+class MachineTests(Sandbox):
+    def test_machine_set_moves_name_and_keeps_other_settings(self):
+        config = {"read": ["old", "target"], "skip": ["nas", "target"], "auto": False,
+                  "sources": {"old": ["ai_coding"]}, "extra": {"keep": True}}
+        (self.corpus / "machines.json").write_text(json.dumps(config))
+        self.assertEqual(jsonout(bridge(["machine-set"], self.home, self.corpus,
+                                         stdin=json.dumps({"name": "target", "read": False}))),
+                         {"name": "target", "read": False})
+        changed = json.loads((self.corpus / "machines.json").read_text())
+        self.assertEqual(changed["read"], ["old"])
+        self.assertEqual(changed["skip"], ["nas", "target"])
+        self.assertEqual({k: changed[k] for k in ("auto", "sources", "extra")},
+                         {k: config[k] for k in ("auto", "sources", "extra")})
+        jsonout(bridge(["machine-set"], self.home, self.corpus,
+                       stdin=json.dumps({"name": "target", "read": True})))
+        changed = json.loads((self.corpus / "machines.json").read_text())
+        self.assertEqual(changed["read"], ["old", "target"])
+        self.assertEqual(changed["skip"], ["nas"])
+        self.assertEqual(list(self.corpus.glob(".*.tmp")), [], "atomic write leaves no temp file")
+
+    def test_machines_lists_manifest_access_and_last_read(self):
+        ssh = self.home / ".ssh"
+        ssh.mkdir()
+        (ssh / "config").write_text("Host devbox\n  HostName 192.0.2.1\n")
+        (self.corpus / "network.json").write_text(json.dumps({"offline": True, "sources": {"machines": True}}))
+        access = {"full_disk_access": False, "blocked": ["Messages", "Mail"], "drives_blocked": ["U35 Bolt+"],
+                  "macos": "15.2", "fix": "System Settings > General > Sharing, click (i) next to Remote Login"}
+        (self.corpus / "machines.json").write_text(json.dumps({"read": ["devbox"], "auto": False}))
+        (self.corpus / "manifest.json").write_text(json.dumps({"machines": {"machines": {
+            "devbox": {"sources": {"_access": access}, "seconds": 3}
+        }}}))
+        listed = jsonout(bridge(["machines"], self.home, self.corpus))
+        [machine] = [m for m in listed if m["name"] == "devbox"]  # this Mac's own Tailscale peers may be listed too
+        self.assertEqual(machine["name"], "devbox")
+        self.assertEqual(machine["via"], "ssh config")
+        self.assertTrue(machine["read"])
+        self.assertTrue(machine["lastRead"])
+        self.assertEqual(machine["access"], access)
+
+
 class IdentifyTests(Sandbox):
     EXPECTED = {
         "google_takeout": "google_takeout", "google_photos_drive": "google_photos_drive", "instagram": "instagram",
