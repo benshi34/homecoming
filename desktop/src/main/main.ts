@@ -36,6 +36,7 @@ import { badPlace, exportName, LibraryExport } from './library_export.ts';
 import { adoptFolder, resolvePaths, urlOverrides, setSetupEnv } from './paths.ts';
 import { fileKey, Store } from './store.ts';
 import { findNode, keptUpdate, lookForUpdate, PUBLIC_REPO, readRun, runUpdate, UPDATE_EVERY, UPDATE_URL } from './updates.ts';
+import { notificationReadDue } from './notifications_schedule.ts';
 
 // The demo (scripts/demo.mjs): a made-up library that reads nothing on this Mac (read-only), apart from the made-up
 // downloads it brings home into it; Do It for Me is played by a stand-in that never opens a browser, and links aren't
@@ -500,6 +501,7 @@ async function refresh() {
   push();
   void recheckFound();
   maybeAutoRefresh();
+  maybeRefreshNotifications();
   maybeReindex(); // unless a read was just queued, which builds the index last
   maybeRereadExports();
   maybeWarmExplore();
@@ -924,6 +926,48 @@ const pusher = new Pusher(() => {
 // progress: only a running job's line.
 function push(progress?: unknown) {
   pusher.push(progress === true);
+}
+
+let notificationsMtime: number | null = null;
+
+function notificationsDbPath(): string {
+  if (process.env.UMP_NOTIFICATIONS_DB) return process.env.UMP_NOTIFICATIONS_DB;
+  const modern = path.join(P.home, 'Library/Group Containers/group.com.apple.usernoted/db2/db');
+  if (fs.existsSync(modern)) return modern;
+  try {
+    const userDir = execFileSync('getconf', ['DARWIN_USER_DIR'], { encoding: 'utf8' }).trim();
+    return path.join(userDir, 'com.apple.notificationcenter/db2/db');
+  } catch {
+    return modern;
+  }
+}
+
+function notificationDbMtime(): number | null {
+  try {
+    return fs.statSync(notificationsDbPath()).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+// Notification Center forgets records quickly. Poll its file cheaply, and queue one source run only when its mtime
+// moved.
+function maybeRefreshNotifications() {
+  if (READONLY || NO_AUTORUN || !probe) return;
+  const src = BY_ID.notifications;
+  const enabled = !!src && probe.sources.notifications === 'ok' && !store.state.sources.notifications?.skipped;
+  const mtime = notificationDbMtime();
+  const alreadyRunning = queue.list().some((job) => job.sourceIds.includes('notifications'));
+  if (alreadyRunning) {
+    // The daily read may already have included this source. Mark its starting file, but leave a later mtime pending
+    // so the next poll catches a Notification Center write that happened while the connector was running.
+    if (notificationsMtime === null) notificationsMtime = mtime;
+    return;
+  }
+  if (!notificationReadDue(enabled, mtime, notificationsMtime)) return;
+  notificationsMtime = mtime;
+  // Kept, not indexed: what it read reaches search with the next regular run, so the index isn't rebuilt every ten minutes.
+  queue.add({ kind: 'connectors', label: 'Reading Notifications', sourceIds: ['notifications'], connectors: ['notifications'], args: ['--no-index'], background: true });
 }
 
 // Read every Mac source that's present and hasn't been read in the last day. This is also the daily
@@ -3229,6 +3273,7 @@ if (!app.requestSingleInstanceLock()) {
     // Notifications vanish once cleared, so look often while an export is on its way.
     setInterval(() => void checkSignals(), SIGNAL_MS);
     setTimeout(() => void checkSignals(), Math.min(SIGNAL_MS, 4_000)); // a moment after the launch's own lookups
+    setInterval(() => maybeRefreshNotifications(), Number(process.env.UMP_NOTIFICATIONS_TICK_MS || 10 * 60_000));
     setInterval(() => void refreshStats().then(push), 5 * 60_000);
     setInterval(() => maybeAutoRefresh(), HOUR);
     powerMonitor.on('on-ac', () => maybeAutoRefresh()); // plugged in: the daily read that waited

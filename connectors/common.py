@@ -29,10 +29,14 @@ Record schema (keys with None values are dropped):
     meta          source-specific extras (dict)
 """
 
+import contextlib
+import ctypes
 import datetime as dt
+import fcntl
 import io
 import json
 import os
+import plistlib
 import re
 import shutil
 import sqlite3
@@ -41,6 +45,7 @@ import sys
 import tempfile
 import unicodedata
 import zipfile
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +55,10 @@ NORM = CORPUS / "normalized"
 MANIFEST = CORPUS / "manifest.json"
 HOME = Path.home()
 LIB = HOME / "Library"
+# Notification Center and Mail are live SQLite stores. Keep a private copy while reading them so the owning app can
+# keep writing without changing a query halfway through. The desktop bridge imports these helpers too.
+COPIES = Path(os.environ.get("UMP_CACHE_DIR") or LIB / "Caches/Homecoming") / "copies"
+MAC_EPOCH = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 # Decrypted iPhone backup, mirrored as <domain>/<relativePath> by iphone_backup.py (corpus/raw/iphone is a
 # symlink to ~/Library/Application Support/q1_user_model/iphone, outside iCloud Drive).
 IPHONE = RAW / "iphone" / "files"
@@ -67,6 +76,272 @@ def phone_unencrypted():
         return json.loads((IPHONE.parent / "backup.json").read_text()).get("encrypted") is False
     except (OSError, ValueError, AttributeError):
         return False
+
+
+def _clone(src, dst):
+    """Make an APFS clone when possible, otherwise copy the SQLite file."""
+    try:
+        if ctypes.CDLL(None).clonefile(os.fsencode(src), os.fsencode(dst), 0) == 0:
+            return
+    except (OSError, AttributeError):
+        pass
+    shutil.copy2(src, dst)
+
+
+def _stat(path):
+    try:
+        return os.stat(path)
+    except FileNotFoundError:
+        return None
+
+
+@contextlib.contextmanager
+def db_copy(db, name):
+    """Yield a stable private copy of a live SQLite database and its sidecars."""
+    db = Path(db)
+    d = COPIES / name
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(COPIES, 0o700)
+    with open(d / "lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(db, "rb") as f:
+                f.read(1)
+        except OSError:
+            for suffix in ("", "-wal", "-shm", ".json"):
+                (d / f"db{suffix}").unlink(missing_ok=True)
+            raise
+        stamp = {"db": str(db), "files": [[suffix, st.st_size, st.st_mtime_ns]
+                  for suffix in ("", "-wal", "-shm")
+                  for st in [_stat(f"{db}{suffix}")] if st]}
+        try:
+            same = json.loads((d / "db.json").read_text()) == stamp and (d / "db").exists()
+        except (OSError, ValueError):
+            same = False
+        if not same:
+            for suffix in (".json", "", "-wal", "-shm"):
+                (d / f"db{suffix}").unlink(missing_ok=True)
+            for suffix, *_ in stamp["files"]:
+                _clone(f"{db}{suffix}", d / f"db{suffix}")
+            (d / "db.json").write_text(json.dumps(stamp))
+        yield d / "db"
+
+
+def drop_copy(name):
+    """Remove a cached database copy once no reader is using it."""
+    d = COPIES / name
+    if not d.exists():
+        return
+    with open(d / "lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for p in d.iterdir():
+            if p.name != "lock":
+                p.unlink(missing_ok=True)
+        (d / "lock").unlink(missing_ok=True)
+    try:
+        d.rmdir()
+    except OSError:
+        pass
+
+
+def _readable(path):
+    try:
+        with open(path, "rb") as f:
+            f.read(1)
+        return True
+    except OSError:
+        return False
+
+
+def _read_only(path):
+    from urllib.parse import quote
+    return f"file:{quote(str(path))}?mode=ro"
+
+
+def notification_db():
+    """The macOS 15 Notification Center database, or its pre-macOS 15 location."""
+    if os.environ.get("UMP_NOTIFICATIONS_DB"):
+        return Path(os.environ["UMP_NOTIFICATIONS_DB"])
+    new = LIB / "Group Containers/group.com.apple.usernoted/db2/db"
+    if new.exists():
+        return new
+    try:
+        d = subprocess.run(["getconf", "DARWIN_USER_DIR"], capture_output=True, text=True, timeout=5).stdout.strip()
+        return Path(d) / "com.apple.notificationcenter/db2/db"
+    except (OSError, subprocess.SubprocessError):
+        return new
+
+
+def _notification_text(value):
+    if isinstance(value, list):
+        return " ".join(_notification_text(x) for x in value if not isinstance(x, (dict, bytes)))
+    return value if isinstance(value, str) else ""
+
+
+def _notification_id(value, rec_id):
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        if len(value) == 16:
+            try:
+                return str(uuid.UUID(bytes=value))
+            except ValueError:
+                pass
+        return value.hex() or str(rec_id)
+    if value is None or value == "":
+        return str(rec_id)
+    return str(value)
+
+
+def _notification_value(req, *keys):
+    for key in keys:
+        value = req.get(key)
+        if value not in (None, "", [], {}):
+            return _notification_text(value)
+    return None
+
+
+def _notification_payload(data):
+    try:
+        root = plistlib.loads(data)
+    except (TypeError, ValueError, plistlib.InvalidFileException):
+        return None
+    if not isinstance(root, dict):
+        return None
+    req = root.get("req") or {}
+    if not isinstance(req, dict):
+        return None
+    return {
+        "title": _notification_text(req.get("titl")),
+        "subtitle": _notification_text(req.get("subt")),
+        "body": _notification_text(req.get("body")),
+        "thread_id": _notification_value(req, "thread-id", "threadIdentifier", "thread_id", "thread"),
+        "category_id": _notification_value(req, "category-id", "categoryIdentifier", "category_id", "category", "cate"),
+    }
+
+
+def notification_style(value):
+    """Decode Notification Center's record.style enum: 0 none, 1 banner, 2 alert."""
+    return {0: "none", 1: "banner", 2: "alert"}.get(value)
+
+
+def notification_records(since=None):
+    """Return decoded Notification Center rows, or None when Full Disk Access prevents reading the DB."""
+    since = since or dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    try:
+        with db_copy(notification_db(), "notifications") as copy:
+            con = sqlite3.connect(_read_only(copy), uri=True)
+            try:
+                rows = con.execute(
+                    "select r.rec_id, a.identifier, r.uuid, r.data, r.delivered_date, r.presented, r.style "
+                    "from record r join app a on a.app_id = r.app_id where r.delivered_date >= ? "
+                    "order by r.delivered_date, r.rec_id",
+                    ((since - MAC_EPOCH).total_seconds(),),
+                ).fetchall()
+            finally:
+                con.close()
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return None
+    out = []
+    for rec_id, bundle, value, data, delivered, presented, style in rows:
+        payload = _notification_payload(data)
+        if payload is None:
+            continue
+        try:
+            when = MAC_EPOCH + dt.timedelta(seconds=float(delivered or 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        out.append({"id": _notification_id(value, rec_id), "when": when, "bundle": bundle or "", **payload,
+                    "presented": bool(presented), "style": notification_style(style)})
+    return out
+
+
+def notification_shown(title, since):
+    """Whether a recent notification with title reached Notification Center and appeared on screen."""
+    try:
+        since_dt = dt.datetime.fromisoformat(since.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return {"readable": False}
+    rows = notification_records(since_dt)
+    if rows is None:
+        return {"readable": False}
+    if os.environ.get("UMP_READY_NOTIFICATIONS") == "0":
+        drop_copy("notifications")
+    for row in reversed(rows):
+        if row["title"] == title:
+            return {"readable": True, "found": True, "presented": row["presented"], "app": row["bundle"]}
+    return {"readable": True, "found": False}
+
+
+def notification_prefs(bundle):
+    """Read an app's Notification Center permission and presentation style."""
+    paths = [Path(os.environ["UMP_NOTIFICATION_PREFS"])] if os.environ.get("UMP_NOTIFICATION_PREFS") else [
+        LIB / "Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist",
+        LIB / "Preferences/com.apple.ncprefs.plist",
+    ]
+    for path in paths:
+        try:
+            prefs = plistlib.loads(path.read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        for app in prefs.get("apps") or []:
+            if isinstance(app, dict) and app.get("bundle-id") == bundle and isinstance(app.get("flags"), int):
+                flags = app["flags"]
+                return {"readable": True, "found": True, "allowed": bool(flags >> 25 & 1),
+                        "style": "alerts" if flags >> 4 & 1 else "banners" if flags >> 3 & 1 else "none"}
+        return {"readable": True, "found": False}
+    return {"readable": False}
+
+
+def notification_apps():
+    """{bundle id, lowercased: {"name", "iphone"}} for each app Notification Center knows (usernoted's preferences;
+    the database keeps bundle ids lowercased). iphone: none of its paths is on this Mac (an app on your iPhone whose
+    notifications come here). name: its .app's own, when it's on this Mac."""
+    path = Path(os.environ.get("UMP_NOTIFICATION_PREFS") or
+                LIB / "Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist")
+    try:
+        apps = plistlib.loads(path.read_bytes()).get("apps") or []
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return {}
+    out = {}
+    for app in apps:
+        if not isinstance(app, dict) or not app.get("bundle-id") or str(app["bundle-id"]).startswith("_SYSTEM_CENTER_"):
+            continue
+        paths = ([app["path"]] if app.get("path") else []) + [  # the app's own path first: src can be an extension in it
+            x.get("path") for x in app.get("src") or [] if isinstance(x, dict) and x.get("path")]
+        here = [p for p in paths if Path(p).exists()]
+        name = None
+        for p in here:
+            try:
+                info = plistlib.loads((Path(p) / "Contents/Info.plist").read_bytes())
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                continue
+            name = info.get("CFBundleDisplayName") or info.get("CFBundleName")
+            if name:
+                break
+        name = str(name).strip("\u200e\u200f\u202a\u202c ") if name else None  # some apps name themselves with direction marks
+        out[str(app["bundle-id"]).lower()] = {"name": name or None, "iphone": not here}
+    return out
+
+
+def notification_access():
+    """Whether Notification Center is readable and whether iPhone notifications are forwarded to this Mac."""
+    readable = _readable(notification_db())
+    prefs = LIB / "Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist"
+    iphone = False
+    try:
+        for app in plistlib.loads(prefs.read_bytes()).get("apps") or []:
+            if not isinstance(app, dict) or str(app.get("bundle-id", "")).startswith("_SYSTEM_CENTER_"):
+                continue
+            paths = [x.get("path") for x in app.get("src") or [] if isinstance(x, dict) and x.get("path")]
+            if app.get("path"):
+                paths.append(app["path"])
+            if not any(Path(x).exists() for x in paths):  # none listed, or none on this Mac
+                iphone = True
+                break
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        pass
+    return {"readable": readable, "iphone": iphone}
 
 UTC = dt.timezone.utc
 APPLE_EPOCH = dt.datetime(2001, 1, 1, tzinfo=UTC)
