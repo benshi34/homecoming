@@ -204,6 +204,9 @@ def find(with_ssh=False, also=()):
 PURE = ("pypdf", "typing_extensions")
 
 
+CARRIED = ("ai_coding.json",)  # corpus settings a machine's read follows too
+
+
 def bundle():
     """These connectors as a gzipped tar: no tests, no vendored phone tools, no caches; and PURE's packages that this
     Python has, in _deps/."""
@@ -227,6 +230,11 @@ def bundle():
             for f in files:
                 if "__pycache__" not in f.parts:
                     t.add(f, arcname=f"connectors/_deps/{f.relative_to(where.parent.parent if where.name == '__init__.py' else where.parent)}")
+        # Your settings for what's read go along, so a machine leaves out what this Mac does (ai_coding.json's leave_out).
+        # Never network.json: there, nothing goes online.
+        for name in CARRIED:
+            if (CORPUS / name).is_file():
+                t.add(CORPUS / name, arcname=f"corpus/{name}")
     return buf.getvalue()
 
 
