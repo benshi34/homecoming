@@ -155,6 +155,19 @@ class LeaveOutTests(unittest.TestCase):
         self.assertNotIn("HELDOUT", " ".join(r["text"] for r in recs))
         self.assertIn("fix the login bug", " ".join(r["text"] for r in recs))
 
+    def test_a_session_that_moves_into_a_left_out_folder_leaves_that_part_out(self):
+        h = str(self.home)
+        d = self.home / ".claude/projects/-home"
+        d.mkdir(parents=True)
+        rows = [{"type": "user", "uuid": f"mv-{i}", "sessionId": "mv", "cwd": cwd, "timestamp": f"2026-10-21T10:0{i}:00Z",
+                 "message": {"role": "user", "content": text}}
+                for i, (cwd, text) in enumerate([(h, "plan the week"), (f"{h}/evals/run-9", "HELDOUT-DELTA")])]
+        (d / "mv.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.configure(["~/evals"])
+        texts = " ".join(r["text"] for r in run(self.home, self.corpus))
+        self.assertIn("plan the week", texts)
+        self.assertNotIn("HELDOUT-DELTA", texts)
+
     def test_a_folder_only_sharing_a_prefix_stays(self):
         self.configure(["~/src/ap"])
         self.assertIn("fix the login bug", " ".join(r["text"] for r in run(self.home, self.corpus)))

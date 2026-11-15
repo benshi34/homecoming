@@ -107,6 +107,9 @@ def claude_code(w):
                 continue
             if not r.get("uuid") or w.has(r.get("uuid")):
                 continue  # resumed sessions repeat earlier messages
+            if left_out(r.get("cwd")):  # a session that moved into a left-out folder: what was said there stays out
+                w.notes["messages_in_folders_left_out"] = w.notes.get("messages_in_folders_left_out", 0) + 1
+                continue
             msg = r.get("message") or {}
             content = msg.get("content")
             base = dict(ts=r.get("timestamp"), thread=r.get("sessionId") or f.stem, thread_name=title,
