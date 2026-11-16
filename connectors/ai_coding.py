@@ -115,10 +115,27 @@ def _codex_head(f):
     return f.stem, None, None, None
 
 
+def _records(f):
+    """A JSONL file's records one line at a time, never the whole file in memory (a rollout can be most of a GB, nearly
+    all of it tool output). A line not (yet) whole, or not a record, is passed over."""
+    try:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.strip():
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(r, dict):
+                        yield r
+    except OSError:
+        return
+
+
 def _codex_msgs(f):
     """A rollout file's messages in order, as (role, text, timestamp)."""
     msgs = []
-    for r in _lines(f):
+    for r in _records(f):
         p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
         if r.get("type") != "response_item" or p.get("type") != "message" or p.get("role") not in ("user", "assistant"):
             continue

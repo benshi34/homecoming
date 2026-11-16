@@ -117,6 +117,10 @@ class CodexMemoryTests(unittest.TestCase):
         days = Path(t.name) / ".codex/sessions/2026/10/01"
         days.mkdir(parents=True)
         big = "x" * 40_000
+        # and one session whose file is mostly tool output (20 MB): only its messages are kept, not the file
+        noise = {"type": "response_item", "timestamp": "2026-10-01T02:00:00Z", "payload": {"type": "function_call_output", "output": "y" * 200_000}}
+        (days / "rollout-2026-10-01T00-00-999.jsonl").write_text("".join(json.dumps(r) + "\n" for r in
+            [meta("TOOLS", "2026-10-01T02:00:00Z"), msg("user", "run it", "2026-10-01T02:00:01Z"), *[noise] * 100]))
         for i in range(120):
             forked = f"S{i - 1}" if i % 10 == 9 else None
             rows = [meta(f"S{i}", f"2026-10-01T00:{i // 60:02d}:{i % 60:02d}Z", forked=forked)]
