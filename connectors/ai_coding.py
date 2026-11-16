@@ -97,23 +97,35 @@ def claude_code(w):
                 w.add(id=r["uuid"], kind="ai_turn", author="me", is_me=True, text=text, **base)
 
 
-def _codex_file(f):
-    """A rollout file: its session (the first session_meta: a fork's file has its parent's after it), the session it
-    was forked from, when it started, where it ran, and its messages in order, as (role, text, timestamp)."""
-    sid = cwd = forked = start = None
+def _codex_head(f):
+    """A rollout file's session (the first session_meta: a fork's file has its parent's after it), the session it was
+    forked from, when it started, and where it ran. Read only as far as that line, not the whole file."""
+    try:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("type") == "session_meta":
+                    p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+                    return p.get("id") or f.stem, p.get("cwd"), p.get("forked_from_id"), r.get("timestamp")
+    except OSError:
+        pass
+    return f.stem, None, None, None
+
+
+def _codex_msgs(f):
+    """A rollout file's messages in order, as (role, text, timestamp)."""
     msgs = []
     for r in _lines(f):
         p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
-        if r.get("type") == "session_meta":
-            if sid is None:
-                sid, cwd, forked, start = p.get("id"), p.get("cwd"), p.get("forked_from_id"), r.get("timestamp")
-            continue
         if r.get("type") != "response_item" or p.get("type") != "message" or p.get("role") not in ("user", "assistant"):
             continue
         text = _text(p.get("content"))
         if text.strip() and not text.lstrip().startswith(NOISE_PREFIXES):
             msgs.append((p["role"], text, r.get("timestamp")))
-    return sid or f.stem, cwd, forked, start, msgs
+    return msgs
 
 
 def _copied(msgs, earlier, until=None):
@@ -139,17 +151,33 @@ def codex(w):
             names[d["id"]] = d.get("thread_name")
     # Archived threads move to archived_sessions (flat, same files): read with the rest. CODEX_HOME moves it all.
     found = [*(root / "sessions").rglob("rollout-*.jsonl"), *(root / "archived_sessions").glob("rollout-*.jsonl")]
-    files = [(f, *_codex_file(f)) for f in sorted(found, key=lambda f: f.name)]
+    files = [(f, *_codex_head(f)) for f in sorted(found, key=lambda f: f.name)]
     # A forked session's file starts with a copy of its parent's conversation, read already from the parent's own
     # file: those are skipped, and its own messages are numbered from 1. Parents are read first. A session in more
     # than one file (resumed) goes on from what's been read. The n-th message of a session is codex:<session>:<n>.
+    # A file's messages are read when its turn comes, and a session's are kept only while a file still to come needs
+    # them (its own next file, or a fork of it), so a big Codex history is never all in memory at once.
     sessions = {sid for _, sid, *_ in files}
+    needed = {}  # session -> files still to come that need what it said: its own, and forks of it
+    for _, sid, _, forked, _ in files:
+        needed[sid] = needed.get(sid, 0) + 1
+        if forked and forked != sid:
+            needed[forked] = needed.get(forked, 0) + 1
     said = {}  # session -> its messages read so far, (role, text, timestamp)
+    started = set()  # sessions with a file read already (said may have let go of them)
     done = set()
+
+    def used(s):
+        needed[s] -= 1
+        if needed[s] <= 0:
+            said.pop(s, None)
+
     while len(done) < len(files):
-        ready = [x for x in files if x[0] not in done and (not x[3] or x[3] not in sessions or x[3] in said or x[3] == x[1])]
-        for f, sid, cwd, forked, start, msgs in ready or [x for x in files if x[0] not in done]:
+        ready = [x for x in files if x[0] not in done and (not x[3] or x[3] not in sessions or x[3] in started or x[3] == x[1])]
+        for f, sid, cwd, forked, start in ready or [x for x in files if x[0] not in done]:
             done.add(f)
+            started.add(sid)
+            msgs = _codex_msgs(f)
             skip = _copied(msgs, said.get(forked, []), start) if forked and forked != sid else 0
             mine = said.setdefault(sid, [])
             rest = msgs[skip:]
@@ -158,6 +186,9 @@ def codex(w):
                 me = role == "user"
                 w.add(id=f"codex:{sid}:{len(mine)}", kind="ai_turn", ts=ts, author="me" if me else "codex",
                       is_me=me, thread=sid, thread_name=names.get(sid), text=text, meta={"cwd": cwd, "tool": "codex"})
+            used(sid)
+            if forked and forked != sid and forked in needed:
+                used(forked)
 
 
 CURSOR_DB = LIB / "Application Support/Cursor/User/globalStorage/state.vscdb"

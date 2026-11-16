@@ -107,3 +107,28 @@ class CodexTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexMemoryTests(unittest.TestCase):
+    def test_a_big_history_is_read_a_file_at_a_time(self):
+        # 120 sessions of ~400 KB each (48 MB), a few resumed and forked: the reader holds about one file, not them all
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        days = Path(t.name) / ".codex/sessions/2026/10/01"
+        days.mkdir(parents=True)
+        big = "x" * 40_000
+        for i in range(120):
+            forked = f"S{i - 1}" if i % 10 == 9 else None
+            rows = [meta(f"S{i}", f"2026-10-01T00:{i // 60:02d}:{i % 60:02d}Z", forked=forked)]
+            rows += [msg("user" if k % 2 else "assistant", f"{i}-{k} {big}", f"2026-10-01T01:00:{k:02d}Z") for k in range(10)]
+            (days / f"rollout-2026-10-01T00-00-{i:03d}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        code = ("import tracemalloc, ai_coding\n"
+                "class W:\n    notes = {}\n    def add(self, **r): self.n = getattr(self, 'n', 0) + 1\n"
+                "w = W(); tracemalloc.start(); ai_coding.codex(w)\n"
+                "print(w.n, tracemalloc.get_traced_memory()[1] // 2**20)")
+        env = {**os.environ, "HOME": t.name, "CODEX_HOME": str(Path(t.name) / ".codex")}
+        r = subprocess.run([sys.executable, "-c", code], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=300)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        n, peak_mb = map(int, r.stdout.split())
+        self.assertGreater(n, 1000)
+        self.assertLess(peak_mb, 12, "peak MiB while reading 48 MB of sessions")
