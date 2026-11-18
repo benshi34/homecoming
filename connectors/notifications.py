@@ -1,5 +1,6 @@
 """macOS Notification Center records, retained before the short-lived database clears them."""
 
+import datetime as dt
 import os
 import plistlib
 import re
@@ -66,8 +67,18 @@ def _author(bundle, app_names, known):
     return name or (b.rsplit(".", 1)[-1] if b else "Unknown"), bool(k.get("iphone"))
 
 
+def _later(rec, now):
+    try:
+        return dt.datetime.fromisoformat(str(rec.get("ts"))) > now
+    except (TypeError, ValueError):
+        return False
+
+
 def main():
-    with Writer("notifications", AVENUE) as w:
+    # Calendar puts an event's alert in the database ahead of time, dated when it will show. Nothing has come in yet,
+    # so it's left for the read after it shows; one an earlier read took (before this rule) is let go the same way.
+    now = dt.datetime.now(dt.timezone.utc)
+    with Writer("notifications", AVENUE, forget=lambda rec: _later(rec, now)) as w:
         db = notification_db()
         if not db.exists():
             return
@@ -77,6 +88,9 @@ def main():
             return
         app_names, known = _installed_app_names(), notification_apps()
         for row in rows:
+            if row["when"] > now:
+                w.notes["not_shown_yet"] = w.notes.get("not_shown_yet", 0) + 1
+                continue
             if w.has(row["id"]):
                 w.notes["duplicates"] = w.notes.get("duplicates", 0) + 1
                 w.skip(row["id"])

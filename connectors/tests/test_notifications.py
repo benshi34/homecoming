@@ -89,10 +89,10 @@ class NotificationsTests(unittest.TestCase):
             {"bundle-id": "com.example.iPhoneApp", "path": "/Applications/Only On The Phone.app", "flags": 0},  # not on this Mac
             {"bundle-id": "_SYSTEM_CENTER_:com.apple.diskarbitration", "flags": 0}]}))
         # presented is 0 on every row of a real database; style says how it was delivered
-        self.add(1, 1, "12345678-1234-5678-1234-567812345678", "Verify", "Security code 482913", "Use it now", APPLE + 800000000, 0, 1, "thread-1", "category-1")
-        self.add(2, 2, "22345678-1234-5678-1234-567812345678", "Order", "Total 1234", "At 2:30", APPLE + 800000001, 0, 2)
-        self.add(3, 3, "42345678-1234-5678-1234-567812345678", "Disk Not Ejected Properly", "", "", APPLE + 800000002, 0, 0)
-        self.add(4, 4, "52345678-1234-5678-1234-567812345678", "Alarm", "", "7:00", APPLE + 800000003, 0, 2)
+        self.add(1, 1, "12345678-1234-5678-1234-567812345678", "Verify", "Security code 482913", "Use it now", 800000000, 0, 1, "thread-1", "category-1")
+        self.add(2, 2, "22345678-1234-5678-1234-567812345678", "Order", "Total 1234", "At 2:30", 800000001, 0, 2)
+        self.add(3, 3, "42345678-1234-5678-1234-567812345678", "Disk Not Ejected Properly", "", "", 800000002, 0, 0)
+        self.add(4, 4, "52345678-1234-5678-1234-567812345678", "Alarm", "", "7:00", 800000003, 0, 2)
         self.run_connector({"UMP_NOTIFICATION_PREFS": str(prefs)})
         clock = next(r for r in self.records() if r["id"] == "52345678-1234-5678-1234-567812345678")
         self.assertEqual((clock["author"], clock["meta"].get("from_iphone")), ("Clock", None))
@@ -111,8 +111,8 @@ class NotificationsTests(unittest.TestCase):
 
     def test_accumulates_cleared_records_and_deduplicates_uuid(self):
         ident = "32345678-1234-5678-1234-567812345678"
-        self.add(1, 1, ident, "First", "", "one", APPLE + 800000000, 1, 0)
-        self.add(2, 1, ident, "First duplicate", "", "two", APPLE + 800000001, 1, 0)
+        self.add(1, 1, ident, "First", "", "one", 800000000, 1, 0)
+        self.add(2, 1, ident, "First duplicate", "", "two", 800000001, 1, 0)
         self.run_connector()
         self.assertEqual(len(self.records()), 1)
         self.assertEqual(self.manifest()["notes"], {"duplicates": 1})
@@ -122,6 +122,27 @@ class NotificationsTests(unittest.TestCase):
         con.close()
         self.run_connector()
         self.assertEqual(len(self.records()), 1, "a notification cleared before the next read stays in the corpus")
+
+    def test_an_alert_set_for_later_waits_until_it_shows(self):
+        import time
+        now = time.time() - APPLE
+        self.add(1, 1, "62345678-1234-5678-1234-567812345678", "Dentist", "", "in 15 minutes", now + 30 * 86400, 0, 2)  # Calendar's, a month ahead
+        self.add(2, 1, "72345678-1234-5678-1234-567812345678", "Earlier", "", "came in", now - 60, 0, 1)
+        self.run_connector()
+        self.assertEqual([r["title"] for r in self.records()], ["Earlier"])
+        self.assertEqual(self.manifest()["notes"], {"not_shown_yet": 1})
+        # one an earlier read took ahead of time is let go; once it has shown, it's read like any other
+        path = self.corpus / "normalized/notifications.jsonl"
+        path.write_text(path.read_text() + json.dumps({"id": "62345678-1234-5678-1234-567812345678", "source": "notifications",
+                                                       "kind": "notification", "ts": "2099-01-05T21:15:00+00:00", "title": "Dentist"}) + "\n")
+        self.run_connector()
+        self.assertEqual([r["title"] for r in self.records()], ["Earlier"])
+        con = sqlite3.connect(self.db)
+        con.execute("update record set delivered_date = ? where rec_id = 1", (now - 5,))
+        con.commit()
+        con.close()
+        self.run_connector()
+        self.assertEqual(sorted(r["title"] for r in self.records()), ["Dentist", "Earlier"])
 
     def test_no_full_disk_access_is_reported(self):
         self.db.chmod(0)
@@ -137,7 +158,7 @@ class NotificationsTests(unittest.TestCase):
         old.parent.mkdir()
         self.db.rename(old)
         self.db = old
-        self.add(1, 1, "42345678-1234-5678-1234-567812345678", "Old", "", "path", APPLE + 800000000, 1, 1)
+        self.add(1, 1, "42345678-1234-5678-1234-567812345678", "Old", "", "path", 800000000, 1, 1)
         self.run_connector()
         self.assertEqual(len(self.records()), 1)
 
