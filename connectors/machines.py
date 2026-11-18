@@ -452,7 +452,10 @@ def main():
             except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as e:
                 entry["machines"][machine] = {"not_read": str(e) if not isinstance(e, subprocess.TimeoutExpired) else "took too long"}
             # a source not read this time (fewer chosen, or the machine was away) keeps what the last read said of it
-            old = {k: v for k, v in ((before.get(machine) or {}).get("sources") or {}).items() if k != "_access"}  # this read says
+            # (_access is this read's to say; so is why a reader that ran this time couldn't before: it may run now)
+            ran = set(connectors(machine))
+            old = {k: v for k, v in ((before.get(machine) or {}).get("sources") or {}).items()
+                   if k != "_access" and not (k in ran and isinstance(v, dict) and "not_read" in v)}
             if old and "sources" in entry["machines"][machine]:
                 entry["machines"][machine]["sources"] = {**old, **entry["machines"][machine]["sources"]}
             print(f"[machines] {machine}: {entry['machines'][machine]}", flush=True)
