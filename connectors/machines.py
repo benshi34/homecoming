@@ -156,6 +156,19 @@ def ssh_hosts():
     return out
 
 
+SIGN_IN = re.compile(r"permission denied|host key verification failed|too many authentication failures", re.I)
+RETRY_AFTER = float(os.environ.get("UMP_MACHINE_RETRY_AFTER") or 10)
+
+
+def ssh_failed(stderr):
+    """What ssh's exit 255 was: a sign-in it couldn't do without asking, or a connection that didn't happen (and ssh's
+    own words for it, so a dropped link isn't reported as a sign-in problem)."""
+    if SIGN_IN.search(stderr):
+        return "couldn't sign in without asking"
+    said = [l.strip() for l in stderr.splitlines() if l.strip() and not l.lower().startswith(("warning", "debug"))]
+    return f"couldn't connect: {said[-1][:160]}" if said else "couldn't connect"
+
+
 def check(name):
     """One ssh call that asks for nothing: (reachable, what it is)."""
     try:
@@ -164,7 +177,7 @@ def check(name):
     except (OSError, subprocess.TimeoutExpired):
         return {"reachable": False, "why": "no answer"}
     if r.returncode == 255:
-        return {"reachable": False, "why": "couldn't sign in without asking" if "denied" in r.stderr.lower() else "no answer"}
+        return {"reachable": False, "why": ssh_failed(r.stderr)}
     lines = r.stdout.split()
     return {"reachable": True, "system": lines[0] if lines else "?", "python": "Python" in r.stdout}
 
@@ -278,12 +291,16 @@ def fetch(machine, names):
               'tar -xzf - -C "$d" || exit 71; cd "$d/connectors" || exit 72; command -v python3 >/dev/null || exit 127; '
               f'CORPUS_DIR="$d/corpus" python3 remote_run.py {" ".join(shlex.quote(n) for n in names)} >&2; '
               'cd "$d/corpus" 2>/dev/null && COPYFILE_DISABLE=1 tar -czf - normalized manifest.json 2>/dev/null')
-    r = subprocess.run([*SSH, *target(machine), script], input=bundle(), capture_output=True, timeout=TIMEOUT)
-    log = r.stderr.decode(errors="replace")
+    for attempt in (1, 2):  # a dropped connection gets one more try; a refused sign-in doesn't
+        r = subprocess.run([*SSH, *target(machine), script], input=bundle(), capture_output=True, timeout=TIMEOUT)
+        log = r.stderr.decode(errors="replace")
+        if r.returncode != 255 or SIGN_IN.search(log) or attempt == 2:
+            break
+        time.sleep(RETRY_AFTER)
     if r.returncode == 127:
         raise RuntimeError("no python3 there")
     if r.returncode == 255:
-        raise RuntimeError("couldn't sign in without asking")
+        raise RuntimeError(ssh_failed(log))
     out = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(r.stdout), mode="r:gz") as t:
@@ -293,6 +310,12 @@ def fetch(machine, names):
     except tarfile.TarError:
         raise RuntimeError(f"nothing came back (exit {r.returncode})")
     return out, log
+
+
+# An id that's a database's row number ("safari:1234", "book:7") is only unique on its own device: another Mac's row 1234
+# is some other visit. Such a record is the same as one here only when what it says matches (its fingerprints), which a
+# copy migrated from this Mac does. Ids that name the thing itself (a message's guid, a contact's uuid) match on their own.
+ROW_NUMBER = re.compile(r"(?:[a-z_]+:)?\d+")
 
 
 def fingerprints(r):
@@ -345,7 +368,7 @@ def merge(machine, source, data):
                 continue
             if not isinstance(r, dict) or r.get("id") is None or r.get("source") != source:
                 continue
-            if str(r["id"]) in mine or any(fp in prints for fp in fingerprints(r)):
+            if (str(r["id"]) in mine and not ROW_NUMBER.fullmatch(str(r["id"]))) or any(fp in prints for fp in fingerprints(r)):
                 same += 1
                 continue
             r["id"] = pre + str(r["id"])
@@ -361,7 +384,8 @@ def merge(machine, source, data):
                     old = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(old, dict) and old.get("id") not in seen and str(old.get("id", ""))[len(pre):] not in mine \
+                bare = str(old.get("id", ""))[len(pre):] if isinstance(old, dict) else ""
+                if isinstance(old, dict) and old.get("id") not in seen and (bare not in mine or ROW_NUMBER.fullmatch(bare)) \
                         and not any(fp in prints for fp in fingerprints(old)):
                     f.write(line if line.endswith("\n") else line + "\n")
                     seen.add(old.get("id"))
