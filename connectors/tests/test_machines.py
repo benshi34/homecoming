@@ -42,6 +42,9 @@ case "$host" in
   box2) HOME="{self.root}/box2" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" sh -c "$last";;
   box|theirs|coworker) HOME="{self.box}" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" sh -c "$last";;
   nopython) exit 127;;
+  down) echo "ssh: connect to host down port 22: Operation timed out" >&2; exit 255;;
+  flaky) if [ -e "{self.root}/flaky.once" ]; then HOME="{self.box}" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" sh -c "$last"
+         else touch "{self.root}/flaky.once"; echo "Connection closed by UNKNOWN port 65535" >&2; exit 255; fi;;
   *) echo "Permission denied (publickey)." >&2; exit 255;;
 esac""")
         self.tool("tailscale", """echo '{"Self": {"HostName": "laptop", "UserID": 1}, "Peer": {"a": {"HostName": "box", "DNSName": "box.tail.ts.net.", "OS": "linux", "Online": true, "TailscaleIPs": ["100.64.0.9"], "UserID": 1}, "b": {"HostName": "phone", "DNSName": "phone.tail.ts.net.", "OS": "iOS", "UserID": 1}, "c": {"HostName": "funnel-ingress-node"}, "d": {"HostName": "box", "DNSName": "theirs.tail.ts.net.", "OS": "linux", "Online": true, "TailscaleIPs": ["100.64.0.20"], "UserID": 2, "ShareeNode": true}, "e": {"HostName": "box", "DNSName": "coworker.tail.ts.net.", "OS": "macOS", "Online": true, "TailscaleIPs": ["100.64.0.21"], "UserID": 3}, "f": {"HostName": "old", "DNSName": "old.tail.ts.net.", "OS": "linux", "Online": false, "UserID": 1}}}'""")
@@ -225,6 +228,31 @@ esac""")
         # a second machine with the first one's call: kept once, as the first machine's
         out = self.py("import json, machines; print(json.dumps(machines.merge('lab', 'contacts', " + repr(json.dumps({**theirs[2], "id": "Z"}).encode()) + ")))")
         self.assertEqual(json.loads(out), [0, 1])
+
+    def test_a_row_number_is_the_same_visit_only_when_it_says_the_same(self):
+        norm = self.corpus / "normalized"
+        norm.mkdir()
+        mine = [{"id": "safari:12", "source": "browser_history", "kind": "visit", "ts": "2026-11-01T09:00:00Z", "title": "Docs", "url": "https://example.com/docs"},
+                {"id": "safari:13", "source": "browser_history", "kind": "visit", "ts": "2026-11-01T09:05:00Z", "title": "Home", "url": "https://example.com/"},
+                {"id": "f00d-guid", "source": "browser_history", "kind": "visit", "ts": "2026-11-01T09:06:00Z", "title": "A", "url": "https://example.com/a"}]
+        (norm / "browser_history.jsonl").write_text("".join(json.dumps(r) + "\n" for r in mine))
+        theirs = [{**mine[0], "ts": "2026-10-02T17:30:00Z", "title": "Weather", "url": "https://example.org/weather"},  # its own row 12: another visit
+                  mine[1],  # a copy migrated from this Mac: row 13 and all it says
+                  {**mine[2], "title": "A, renamed"}]  # an id that names the thing: the same visit, whatever else changed
+        data = "".join(json.dumps(r) + "\n" for r in theirs).encode()
+        out = self.py("import json, machines; print(json.dumps(machines.merge('box', 'browser_history', " + repr(data) + ")))")
+        self.assertEqual(json.loads(out), [1, 2])
+        self.assertEqual([(r["id"], r["title"]) for r in self.records("browser_history@box")], [("@box/safari:12", "Weather")])
+        # read again: the box's row 12 is kept from before, not taken for this Mac's
+        out = self.py("import json, machines; print(json.dumps(machines.merge('box', 'browser_history', b'')))")
+        self.assertEqual(json.loads(out), [1, 0])
+
+    def test_a_dropped_connection_is_tried_again_and_isnt_called_a_sign_in(self):
+        self.py("import machines; machines.main()", UMP_MACHINES="flaky down", UMP_MACHINE_RETRY_AFTER="0")
+        m = json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]
+        self.assertEqual(m["flaky"]["sources"]["shell_history"]["count"], 2, "read on the second try")
+        self.assertEqual(m["down"], {"not_read": "couldn't connect: ssh: connect to host down port 22: Operation timed out"})
+        self.assertEqual((self.root / "ssh.log").read_text().split().count("down"), 2)
 
     def test_vms_on_this_mac_are_found_and_reached_by_their_own_ssh_config(self):
         self.tool("limactl", """echo '{"name": "dev", "status": "Running"}'; echo '{"name": "old", "status": "Stopped"}'""")
