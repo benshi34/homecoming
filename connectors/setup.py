@@ -23,7 +23,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from common import FIELDS, HOME, LIB, NORM, Writer, connect, from_unix, snapshot_sqlite
+from common import FIELDS, HOME, LIB, NORM, Writer, connect, from_unix, snapshot_sqlite, tailscale_devices, tailscale_status
 import redact as redact_module
 
 AVENUE = ("Local files and read-only commands. Configs (each version kept, with a diff from the last): Warp "
@@ -375,11 +375,10 @@ def domains(w, v):
 # ---------------------------------------------------------------- layouts
 
 def warp_db():
-    for p in (LIB / "Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable/warp.sqlite",
-              LIB / "Application Support/dev.warp.Warp-Stable/warp.sqlite"):
-        if p.exists():
-            return p
-    return None
+    # Warp's own folder (its team id in the name), or the older one; Stable, Preview or another channel: the one used last
+    found = [*LIB.glob("Group Containers/*.dev.warp/Library/Application Support/dev.warp.Warp-*/warp.sqlite"),
+             *LIB.glob("Application Support/dev.warp.Warp-*/warp.sqlite")]
+    return max(found, key=lambda p: p.stat().st_mtime, default=None)
 
 
 def warp(w, v):
@@ -510,11 +509,10 @@ def scripts(w, v):
 # ---------------------------------------------------------------- machines
 
 def tailscale(w, v):
-    ts = run(["tailscale", "status", "--json"]) or run(["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "status", "--json"])
-    if ts:
+    d = tailscale_status()
+    if d:
         try:
-            d = json.loads(ts)
-            peers = [p for p in (d.get("Peer") or {}).values() if p.get("HostName") != "funnel-ingress-node"]
+            peers = tailscale_devices(d)
             lines = [f"{p.get('HostName')} ({p.get('OS') or '?'})"  # not whether it's online: that's now, not your setup
                      f"{' (shared in)' if p.get('ShareeNode') else ''}" for p in sorted(peers, key=lambda p: str(p.get("HostName")))]
             me = d.get("Self") or {}

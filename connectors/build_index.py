@@ -194,15 +194,26 @@ def built():
         return None
 
 
+def of_file(stem):
+    """The records a normalized file holds, as a where clause. <source>.jsonl: this Mac's; <source>@<machine>.jsonl: the
+    same source from another machine (machines.py), whose ids start "@<machine>/"."""
+    source, _, machine = stem.partition("@")
+    if machine:
+        return "source = ? and id glob ?", (source, f"@{machine}/*")
+    return "source = ? and id not glob '@*/*'", (source,)
+
+
 def drop(con, source):
     """A source's records out of the table and the search index (an index of another table's text is told what it had)."""
-    con.execute(f"insert into fts(fts, rowid, {FTS_COLS}) select 'delete', rowid, {FTS_COLS} from records where source = ?", (source,))
-    con.execute("delete from records where source = ?", (source,))
+    where, args = of_file(source)
+    con.execute(f"insert into fts(fts, rowid, {FTS_COLS}) select 'delete', rowid, {FTS_COLS} from records where {where}", args)
+    con.execute(f"delete from records where {where}", args)
     con.execute("delete from built_from where source = ?", (source,))
 
 
 def index_text(con, source):
-    con.execute(f"insert into fts(rowid, {FTS_COLS}) select rowid, {FTS_COLS} from records where source = ?", (source,))
+    where, args = of_file(source)
+    con.execute(f"insert into fts(rowid, {FTS_COLS}) select rowid, {FTS_COLS} from records where {where}", args)
 
 
 def update(tmp, now, was):
@@ -229,7 +240,8 @@ def update(tmp, now, was):
     emails_moved = False  # an export's emails changed: which of Mail's it has may be different now
     for s in gone + changed:
         if s != "mail":
-            emails_moved = emails_moved or con.execute("select 1 from records where kind = 'email' and source = ? limit 1", (s,)).fetchone() is not None
+            where, args = of_file(s)
+            emails_moved = emails_moved or con.execute(f"select 1 from records where kind = 'email' and {where} limit 1", args).fetchone() is not None
             drop(con, s)
             totals.pop(s, None)
     for s in changed:

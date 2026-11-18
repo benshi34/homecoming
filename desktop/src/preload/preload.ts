@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('api', {
   dropFiles: (files: File[], sourceId: string | null) =>
     ipcRenderer.invoke('drop-files', { paths: files.map((f) => webUtils.getPathForFile(f)).filter(Boolean), sourceId }),
   settings: (patch: unknown) => ipcRenderer.invoke('settings', patch),
+  machines: () => ipcRenderer.invoke('machines'),
+  machineSet: (name: string, read: boolean) => ipcRenderer.invoke('machine-set', { name, read }),
+  machineCheck: (name: string) => ipcRenderer.invoke('machine-check', name),
   jobLog: (sourceId: string) => ipcRenderer.invoke('job-log', sourceId),
   directory: () => ipcRenderer.invoke('directory'),
   aiChrome: () => ipcRenderer.invoke('ai-chrome'),
