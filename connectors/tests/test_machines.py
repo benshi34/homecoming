@@ -183,6 +183,14 @@ esac""")
         self.py("import machines; machines.main()", UMP_MACHINES="")
         self.assertEqual(len(self.records("shell_history@box")), 3, "a machine no longer chosen keeps what was read")
 
+    def test_why_a_reader_couldnt_run_goes_once_it_runs(self):
+        (self.corpus / "manifest.json").write_text(json.dumps({"machines": {"machines": {"box": {"sources": {
+            "apple_notes": {"not_read": "needs cryptography on this machine's Python"},  # installed there since; nothing to read
+            "setup": {"not_read": "needs yaml on this machine's Python"}}}}}}))  # not run this time: still the last word
+        self.py("import machines; machines.main()", UMP_MACHINES="box", UMP_MACHINE_SOURCES="apple_notes")
+        sources = json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]["box"]["sources"]
+        self.assertEqual(sources, {"setup": {"not_read": "needs yaml on this machine's Python"}})
+
     def test_the_index_holds_both_and_reloading_one_keeps_the_other(self):
         self.py("import shell_history; shell_history.main()")
         # most of the library unchanged, so the index is updated in place, not built again from nothing
