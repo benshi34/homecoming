@@ -660,6 +660,9 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const watching = set.watchDownloads !== false;
   const v: SourceView = { ...base(src, st), section: 'todo', status: '', priority: 40, records: t.records, first: t.first, last: t.last,
     ranAt: t.ranAt ?? undefined, steps: stepsView(src, st, watching), tag: isWeb ? 'Web' : 'Manual', requestedAt: st?.requestedAt, accountName: st?.accountName };
+  if (isWeb && set.aiOn !== false && set.agentExports !== false && inp.agentWhy?.fix === 'offline' && inp.agentWhy.why) {
+    v.notes = [inp.agentWhy.why, ...(v.notes ?? [])];
+  }
   const addFile: Action = { id: 'add-file', label: 'Add the Download…', input: 'file' };
   // A service you added with no website has no page to open: its steps and a drafted request stand in.
   const open: Action | null = src.url ? { id: 'open', label: 'Open the Export Page', primary: true } : null;
@@ -943,7 +946,7 @@ export function computeSources(inp: StatusInput): SourceView[] {
   const noAi = inp.state.settings?.aiOn === false;
   // Can't run: no Do It for Me buttons, unless it's only the AI picked (it isn't there yet with it): then the button
   // stays, and says so when pressed (renderer agent_gate.tsx).
-  const noAgent = inp.claudeCode === false && inp.agentWhy?.fix !== 'provider';
+  const noAgent = inp.claudeCode === false && inp.agentWhy?.fix !== 'provider' && inp.agentWhy?.fix !== 'offline';
   const views = CATALOG.map((src) => {
     const v: SourceView = src.group === 'setup' ? setupView(src, inp)
       : src.group === 'mac' ? withContents(macView(src, inp), src, inp.stats)

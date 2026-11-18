@@ -155,6 +155,9 @@ export interface FoundFile extends Identified {
 export interface Settings {
   autoRefresh: boolean;
   watchDownloads: boolean;
+  // The network switch is off until the person turns it on. Connector sources are opt-in too.
+  offline?: boolean;
+  networkOn?: string[];
   // "Do It for Me" is on (the person said yes once), and downloads start by themselves once an export is ready.
   agentExports?: boolean;
   agentDownloads?: boolean;
@@ -378,6 +381,24 @@ export interface Snapshot {
   whatsNew?: Release[] | null;
 }
 
+export interface MachineAccess {
+  full_disk_access?: boolean | null;
+  blocked?: string[];
+  drives_blocked?: string[];
+  macos?: string;
+  fix?: string;
+  not_read?: string;
+}
+
+export interface MachineView {
+  name: string;
+  via: string;
+  read: boolean;
+  access: MachineAccess | null;
+  lastRead: boolean;
+  why?: string | null;
+}
+
 // Export Your Library (main library_export.ts, py/export_library.py): the library in one .zip, saved where you choose.
 // records is always in it; media is the photos and attachments; originals is each download as it came, and what was
 // read from this Mac as it was.
@@ -419,6 +440,7 @@ export interface SetupView {
 // The Ask assistant's settings, and what this Mac has for it.
 export interface AskView {
   settings: AskSettings;
+  offline?: boolean;
   installed: { 'claude-code': boolean; codex: boolean };
   keys: { anthropic: boolean; openai: boolean };
   local?: LocalStatus; // whether the local model's server answers (checked on this Mac only)

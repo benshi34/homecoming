@@ -75,6 +75,7 @@ MAC_PATHS = {
     "ai_coding": [HOME / ".claude/projects", HOME / ".codex/sessions", LIB / "Application Support/Cursor/User/globalStorage/state.vscdb",
                   LIB / "Application Support/Code/User/workspaceStorage"],
     "editor_history": [LIB / f"Application Support/{e}/User/History" for e in ("Code", "Cursor", "VSCodium", "Windsurf")],
+    "machines": [CORPUS / "machines.json"],  # or your own machines on Tailscale, or VMs: machines.anywhere_to_look, at probe time
     "setup": [HOME / ".zshrc", HOME / ".gitconfig", HOME / ".claude/settings.json", HOME / ".config", HOME / "Library/LaunchAgents"],
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
@@ -359,6 +360,12 @@ def probe():
     for name, paths in MAC_PATHS.items():
         states = [look(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
         sources[name] = "ok" if "ok" in states else "blocked" if "blocked" in states else "absent"
+    if sources.get("machines") != "ok":
+        try:
+            import machines
+            sources["machines"] = "ok" if machines.anywhere_to_look() else "absent"
+        except Exception:  # Tailscale misbehaving stops no other source's probe
+            pass
     from common import git_bin
     if not git_bin():  # commits can't be read without git
         sources["git_commits"] = "absent"
@@ -461,6 +468,57 @@ def stats():
     return {"manifest": manifest, "years": years, "copies": copies, "device": sorted(device), "facets": facets,
             "db_mtime": db.stat().st_mtime if db.exists() else None,
             "manifest_mtime": manifest_path.stat().st_mtime if manifest_path.exists() else None}
+
+
+# ---------------------------------------------------------------- other machines settings
+
+def machine_list():
+    """The machines the Network settings page can show, without reading any of them."""
+    from common import read_manifest
+    import machines
+
+    manifest = read_manifest()
+    entries = ((manifest.get("machines") or {}).get("machines") or {})
+    result = []
+    # Listed from Tailscale's, the VMs' and the ssh config's own state: drawing the page contacts no machine.
+    for found in machines.listed():
+        name = str(found.get("name", ""))
+        entry = entries.get(name) if isinstance(entries.get(name), dict) else {}
+        sources = entry.get("sources") if isinstance(entry.get("sources"), dict) else {}
+        result.append({
+            "name": name,
+            "via": found.get("via", "ssh"),
+            "read": bool(found.get("read")),
+            "access": sources.get("_access") if isinstance(sources.get("_access"), dict) else None,
+            "lastRead": bool(entry) and not bool(entry.get("not_read")),
+            "why": entry.get("not_read") or found.get("why"),
+        })
+    return result
+
+
+def machine_set(data):
+    """Move one name between machines.json's read and skip lists, retaining every other setting."""
+    from common import read_json, write_atomic
+    import machines
+
+    if not isinstance(data, dict) or not str(data.get("name", "")).strip():
+        raise ValueError("machine-set needs a name")
+    name = str(data["name"]).strip()
+    if not isinstance(data.get("read"), bool):
+        raise ValueError("machine-set needs read=true or false")
+    config = read_json(machines.CONFIG, {})
+    config = config if isinstance(config, dict) else {}
+    read = [x for x in config.get("read") or [] if str(x) != name]
+    skip = [x for x in config.get("skip") or [] if str(x) != name]
+    (read if data["read"] else skip).append(name)
+    config["read"], config["skip"] = read, skip
+    write_atomic(machines.CONFIG, json.dumps(config, indent=2, sort_keys=True) + "\n")
+    return {"name": name, "read": data["read"]}
+
+
+def machine_check(name):
+    import machines
+    return machines.check_access(str(name))
 
 
 # ---------------------------------------------------------------- exports in formats no parser knows
@@ -1991,6 +2049,14 @@ def main(argv):
         out(probe())
     elif cmd == "stats":
         out(stats())
+    elif cmd == "machines":
+        out(machine_list())
+    elif cmd == "machine-set":
+        out(machine_set(json.loads(sys.stdin.read() or "{}")))
+    elif cmd == "machine-check":
+        if not rest:
+            raise ValueError("machine-check needs a name")
+        out(machine_check(rest[0]))
     elif cmd == "describe-export":
         out(describe_export(rest[0], examples="--examples" in rest,
                             service=next((a.split("=", 1)[1] for a in rest if a.startswith("--service=")), None)))
