@@ -86,6 +86,24 @@ describe('setup', () => {
     assert.equal(view('python_env').section, 'done');
   });
 
+  test('older Python needs an upgrade even when both packages are installed', () => {
+    for (const version of ['3.9.6', '3.13.12']) {
+      const v = view('python_env', { probe: probe({ python: { path: '/usr/local/bin/python3', version, cryptography: true, pypdf: true } }) });
+      assert.deepEqual(place(v), ['todo', true]);
+      assert.equal(v.status, `Python ${version} is too old`);
+      assert.match(v.detail!, /needs Python 3\.14\. Install it from python\.org\/downloads\/macos\//);
+      assert.match(v.detail!, /UMP_PYTHON/);
+      assert.deepEqual(actionIds(v), ['recheck']);
+    }
+  });
+
+  test('a newer Python reads everything but warns the iPhone step needs 3.14', () => {
+    const v = view('python_env', { probe: probe({ python: { path: '/opt/homebrew/bin/python3', version: '3.15.2', cryptography: true, pypdf: true } }) });
+    assert.equal(v.section, 'done', 'nothing else waits on it');
+    assert.equal(v.status, 'Python 3.15.2');
+    assert.match(v.warnings.join(' '), /iPhone backup needs Python 3\.14/);
+  });
+
   test('corpus in iCloud asks before moving anything', () => {
     const p = probe();
     p.corpus.in_icloud = true;

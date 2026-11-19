@@ -13,6 +13,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { pythonSupported } from '../shared/python.ts';
 
 export interface Paths {
   appDir: string;
@@ -28,14 +30,35 @@ export interface Paths {
   packaged: boolean;
 }
 
-const PYTHONS = ['/usr/local/bin/python3', '/opt/homebrew/bin/python3',
+const PYTHONS = ['/usr/local/bin/python3', '/usr/local/bin/python3.14',
+  '/opt/homebrew/bin/python3.14', '/opt/homebrew/bin/python3',
+  '/Library/Frameworks/Python.framework/Versions/3.14/bin/python3',
   '/Library/Frameworks/Python.framework/Versions/Current/bin/python3', '/usr/bin/python3'];
 
+export function pythonVersion(python: string, env: NodeJS.ProcessEnv): string | null {
+  try {
+    const version = execFileSync(python, ['-I', '-S', '-c', 'import sys; print(".".join(map(str, sys.version_info[:3])))'],
+      { env, encoding: 'utf8', timeout: 2000, maxBuffer: 1024, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return /^\d+\.\d+\.\d+$/.test(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+
 // bundled: the Python inside Homecoming.app (scripts/package_mac.mjs puts it there, its packages installed).
-export function findPython(env: NodeJS.ProcessEnv, exists: (p: string) => boolean = fs.existsSync, bundled?: string): string {
+// Keep a runnable Python only when none fit the bundled packages, so Setup can say what to install.
+export function findPython(env: NodeJS.ProcessEnv, exists: (p: string) => boolean = fs.existsSync, bundled?: string,
+  version: (p: string) => string | null = (p) => pythonVersion(p, env)): string {
   if (env.UMP_PYTHON) return env.UMP_PYTHON;
-  if (bundled && exists(bundled)) return bundled;
-  return PYTHONS.find(exists) ?? 'python3';
+  const candidates = [...(bundled ? [bundled] : []), ...PYTHONS].filter(exists);
+  let fallback: string | undefined;
+  for (const python of [...candidates, 'python3']) {
+    const v = version(python);
+    if (!v) continue;
+    fallback ??= python;
+    if (pythonSupported(v)) return python;
+  }
+  return fallback ?? 'python3';
 }
 
 // Run from source, everything is in the clone: connectors/ next to desktop/, the library in corpus/. Packaged

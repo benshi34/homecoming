@@ -8,6 +8,7 @@ import { contents } from './contents.ts';
 import { ago, bytes, count, day, list, range, waitRange } from './format.ts';
 import { describeNew, newCandidates } from './identity.ts';
 import { inboxesFor, inboxLabel } from './inbox.ts';
+import { MIN_PYTHON, pythonMeetsMinimum, pythonSupported } from './python.ts';
 import type { Action, AppState, Candidate, Backup, JobView, Probe, SignInCheck, SourceState, SourceView, Stats, Summary } from './types.ts';
 
 export interface StatusInput {
@@ -311,8 +312,13 @@ function setupState(src: Source, inp: StatusInput): SourceView {
     }
     case 'python_env': {
       const p = probe.python;
+      // Too old holds everything up (the readers need it); newer works for all but the iPhone step's 3.14-only packages
+      if (!pythonMeetsMinimum(p.version)) return { ...v, section: 'todo', priority: 2, status: `Python ${p.version} is too old`,
+        detail: `Homecoming needs Python ${MIN_PYTHON}. Install it from python.org/downloads/macos/, then quit and reopen Homecoming. If you use UMP_PYTHON, point it at Python ${MIN_PYTHON}.`,
+        actions: [recheck] };
+      const iphone = pythonSupported(p.version) ? [] : [`Reading an iPhone backup needs Python ${MIN_PYTHON}: install it from python.org/downloads/macos/ beside this one.`];
       const missing = [!p.cryptography && 'cryptography', !p.pypdf && 'pypdf'].filter(Boolean) as string[];
-      if (!missing.length) return { ...v, status: `Python ${p.version}` };
+      if (!missing.length) return { ...v, status: `Python ${p.version}`, ...(iphone.length ? { warnings: iphone } : {}) };
       return { ...v, section: 'todo', priority: 2, status: `Missing ${list(missing)}`,
         detail: `Open Terminal, paste this line and press Return, then choose Check Again:\n${p.path} -m pip install ${missing.join(' ')}`,
         notes: missing.includes('cryptography') ? ['Without cryptography, encrypted iPhone backups can\'t be read.'] : ['Without pypdf, PDFs are skipped.'],
