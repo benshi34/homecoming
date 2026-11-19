@@ -328,6 +328,13 @@ function setupState(src: Source, inp: StatusInput): SourceView {
     }
     case 'disk_space': {
       const free = probe.corpus.free_bytes;
+      // The index wasn't rebuilt for want of room: search still answers from the last one, and the next read tries again
+      const held = inp.stats?.manifest?.index?.not_rebuilt;
+      if (held && free < held.need_bytes) {
+        return { ...v, section: 'todo', priority: 6, status: `Only ${bytes(free)} free`,
+          detail: `Search isn't up to date: updating it needs about ${bytes(held.need_bytes)} free. It still finds everything read before, and updates by itself once there's room.`,
+          actions: [recheck] };
+      }
       if (free >= MIN_FREE) return { ...v, status: `${bytes(free)} free` };
       if (st?.doneAt) return { ...v, status: `${bytes(free)} free`, warnings: ['Low on space: large exports may not fit.'], actions: [recheck] };
       return { ...v, section: 'todo', priority: 6, status: `Only ${bytes(free)} free`,

@@ -9,14 +9,21 @@ Only the sources whose files changed since the last build are loaded again (buil
 and a hash of what it says: one written again the same is left as it is), into a clone of the database that then
 takes its place, so a search never sees half a build. Mail goes again whenever a source with emails does (which of
 its emails are an export's depends on them). It's built from nothing when the database is from before this (or
-UMP_FULL_INDEX=1), when most of it changed, or when it has come to hold a lot of free space from what it dropped."""
+UMP_FULL_INDEX=1), when most of it changed, or when it has come to hold a lot of free space from what it dropped.
+
+Before writing, allow twice the sources' size (only changed sources for an update, after cloning), plus
+UMP_INDEX_MARGIN_MB (5120 by default: room for macOS to grow swap after the build). Too little space or a disk that
+fills leaves the last index in place, records why in the manifest, and skips the stream so the next read can try again."""
 
 import ctypes
+import datetime as dt
+import errno
 import hashlib
 import json
 import os
 import shutil
 import sqlite3
+from contextlib import closing, contextmanager
 from itertools import islice
 
 from common import CORPUS, FIELDS, MANIFEST, NORM, write_manifest
@@ -25,6 +32,98 @@ DB = CORPUS / "corpus.db"
 COLS = [f for f in FIELDS]
 SCHEMA = 2  # v2 reserves record numbers across incremental updates, full builds and deletions
 FTS_COLS = "title, text, author, thread_name, participants"
+
+
+class _NotEnoughSpace(Exception):
+    def __init__(self, free_bytes, need_bytes):
+        super().__init__(free_bytes, need_bytes)
+        self.free_bytes = free_bytes
+        self.need_bytes = need_bytes
+
+
+def margin_bytes():
+    try:
+        return max(0, int(os.environ.get("UMP_INDEX_MARGIN_MB", "5120"))) * (1 << 20)
+    except ValueError:
+        return 5120 * (1 << 20)
+
+
+def free_bytes():
+    return shutil.disk_usage(CORPUS).free
+
+
+def space_needed(sizes):
+    return 2 * sum(sizes) + margin_bytes()
+
+
+def ensure_space(need):
+    free = free_bytes()
+    if free < need:
+        raise _NotEnoughSpace(free, need)
+    return free
+
+
+def is_disk_full(error):
+    if isinstance(error, OSError):
+        return error.errno == errno.ENOSPC
+    if isinstance(error, sqlite3.OperationalError):
+        if getattr(error, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_FULL", 13):
+            return True
+        text = str(error).lower()
+        return "database or disk is full" in text or "sqlite_full" in text
+    return False
+
+
+@contextmanager
+def disk_full_guard(need):
+    try:
+        yield
+    except (sqlite3.OperationalError, OSError) as error:
+        if not is_disk_full(error):
+            raise
+        raise _NotEnoughSpace(free_bytes(), need) from error
+
+
+def note_not_rebuilt(note=None):
+    """Record a skipped build, or clear it before a successful swap. A failure keeps the manifest's stamp: the
+    app tries an older index once per stamp, so changing it on every failed attempt would keep it retrying."""
+    stamp = None
+    try:
+        stamp = MANIFEST.stat()
+        manifest = json.loads(MANIFEST.read_text())
+    except (OSError, ValueError):
+        manifest = {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    index = manifest.get("index")
+    if not isinstance(index, dict):
+        index = {}
+    if note is not None:
+        index["not_rebuilt"] = note
+    elif "not_rebuilt" in index:
+        index.pop("not_rebuilt")
+    else:
+        return
+    if index:
+        manifest["index"] = index
+    else:
+        manifest.pop("index", None)
+    write_manifest(manifest)
+    if note is not None:
+        # A manual full rebuild can start with the index newer than the manifest. Make it stale once in that
+        # case, then preserve this stamp on retries. A successful swap touches the index after clearing the note.
+        at = stamp.st_mtime_ns if stamp is not None else MANIFEST.stat().st_mtime_ns
+        if DB.exists() and at <= DB.stat().st_mtime_ns:
+            at = DB.stat().st_mtime_ns + 1_000_000
+        os.utime(MANIFEST, ns=(MANIFEST.stat().st_atime_ns, at))
+
+
+def stop_not_rebuilt(tmp, free, need):
+    tmp.unlink(missing_ok=True)
+    note_not_rebuilt({"free_bytes": free, "need_bytes": need,
+                      "at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")})
+    print(f"index: not rebuilt: {free / 1e9:.1f} GB free, it needs about {need / 1e9:.1f} GB. "
+          "The last index stays; the next read tries again.")
 
 
 def note_same(same):
@@ -131,42 +230,44 @@ def record_key(source, rid):
 
 def fresh(tmp, now):
     """A new database with every source in it: {source: (rows, Mail's left out)}."""
-    con = sqlite3.connect(tmp)
-    con.create_function("record_key", 2, record_key, deterministic=True)
-    con.execute("pragma journal_mode = off")  # a file of its own until it's done: nothing to roll back to
-    con.executescript(f"""
-        create table records (rowid integer primary key, {", ".join(f"{c} text" for c in COLS)}, unique(source, id));
-        create table record_ids (rowid integer primary key, key text not null unique);
-        create virtual table fts using fts5({FTS_COLS},
-            content='records', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
-        create table built_from (source text primary key, size integer, mtime_ns integer, hash text, rows integer, same integer);
-    """)
-    if DB.exists():
-        previous = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-        try:
-            # Keep reservations for deleted records too: a missing citation must never open a new record. On the
-            # first v2 build, adopt the existing numbers so saved answers survive the upgrade.
-            if previous.execute("select 1 from sqlite_master where name = 'record_ids'").fetchone():
-                reserved = previous.execute("select rowid, key from record_ids")
-            else:
-                reserved = ((rowid, record_key(source, rid)) for rowid, source, rid in previous.execute("select rowid, source, id from records"))
-            con.executemany("insert into record_ids (rowid, key) values (?, ?)", reserved)
-        finally:
-            previous.close()
-    totals, emails = {}, set()
-    for source, f in now.items():
-        r = load(con, source, f, emails)
-        totals[source] = (r.n, r.same)
-    con.executescript(f"""
-        insert into fts(fts) values('rebuild');
-        create index records_ts on records(ts);
-        create index records_source_ts on records(source, ts);
-        create index records_thread_ts on records(thread, ts);
-        create index records_kind_source on records(kind, source);
-        pragma user_version = {SCHEMA};
-    """)
-    con.commit()
-    con.close()
+    need = space_needed(f[0] for f in now.values())
+    with disk_full_guard(need):
+        ensure_space(need)
+        with closing(sqlite3.connect(tmp)) as con:
+            con.create_function("record_key", 2, record_key, deterministic=True)
+            con.execute("pragma journal_mode = off")  # a file of its own until it's done: nothing to roll back to
+            con.executescript(f"""
+                create table records (rowid integer primary key, {", ".join(f"{c} text" for c in COLS)}, unique(source, id));
+                create table record_ids (rowid integer primary key, key text not null unique);
+                create virtual table fts using fts5({FTS_COLS},
+                    content='records', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
+                create table built_from (source text primary key, size integer, mtime_ns integer, hash text, rows integer, same integer);
+            """)
+            if DB.exists():
+                previous = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+                try:
+                    # Keep reservations for deleted records too: a missing citation must never open a new record. On the
+                    # first v2 build, adopt the existing numbers so saved answers survive the upgrade.
+                    if previous.execute("select 1 from sqlite_master where name = 'record_ids'").fetchone():
+                        reserved = previous.execute("select rowid, key from record_ids")
+                    else:
+                        reserved = ((rowid, record_key(source, rid)) for rowid, source, rid in previous.execute("select rowid, source, id from records"))
+                    con.executemany("insert into record_ids (rowid, key) values (?, ?)", reserved)
+                finally:
+                    previous.close()
+            totals, emails = {}, set()
+            for source, f in now.items():
+                r = load(con, source, f, emails)
+                totals[source] = (r.n, r.same)
+            con.executescript(f"""
+                insert into fts(fts) values('rebuild');
+                create index records_ts on records(ts);
+                create index records_source_ts on records(source, ts);
+                create index records_thread_ts on records(thread, ts);
+                create index records_kind_source on records(kind, source);
+                pragma user_version = {SCHEMA};
+            """)
+            con.commit()
     return totals, True
 
 
@@ -216,39 +317,40 @@ def update(tmp, now, was):
     gone = [s for s in was if s not in now]
     if sum(now[s][0] for s in changed) + sum(was[s][0] for s in gone) > sum(f[0] for f in now.values()) / 2:
         return None
-    clone(DB, tmp)
-    con = sqlite3.connect(tmp)
-    con.create_function("record_key", 2, record_key, deterministic=True)
-    con.execute("pragma journal_mode = off")
-    if con.execute("pragma freelist_count").fetchone()[0] * 4 > con.execute("pragma page_count").fetchone()[0]:
-        con.close()
-        return None
-    for s in same_text:
-        con.execute("update built_from set size = ?, mtime_ns = ? where source = ?", (now[s][0], now[s][1], s))
-    totals = {s: (n, same) for s, (_, _, _, n, same) in was.items()}
-    emails_moved = False  # an export's emails changed: which of Mail's it has may be different now
-    for s in gone + changed:
-        if s != "mail":
-            emails_moved = emails_moved or con.execute("select 1 from records where kind = 'email' and source = ? limit 1", (s,)).fetchone() is not None
-            drop(con, s)
-            totals.pop(s, None)
-    for s in changed:
-        if s != "mail":
-            r = load(con, s, now[s], set())
-            index_text(con, s)
-            totals[s] = (r.n, r.same)
-            emails_moved = emails_moved or r.email
-    mail = "mail" in now and (emails_moved or "mail" in changed)
-    if mail or "mail" in gone:
-        drop(con, "mail")
-        totals.pop("mail", None)
-    if mail:
-        emails = {i for (i,) in con.execute("select id from records where kind = 'email' and source != 'mail'")}
-        r = load(con, "mail", now["mail"], emails)
-        index_text(con, "mail")
-        totals["mail"] = (r.n, r.same)
-    con.commit()
-    con.close()
+    need = space_needed(now[s][0] for s in changed)
+    with disk_full_guard(need):
+        clone(DB, tmp)
+        ensure_space(need)  # a plain copy has already paid for itself; an APFS clone has not
+        with closing(sqlite3.connect(tmp)) as con:
+            con.create_function("record_key", 2, record_key, deterministic=True)
+            con.execute("pragma journal_mode = off")
+            if con.execute("pragma freelist_count").fetchone()[0] * 4 > con.execute("pragma page_count").fetchone()[0]:
+                return None
+            for s in same_text:
+                con.execute("update built_from set size = ?, mtime_ns = ? where source = ?", (now[s][0], now[s][1], s))
+            totals = {s: (n, same) for s, (_, _, _, n, same) in was.items()}
+            emails_moved = False  # an export's emails changed: which of Mail's it has may be different now
+            for s in gone + changed:
+                if s != "mail":
+                    emails_moved = emails_moved or con.execute("select 1 from records where kind = 'email' and source = ? limit 1", (s,)).fetchone() is not None
+                    drop(con, s)
+                    totals.pop(s, None)
+            for s in changed:
+                if s != "mail":
+                    r = load(con, s, now[s], set())
+                    index_text(con, s)
+                    totals[s] = (r.n, r.same)
+                    emails_moved = emails_moved or r.email
+            mail = "mail" in now and (emails_moved or "mail" in changed)
+            if mail or "mail" in gone:
+                drop(con, "mail")
+                totals.pop("mail", None)
+            if mail:
+                emails = {i for (i,) in con.execute("select id from records where kind = 'email' and source != 'mail'")}
+                r = load(con, "mail", now["mail"], emails)
+                index_text(con, "mail")
+                totals["mail"] = (r.n, r.same)
+            con.commit()
     again = [s for s in changed if s != "mail"] + (["mail"] if mail else [])
     print(f"index: read again {', '.join(again) or 'nothing'}" + (f"; taken out {', '.join(gone)}" if gone else ""))
     return {s: totals[s] for s in now if s in totals}, mail or "mail" in gone
@@ -259,15 +361,22 @@ def main():
     tmp.unlink(missing_ok=True)
     now = files()
     was = built() if DB.exists() and os.environ.get("UMP_FULL_INDEX") != "1" else None
-    result = update(tmp, now, was) if was is not None else None
-    if result is None:
+    try:
+        result = update(tmp, now, was) if was is not None else None
+        if result is None:
+            tmp.unlink(missing_ok=True)
+            result = fresh(tmp, now)
+        totals, mail = result
+        if mail:  # what Mail shares with an export was counted again
+            note_same({"mail": totals["mail"][1]} if "mail" in totals else {})
+        note_not_rebuilt()
+        tmp.replace(DB)
+        os.utime(DB)  # newer than the manifest it was built from, note included: the app rebuilds an index older than it
+    except _NotEnoughSpace as error:
+        stop_not_rebuilt(tmp, error.free_bytes, error.need_bytes)
+        return
+    finally:
         tmp.unlink(missing_ok=True)
-        result = fresh(tmp, now)
-    totals, mail = result
-    if mail:  # what Mail shares with an export was counted again
-        note_same({"mail": totals["mail"][1]} if "mail" in totals else {})
-    tmp.replace(DB)
-    os.utime(DB)  # newer than the manifest it was built from, note included: the app rebuilds an index older than it
     for k, (n, same) in totals.items():
         print(f"{k:18s} {n:>8,}" + (f"  ({same:,} already in an export)" if same else ""))
     print(f"{'TOTAL':18s} {sum(n for n, _ in totals.values()):>8,}  -> {DB}")
