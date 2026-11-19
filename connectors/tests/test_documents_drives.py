@@ -2,6 +2,7 @@
 
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,9 @@ from pathlib import Path
 CONNECTORS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CONNECTORS))
 import documents  # noqa: E402
+
+
+INTERNAL_VOLUME = plistlib.loads((Path(__file__).parent / "data/internal-volume.plist").read_bytes())
 
 
 def records(corpus):
@@ -43,13 +47,21 @@ class DriveTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
 
-    def test_classifier_covers_external_disk_image_network_backup_installer_and_system(self):
+    def test_classifier_covers_external_internal_unknown_and_special_volumes(self):
         # Keys as diskutil reports them on macOS 26 (an external SSD, a mounted .dmg).
         ssd = {"BusProtocol": "PCI-Express", "FilesystemType": "apfs", "Internal": False, "WritableVolume": True,
                "MountPoint": "/Volumes/Travel SSD"}
         cases = [
             (ssd, None, ["notes"], (), (True, None)),
             ({**ssd, "BusProtocol": "USB", "FilesystemType": "exfat"}, None, ["DCIM"], (), (True, None)),
+            ({"RemovableMedia": True}, None, [], (), (True, None)),
+            ({"BusProtocol": "USB"}, None, [], (), (True, None)),
+            ({"BusProtocol": "Thunderbolt"}, None, [], (), (True, None)),
+            ({"BusProtocol": "FireWire"}, None, [], (), (True, None)),
+            (INTERNAL_VOLUME, None, ["notes"], (), (False, "not_external")),
+            ({"BusProtocol": "PCI-Express"}, None, [], (), (False, "not_external")),
+            ({"VolumeName": "Unknown", "FilesystemType": "apfs"}, None, [], (), (False, "not_external")),
+            ({}, None, [], (), (False, "not_external")),
             ({**ssd, "BusProtocol": "Disk Image", "MountPoint": "/Volumes/Installer"}, None, [], (), (False, "disk_image")),
             ({}, "smbfs", [], (), (False, "network_share")),
             (ssd, None, ["2026-11-01-093000.previous"], (), (False, "time_machine")),
@@ -59,7 +71,48 @@ class DriveTests(unittest.TestCase):
             (ssd, None, ["System", "notes"], (), (True, None)),  # a folder you named System on a drive you write to
         ]
         for info, fs_type, top, backups, expected in cases:
-            self.assertEqual(documents.classify_volume(info, fs_type, top, backups), expected, (info, top))
+            with self.subTest(info=info, top=top):
+                self.assertEqual(documents.classify_volume(info, fs_type, top, backups), expected)
+                # Selecting a volume only overrides the location check, never the other exclusions.
+                selected = (True, None) if expected == (False, "not_external") else expected
+                self.assertEqual(documents.classify_volume(info, fs_type, top, backups, explicit=True), selected)
+
+    def test_internal_volume_is_read_only_when_explicitly_selected(self):
+        drive = self.volumes / "Internal Data"
+        drive.mkdir()
+        (drive / "internal.md").write_text("notes from a second internal volume")
+        external = self.volumes / "External SSD"
+        external.mkdir()
+        (external / "external.md").write_text("notes from an external SSD")
+        infos = {"Internal Data": INTERNAL_VOLUME,
+                 "External SSD": {"VolumeName": "External SSD", "VolumeUUID": "external-id", "Internal": False,
+                                  "RemovableMedia": False, "BusProtocol": "PCI-Express"}}
+        base = self.corpus
+        cases = [
+            ("default", {}, {"external.md"}),
+            ("name", {"read": ["internal data"]}, {"internal.md", "external.md"}),
+            ("uuid", {"read": [INTERNAL_VOLUME["VolumeUUID"]]}, {"internal.md", "external.md"}),
+            ("skip", {"read": ["Internal Data"], "skip": [INTERNAL_VOLUME["VolumeUUID"]]}, {"external.md"}),
+            ("auto_off", {"auto": False, "read": ["Internal Data"]}, {"internal.md"}),
+        ]
+        for name, config, expected in cases:
+            with self.subTest(policy=name):
+                self.corpus = base / name
+                self.corpus.mkdir()
+                (self.corpus / "drives.json").write_text(json.dumps(config))
+                self.run_documents(infos)
+                self.assertEqual({r["title"] for r in records(self.corpus)}, expected)
+                notes = json.loads((self.corpus / "manifest.json").read_text())["documents"].get("notes", {})
+                self.assertEqual(notes.get("drives_skipped_not_external", 0), int(name in ("default", "skip")))
+
+    def test_unknown_device_location_is_not_read_automatically(self):
+        drive = self.volumes / "Unknown"
+        drive.mkdir()
+        (drive / "unknown.md").write_text("no external-device signal")
+        self.run_documents({"Unknown": {"VolumeName": "Unknown", "VolumeUUID": "unknown-id", "FilesystemType": "apfs"}})
+        self.assertEqual(records(self.corpus), [])
+        notes = json.loads((self.corpus / "manifest.json").read_text())["documents"]["notes"]
+        self.assertEqual(notes["drives_skipped_not_external"], 1)
 
     def test_drive_records_skip_index_folders_and_exports(self):
         drive = self.volumes / "Travel SSD"
@@ -127,7 +180,7 @@ class DriveTests(unittest.TestCase):
         drive.mkdir()
         (drive / "letters").mkdir()
         (drive / "letters/to-grandma.md").write_text("dear grandma")
-        info = lambda name: {name: {"VolumeName": name, "VolumeUUID": "same-uuid"}}
+        info = lambda name: {name: {"VolumeName": name, "VolumeUUID": "same-uuid", "Internal": False}}
         self.run_documents(info("Old Name"))
         drive.rename(self.volumes / "New Name")
         self.run_documents(info("New Name"))
