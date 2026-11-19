@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>BusProtocol</key>
+    <string>PCI-Express</string>
+    <key>FilesystemType</key>
+    <string>apfs</string>
+    <key>Internal</key>
+    <true/>
+    <key>MountPoint</key>
+    <string>/Volumes/Internal Data</string>
+    <key>RemovableMedia</key>
+    <false/>
+    <key>VolumeName</key>
+    <string>Internal Data</string>
+    <key>VolumeUUID</key>
+    <string>11111111-2222-3333-4444-555555555555</string>
+    <key>WritableVolume</key>
+    <true/>
+</dict>
+</plist>

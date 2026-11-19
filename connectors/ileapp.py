@@ -99,6 +99,11 @@ DEVICE_NAMES = r"metric|application state|network observ|preferences|^LSC - |acc
 # Fields that never leave the LAVA database, whatever the artifact (account data, app preferences).
 SECRET_FIELDS = (r"token|secret|password|passcode|cookie|(^|[\W_])auth([\W_]|$)|authorization|session.?(id|key|token)|"
                  r"api.?key|credential|private.?key")
+# The phone's and the SIM's own ID numbers, as a column or as a property in a key/value table (Device Data, iTunes
+# Backup): they say nothing about the person, and they're what a carrier is asked for to move a number to another SIM.
+DEVICE_IDS = (r"\bimeis?\b|\bimei.?2\b|\biccid|\bimsi\b|\bmeid\b|serial.?number|\budid\b|unique.?(device.?)?identifier|"
+              r"\beid\b|baseband.?serial|wireless.?board")
+PROPERTY_COLUMNS = r"^(property|key|data key|name)$"
 # The phone's Photos.sqlite is the same iCloud library as the Mac's; import it only when the Mac's isn't there.
 DUPLICATE_OF = {"Photos": "photos"}
 KINDS = [(r"conversation", "message"), (r"^Health - Workouts", "workout"), (r"InteractionC", "interaction"), (r"^Notes$", "note"), (r"Calendar (Events|Birthdays)", "event"),
@@ -477,11 +482,15 @@ def write_artifact(w, module, category, a, con, media, nicknames, names, chosen,
     w.notes["id_columns"][key] = id_col
     n, seen, content = 0, {}, {}
     for r in rows():
+        if any(re.search(DEVICE_IDS, str(r[c] or ""), re.I) for c in cols if re.search(PROPERTY_COLUMNS, labels.get(c, c), re.I)):
+            w.notes["device_ids_left_out"] = w.notes.get("device_ids_left_out", 0) + 1
+            continue
         files = [m for c in cols if types.get(c) == "media" for ref in media_refs(r[c]) for m in [media.get(ref)] if m]
         fields, shown, source_file = {}, [], None
         for c in cols:
             v, label = text_value(r[c]), labels.get(c, c)
-            if v in (None, "") or types.get(c) == "media" or re.search(SECRET_FIELDS, f"{c} {label}", re.I):
+            if v in (None, "") or types.get(c) == "media" or re.search(SECRET_FIELDS, f"{c} {label}", re.I) \
+                    or re.search(DEVICE_IDS, f"{c} {label}", re.I):
                 continue
             if re.search(PATH_COLUMNS, c):
                 source_file = source_file or v
