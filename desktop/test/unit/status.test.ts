@@ -106,6 +106,18 @@ describe('setup', () => {
     assert.equal(view('disk_space').status, '100 GB free');
   });
 
+  test('disk space: search not updated for want of room', () => {
+    const p = probe();
+    p.corpus.free_bytes = 30e9;  // over the usual floor, but under what the rebuild needs
+    const held = stats({ index: { count: 0, not_rebuilt: { free_bytes: 30e9, need_bytes: 42e9, at: hoursAgo(1) } } as never });
+    const done = state((s) => (s.sources.disk_space = { doneAt: hoursAgo(5) }));  // "Continue Anyway" before: this is new
+    const v = view('disk_space', { probe: p, stats: held, state: done });
+    assert.deepEqual(place(v), ['todo', false]);
+    assert.match(v.detail!, /Search isn't up to date: updating it needs about 42 GB free/);
+    p.corpus.free_bytes = 50e9;  // room again: the next read rebuilds, nothing to say
+    assert.equal(view('disk_space', { probe: p, stats: held }).section, 'done');
+  });
+
   test('Claude Code retention', () => {
     const retention = (claude: object) => ({ ...probe().retention, claude: claude as never });
     assert.equal(view('retention_claude', { probe: probe({ retention: retention({ present: false }) }) }).section, 'unavailable');

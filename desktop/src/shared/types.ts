@@ -76,6 +76,8 @@ export interface ManifestEntry {
   ran_at?: string;
   avenue?: string;
   notes?: Record<string, unknown>;
+  // Only on "index": the last rebuild was skipped for disk space (build_index.py), and the last index stayed
+  not_rebuilt?: { free_bytes: number; need_bytes: number; at: string };
 }
 
 export interface Stats {
