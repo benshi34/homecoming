@@ -75,6 +75,7 @@ KINDS = {"post", "message", "comment", "note", "event", "reminder", "visit", "se
          "trip", "media", "listen", "watch", "read", "review", "contact", "follow", "like", "photo", "document",
          "activity", "saved", "record"}
 FIELDS = ("time", "title", "text", "author", "thread", "thread_name", "url", "id")
+MAX_JSON_DEPTH = 100  # exports are trees of records; deeper input is left to the catch-all
 
 
 def folder_key(folder):
@@ -298,6 +299,23 @@ def ofx_data(text):
     return out
 
 
+def json_data(text):
+    """JSON with a fixed nesting limit, independent of the Python decoder's recursion limit."""
+    data = json.loads(text)
+    stack = [iter((data,))]
+    while stack:
+        try:
+            value = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
+        if isinstance(value, (dict, list)):
+            if len(stack) > MAX_JSON_DEPTH:
+                raise ValueError("JSON is nested too deeply")
+            stack.append(iter(value.values() if isinstance(value, dict) else value))
+    return data
+
+
 def parse(e, header=None):
     name = e.path.lower()
     text = None
@@ -320,7 +338,7 @@ def parse(e, header=None):
     text = text if text is not None else e.text()
     if name.endswith(".js"):  # window.YTD.x.part0 = [...] and friends
         text = text[text.find("=") + 1:] if re.match(r"^\s*[\w.$\[\]'\"]+\s*=", text) else text
-    return json.loads(text)
+    return json_data(text)
 
 
 def scalar(v):
