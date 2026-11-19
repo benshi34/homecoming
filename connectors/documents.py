@@ -1,8 +1,9 @@
 """Personal documents on disk, in iCloud Drive, cloud drives and mounted external drives, plus Obsidian vaults
 kept anywhere: text from PDFs, Word/RTF, PowerPoint, Excel, CSV, web pages, Pages/Keynote/Numbers, notebooks,
 Markdown/TeX/text; metadata-only records for creative projects (Ableton, GarageBand, MuseScore, Logic) and Google
-Docs (only a link on disk). External drives are read when mounted, except for boot, system, installer, backup,
-network and disk-image volumes. Skips code dependencies, datasets, build output and macOS index folders."""
+Docs (only a link on disk). External drives are read when mounted; internal volumes need an explicit selection.
+Boot, system, installer, backup, network and disk-image volumes are skipped, along with code dependencies,
+datasets, build output and macOS index folders."""
 
 import json
 import errno
@@ -24,7 +25,8 @@ AVENUE = ("Filesystem walk of ~/Documents, ~/Desktop, ~/Downloads, ~/Library/Mob
           "Drive, Dropbox, Box...) and ~/Dropbox, and the Obsidian vaults in ~/Library/Application Support/obsidian/"
           "obsidian.json that aren't inside those. A folder reached twice (~/Dropbox is often a link) is read once. "
           "Mounted external drives are read by name when selected in corpus/drives.json (all eligible drives by default); "
-          "boot, disk-image, network, Time Machine, installer/recovery and read-only system volumes are skipped. "
+          "internal volumes need an explicit read entry. "
+          "Boot, disk-image, network, Time Machine, installer/recovery and read-only system volumes are skipped. "
           "Text: pypdf for PDF, macOS textutil for doc/docx/rtf/odt, zip+XML for pptx and xlsx (sheet names and cell "
           "text), IWA (snappy+protobuf) string walk for Pages/Keynote/Numbers, cell text for ipynb, tags stripped for "
           "html and webarchive. Heuristics drop dependencies, datasets (>5 .txt/.csv/.html per folder), exports and "
@@ -341,10 +343,17 @@ def _diskutil_info(mount):
 TM_SNAPSHOT = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{6}\.(backup|previous|inprogress)$")  # a Time Machine APFS disk's root
 
 
-def classify_volume(info, fs_type=None, top=(), backups=()):
+def _external_volume(info):
+    """A positive external-device signal; PCI-Express alone also describes an internal SSD."""
+    return info.get("Internal") is False or info.get("RemovableMedia") is True \
+        or str(info.get("BusProtocol") or "").casefold() in {"usb", "thunderbolt", "firewire"}
+
+
+def classify_volume(info, fs_type=None, top=(), backups=(), *, explicit=False):
     """(eligible, reason) for a mounted volume: info is its `diskutil info -plist`, top the names at its root,
     backups the mount points Time Machine backs up to. Keys as macOS 26 reports them: an external SSD has
-    BusProtocol "PCI-Express" or "USB", a mounted .dmg "Disk Image"."""
+    BusProtocol "PCI-Express" or "USB", a mounted .dmg "Disk Image". An explicit read entry can include an
+    internal volume, but cannot include the special volume types below."""
     info = info if isinstance(info, dict) else {}
     fs = str(fs_type or info.get("FilesystemType") or "").lower()
     top = set(top)
@@ -356,6 +365,8 @@ def classify_volume(info, fs_type=None, top=(), backups=()):
         return False, "time_machine"
     if "System" in top and info.get("WritableVolume") is False:  # an installer, a recovery or another Mac's system
         return False, "installer_or_system"
+    if not explicit and not _external_volume(info):
+        return False, "not_external"
     return True, None
 
 
@@ -377,10 +388,12 @@ def _note_drive_skip(notes, reason):
     notes[key] = notes.get(key, 0) + 1
 
 
-def drives(notes=None):
+def drives(notes=None, config=None):
     """(name, mount, volume UUID) for each drive plugged in whose documents are read; each one left out is counted in
-    notes by why (drives_skipped_<reason>). A volume diskutil can't describe is left out."""
+    notes by why (drives_skipped_<reason>). Internal volumes need an explicit read entry. A volume diskutil can't
+    describe is left out."""
     notes = {} if notes is None else notes
+    config = drive_config() if config is None else config
     try:
         entries = sorted(VOLUMES.iterdir(), key=lambda p: p.name.lower())
     except OSError:
@@ -402,11 +415,14 @@ def drives(notes=None):
             top = []
         if backups is None:
             backups = _backup_mounts()
-        eligible, reason = classify_volume({"MountPoint": str(mount), **info}, fs_types.get(str(mount)), top, backups)
+        entry = (str(info.get("VolumeName") or mount.name), mount, _volume_uuid(info))
+        explicit = bool(selected_drives([entry], {**config, "auto": False}))
+        eligible, reason = classify_volume({"MountPoint": str(mount), **info}, fs_types.get(str(mount)), top, backups,
+                                           explicit=explicit)
         if not eligible:
             _note_drive_skip(notes, reason)
             continue
-        out.append((str(info.get("VolumeName") or mount.name), mount, _volume_uuid(info)))
+        out.append(entry)
     return out
 
 
@@ -573,8 +589,9 @@ def main():
     forget = lambda rec: any(str((rec.get("meta") or {}).get("path") or rec.get("id") or "").startswith(d.rstrip("/") + "/")  # noqa: E731
                              for d in left)
     with Writer("documents", AVENUE, forget=forget) as w:
-        available_drives = drives(w.notes)
-        selected = selected_drives(available_drives)
+        config = drive_config()
+        available_drives = drives(w.notes, config)
+        selected = selected_drives(available_drives, config)
         selected_paths = [mount for _, mount, _ in selected]
         folders, real = roots(w.notes, selected_paths)
         drive_by_root = {}
