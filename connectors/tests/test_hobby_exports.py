@@ -265,6 +265,18 @@ class HobbyExportTests(unittest.TestCase):
                           ('a.csv', 'a,b\n"' + 'x' * 200_000 + '",1\n')):
             self.assertEqual(list(mx.records(mx.validate({'items': [deep]}), [Entry(path, bad)])), [], path)
 
+    def test_json_nesting_limit_keeps_the_next_file_and_brackets_in_text(self):
+        at_limit = '{"child":' * (mx.MAX_JSON_DEPTH - 1) + '{"title":"At the limit"}' + '}' * (mx.MAX_JSON_DEPTH - 1)
+        self.assertIsInstance(mx.parse(Entry('limit.json', at_limit)), dict)
+        with self.assertRaisesRegex(ValueError, 'nested too deeply'):
+            mx.parse(Entry('too-deep.json', '{"child":' + at_limit + '}'))
+        m = mx.validate({'items': [{'file': '*', 'path': '', 'kind': 'record', 'text': ['text']}]})
+        for path, deep in [('deep.json', '[' * (mx.MAX_JSON_DEPTH + 1) + ']' * (mx.MAX_JSON_DEPTH + 1)),
+                           ('deep.js', 'window.items = ' + '[' * (mx.MAX_JSON_DEPTH + 1) + ']' * (mx.MAX_JSON_DEPTH + 1))]:
+            text = 'Brackets are text: ' + '[{"quoted": "\\"}]' * 200
+            rows = list(mx.records(m, [Entry(path, deep), Entry('good.json', json.dumps([{'text': text}]))]))
+            self.assertEqual([(e.path, r['text']) for _, e, r in rows], [('good.json', text)])
+
     def test_trakt(self):
         recs = self.read('trakt', 'trakt-export.zip')
         tr = recs['trakt']
