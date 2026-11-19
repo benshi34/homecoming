@@ -97,6 +97,19 @@ class SignalTests(unittest.TestCase):
         recs = {r["id"]: r for r in map(json.loads, f.read_text().splitlines())} if f.exists() else {}
         return recs, json.loads((self.corpus / "manifest.json").read_text())["signal"]
 
+    def test_without_the_package_it_matters_only_when_there_is_signal(self):
+        # another machine read over ssh may have no cryptography: with no Signal there it reads cleanly, saying nothing
+        code = "import sys; sys.modules['cryptography'] = None; import signal_desktop; signal_desktop.main()"
+        env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_SIGNAL_KEY": KEY}
+        run = lambda: subprocess.run([sys.executable, "-c", code], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
+        r = run()  # with Signal there: the missing package is the error, so the run can say what to install
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("cryptography", r.stderr.strip().splitlines()[-1])
+        shutil.rmtree(self.home / "Library/Application Support/Signal")
+        r = run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("not_read", json.loads((self.corpus / "manifest.json").read_text())["signal"].get("notes", {}))
+
     def test_messages_people_groups_and_calls(self):
         recs, manifest = self.run_connector()
         self.assertEqual(set(recs), {"m1", "m2", "m3", "m4", "m5", "m6", "call:k1", "call:k2"}, "a key change isn't a message")
