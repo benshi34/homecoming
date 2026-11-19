@@ -25,6 +25,8 @@ CONNECTORS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CONNECTORS))
 import imessage  # noqa: E402
 
+os.environ.setdefault("UMP_VOLUMES", "/nonexistent/volumes")  # documents.py: never this Mac's own drives
+
 APPLE = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 WEBKIT = 11644473600  # 1601-01-01 to 1970-01-01, in seconds
 
