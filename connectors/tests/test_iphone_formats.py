@@ -742,7 +742,6 @@ class IleappTests(Phone):
             from pathlib import Path
             ileapp.VENV_PY = Path({str(script)!r})
             ileapp.write_profile = lambda path: 3
-            ileapp.MIN_FREE = 0
             ileapp.import_latest(ileapp.run())""", ok=ok)
 
     def test_an_artifact_that_raises_inside_ileapp_and_an_error_after_it_finished(self):
@@ -757,6 +756,26 @@ class IleappTests(Phone):
         self.assertIn("iLEAPP", r.stderr)
         r = self.run_ileapp(self.fake_ileapp(0, "Processes completed.", write=False), ok=False)  # finished, its output missing
         self.assertIn("iLEAPP", r.stderr)
+
+    def test_small_selected_backup_fits_through_the_normal_phone_pipeline(self):
+        self.phone_file("HomeDomain", "Library/Notes/n.db").write_bytes(b"made-up notes")
+        selected = self.backups / "selected"
+        make_backup(selected, [], device="Selected phone")
+        other = self.backups / "other"
+        make_backup(other, [], device="Other phone")
+        with (other / "large-file").open("wb") as f:
+            f.truncate(4_000_000_000)
+        script = self.fake_ileapp(0, "Processes completed.")
+        self.run_py(f"""
+            import ileapp, iphone
+            from pathlib import Path
+            from types import SimpleNamespace
+            ileapp.VENV_PY = Path({str(script)!r})
+            ileapp.write_profile = lambda path: 1
+            ileapp.shutil.disk_usage = lambda path: SimpleNamespace(free=3_000_000_000)
+            iphone.main(['--skip-decrypt', '--only', 'ileapp', '--backup', {str(selected)!r}])""")
+        self.assertEqual(list(self.records("phone_notesapp")), ["notesA:n1"])
+        self.assertTrue((self.corpus / "corpus.db").is_file())
 
     def test_ileapp_failing_doesnt_stop_the_phone_import(self):
         sms_db(self.phone_file(*SMS_FILE))
