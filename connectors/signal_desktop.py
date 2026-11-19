@@ -3,7 +3,8 @@
 Signal keeps them in ~/Library/Application Support/Signal/sql/db.sqlite, encrypted with SQLCipher 4. Its key is in
 config.json, itself encrypted (Electron's safeStorage) with the "Signal Safe Storage" password in the Keychain: macOS
 asks once whether to let this read it. The database is decrypted page by page in memory (with `cryptography`, already
-a dependency), its write-ahead log applied, and opened from there: no decrypted copy is written to disk. Signal
+a dependency here, imported only once there's a database to decrypt: another machine read over ssh without Signal, or
+without that package, says nothing about it), its write-ahead log applied, and opened from there: no decrypted copy is written to disk. Signal
 Desktop has only what reached it since it was linked to the phone (it doesn't sync older history), and attachments
 stay encrypted in attachments.noindex: they're named, not read.
 
@@ -17,8 +18,6 @@ import sqlite3
 import struct
 import subprocess
 
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from common import LIB, Writer, from_unix
 
@@ -40,6 +39,12 @@ class SignalError(Exception):
     pass
 
 
+def aes():
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    return padding, Cipher, algorithms, modes
+
+
 def db_key():
     """The database key, hex: config.json's encryptedKey, decrypted with the Keychain's Signal Safe Storage."""
     if os.environ.get("UMP_SIGNAL_KEY"):
@@ -54,6 +59,7 @@ def db_key():
     if r.returncode != 0:
         raise SignalError("keychain_refused")  # not allowed in the dialog, or no such item
     kek = hashlib.pbkdf2_hmac("sha1", r.stdout.strip(), b"saltysalt", 1003, 16)
+    padding, Cipher, algorithms, modes = aes()
     d = Cipher(algorithms.AES(kek), modes.CBC(b" " * 16)).decryptor()
     u = padding.PKCS7(128).unpadder()
     try:
@@ -76,6 +82,7 @@ def decrypted(db, wal, key_hex):
     """The plain SQLite file, as bytes: every page of `db` (and, after it, every committed page of its write-ahead log)
     decrypted. A page whose HMAC doesn't match is a wrong key or a damaged file: an error, not a guess."""
     key = bytes.fromhex(key_hex)
+    _, Cipher, algorithms, modes = aes()
     if len(db) < PAGE or len(db) % PAGE:
         raise SignalError("not_a_database")
     mac_key = hashlib.pbkdf2_hmac("sha512", key, bytes(b ^ 0x3A for b in db[:16]), 2, 32)
