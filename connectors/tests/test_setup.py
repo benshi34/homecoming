@@ -206,11 +206,12 @@ X""")
         p.write_text("#!/bin/sh\n" + body + "\n")
         p.chmod(0o755)
 
-    def run_setup(self, hosts=""):
+    def run_setup(self, hosts="", layouts=False):
         env = {k: v for k, v in os.environ.items() if k != "UMP_SETUP_HOSTS"}
         env.update(HOME=str(self.home), CORPUS_DIR=str(self.corpus), PATH=f"{self.bin}:/usr/bin:/bin", UMP_SETUP_HOSTS=hosts,
                    UMP_MAY_SCRIPT=json.dumps({"com.mitchellh.ghostty": self.may_script}))
-        r = subprocess.run([sys.executable, "-c", "import setup; setup.main()"], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
+        program = "import setup; setup.main(setup.LAYOUTS)" if layouts else "import setup; setup.main()"
+        r = subprocess.run([sys.executable, "-c", program], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
         recs = [json.loads(l) for l in (self.corpus / "normalized/setup.jsonl").read_text().splitlines()]
         by = {}
@@ -250,16 +251,91 @@ X""")
         self.assertEqual(by["machines:vms"]["text"], "Parallels: Win11 stopped")
 
     def test_devices_without_addresses_or_serials(self):
-        by, recs, _ = self.run_setup()
+        by, recs, manifest = self.run_setup()
         self.assertEqual(by["device:phone:Ada iPhone"]["text"], "Ada iPhone\nmodel: iPhone 16\ntype: iPhone\nos: iOS 26.1\npaired: paired\ndeveloper mode: on")
-        self.assertEqual(by["device:phone:Pixel 9"]["text"], "Pixel 9\ntype: Android\nproduct: tide\nos: Android 15", "an unauthorized phone isn't listed")
+        self.assertEqual(by["device:phone:Pixel 9"]["text"], "Pixel 9\ntype: Android\nproduct: tide\nos: Android 15")
         self.assertNotIn("device:phone:X1", by)
         self.assertEqual(by["device:bluetooth:Ada AirPods"]["text"], "Ada AirPods\ntype: Headphones\nvendor: Apple")
         self.assertIn("resolution: 2560 x 1440 @ 60.00Hz\nconnection: thunderbolt\nmain: yes", by["device:display:Studio Display"]["text"])
         self.assertEqual(by["device:usb:Tide Keyboard"]["text"], "Tide Keyboard\nvendor: Tide Co")
-        everything = json.dumps(recs)
-        for private in ("AA:BB:CC:DD:EE:FF", "SERIAL123", "DSERIAL", "USERIAL"):
+        everything = json.dumps([recs, manifest])
+        for private in ("AA:BB:CC:DD:EE:FF", "SERIAL123", "DSERIAL", "USERIAL", "R5CT1", "X1"):
             self.assertNotIn(private, everything)
+
+    def test_android_blocked_devices_have_setup_notes(self):
+        ready = (self.bin / "adb").read_text().replace("X1 unauthorized\\n", "")
+        for state in ("unauthorized", "offline"):
+            with self.subTest(state=state):
+                self.tool("adb", f"""case "$*" in
+"devices -l") printf 'List of devices attached\\nANDROID-PRIVATE-SERIAL {state} model:Locked_Pixel\\n';;
+*) echo "$*" >> "$HOME/adb-shell-reads"; exit 1;;
+esac""")
+                by, recs, manifest = self.run_setup()
+                self.assertNotIn("not_read", manifest.get("notes", {}), manifest)
+                note = manifest.get("notes", {}).get("devices", {}).get(f"android_{state}", "")
+                self.assertIn(f"Android apps and settings weren't read: the device is {state}.", note)
+                for step in ("Turn on USB debugging", "unlock the device", 'accept "Allow USB debugging" for this computer'):
+                    self.assertIn(step, note)
+                self.assertNotIn("ANDROID-PRIVATE-SERIAL", json.dumps([recs, manifest]))
+                self.assertNotIn("device:phone:Locked Pixel", by)
+                self.assertFalse((self.home / "adb-shell-reads").exists(), "a blocked device must not be queried")
+
+        _, _, refreshed = self.run_setup(layouts=True)
+        self.assertEqual(refreshed.get("notes", {}).get("devices"), manifest["notes"]["devices"], "layout reads don't check phones")
+        (self.bin / "adb").write_text(ready)
+        by, _, manifest = self.run_setup()
+        self.assertIn("apps:phone:Pixel 9", by)
+        self.assertIn("settings:phone:Pixel 9", by)
+        self.assertNotIn("devices", manifest.get("notes", {}), "authorization clears the setup note")
+        self.tool("adb", "exit 1")
+        _, _, manifest = self.run_setup()
+        self.assertNotIn("devices", manifest.get("notes", {}), "no device tool is not a blocked phone")
+
+    def test_iphone_without_developer_tunnel_has_setup_note(self):
+        ready = (self.bin / "xcrun").read_text()
+        self.tool("xcrun", """case "$1 $2 $3" in
+"devicectl list devices") cat "$HOME/iphone.json";;
+"devicectl device info") echo "$*" >> "$HOME/iphone-app-reads"; exit 1;;
+*) exit 1;;
+esac""")
+        for tunnel in ("unavailable", None):
+            with self.subTest(tunnel=tunnel):
+                connection = {"pairingState": "unpaired", "transportType": "wired"}  # plugged in
+                if tunnel is not None:
+                    connection["tunnelState"] = tunnel
+                self.write("iphone.json", json.dumps({"result": {"devices": [{"identifier": "IPHONE-PRIVATE-ID",
+                    "deviceProperties": {"name": "Fixture iPhone", "developerModeStatus": "disabled"},
+                    "hardwareProperties": {"deviceType": "iPhone", "serialNumber": "IPHONE-PRIVATE-SERIAL"},
+                    "connectionProperties": connection}]}}))
+                by, recs, manifest = self.run_setup()
+                self.assertNotIn("not_read", manifest.get("notes", {}), manifest)
+                note = manifest.get("notes", {}).get("devices", {}).get("iphone", "")
+                self.assertIn("iPhone apps weren't read: the developer tunnel is unavailable.", note)
+                for step in ("Unlock the device", "trust this computer", "Developer Mode in Settings > Privacy & Security"):
+                    self.assertIn(step, note)
+                self.assertIn("device:phone:Fixture iPhone", by)
+                self.assertNotIn("apps:phone:Fixture iPhone", by)
+                self.assertNotIn("Fixture iPhone", note, "the note names the device kind")
+                for private in ("IPHONE-PRIVATE-ID", "IPHONE-PRIVATE-SERIAL"):
+                    self.assertNotIn(private, json.dumps([recs, manifest]))
+                self.assertFalse((self.home / "iphone-app-reads").exists(), "no app read without a developer tunnel")
+
+        _, _, refreshed = self.run_setup(layouts=True)
+        self.assertEqual(refreshed.get("notes", {}).get("devices"), manifest["notes"]["devices"], "layout reads don't check phones")
+        # paired with this Mac once but not connected now: listed, nothing to fix
+        self.write("iphone.json", json.dumps({"result": {"devices": [{"identifier": "IPHONE-PRIVATE-ID",
+            "deviceProperties": {"name": "Fixture iPhone"}, "hardwareProperties": {"deviceType": "iPhone"},
+            "connectionProperties": {"pairingState": "paired", "tunnelState": "unavailable"}}]}}))
+        by, _, away = self.run_setup()
+        self.assertIn("device:phone:Fixture iPhone", by)
+        self.assertNotIn("iphone", away.get("notes", {}).get("devices", {}), "a phone that isn't plugged in has nothing to fix")
+        (self.bin / "xcrun").write_text(ready)
+        by, _, manifest = self.run_setup()
+        self.assertIn("apps:phone:Ada iPhone", by)
+        self.assertNotIn("iphone", manifest.get("notes", {}).get("devices", {}), "a usable tunnel clears the setup note")
+        self.tool("xcrun", "exit 1")
+        _, _, manifest = self.run_setup()
+        self.assertNotIn("iphone", manifest.get("notes", {}).get("devices", {}), "no device tool is not a blocked phone")
 
     def test_what_isnt_a_change(self):
         first, recs, _ = self.run_setup()

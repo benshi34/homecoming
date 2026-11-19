@@ -25,7 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from common import FIELDS, HOME, LIB, NORM, Writer, connect, from_unix, read_json, snapshot_sqlite, tailscale_devices, tailscale_status
+from common import FIELDS, HOME, LIB, NORM, Writer, connect, from_unix, read_json, read_manifest, snapshot_sqlite, tailscale_devices, tailscale_status
 import redact as redact_module
 
 AVENUE = ("Local files and read-only commands. Configs (each version kept, with a diff from the last): Warp "
@@ -1190,7 +1190,14 @@ def devices(w, v):
             device(w, v, kind, dp["name"],
                    {"model": hp.get("marketingName"), "type": hp.get("deviceType"), "os": " ".join(x for x in (hp.get("platform"), dp.get("osVersionNumber")) if x),
                     "paired": cp.get("pairingState"), "developer mode": "on" if dp.get("developerModeStatus") == "enabled" else None})
-            if cp.get("tunnelState") not in (None, "unavailable") and d.get("identifier"):
+            if cp.get("tunnelState") in (None, "unavailable"):
+                if not cp.get("transportType"):  # paired once, not connected now: nothing to say
+                    continue
+                device_type = hp.get("deviceType") or "iPhone"
+                w.notes.setdefault("devices", {})[device_type.lower()] = (
+                    f"{device_type} apps weren't read: the developer tunnel is unavailable. Unlock the device, "
+                    "trust this computer, and turn on Developer Mode in Settings > Privacy & Security.")
+            elif d.get("identifier"):
                 iphone_apps(w, v, kind, dp["name"], d["identifier"])
     for line in (run(["adb", "devices", "-l"]) or "").splitlines()[1:]:
         parts = line.split()
@@ -1200,6 +1207,10 @@ def devices(w, v):
             device(w, v, "phone", name, {"type": "Android", "product": info.get("product"),
                                          "os": "Android " + (run(["adb", "-s", parts[0], "shell", "getprop", "ro.build.version.release"]) or "").strip()})
             android(w, v, name, parts[0])
+        elif len(parts) >= 2 and parts[1] in ("unauthorized", "offline"):
+            w.notes.setdefault("devices", {})[f"android_{parts[1]}"] = (
+                f"Android apps and settings weren't read: the device is {parts[1]}. Turn on USB debugging, "
+                'unlock the device, and accept "Allow USB debugging" for this computer.')
     sp = run(["system_profiler", "-json", "SPBluetoothDataType", "SPDisplaysDataType", "SPUSBHostDataType"], timeout=90)
     try:
         sp = json.loads(sp) if sp else {}
@@ -1261,6 +1272,11 @@ def _main(parts):
     some = parts is not None
     # a generated file not read again is gone, unless this read didn't look (only the layouts)
     with Writer("setup", AVENUE, forget=lambda old: not some and bool((old.get("meta") or {}).get("generated"))) as w:
+        if parts and devices not in parts:
+            # Layout refreshes don't check phones. Keep the last device check's notes until the next one.
+            device_notes = read_manifest().get("setup", {}).get("notes", {}).get("devices")
+            if device_notes:
+                w.notes["devices"] = device_notes
         v = Versions()
         for part in parts or PARTS:
             try:
