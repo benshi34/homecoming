@@ -105,5 +105,95 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(rs[0]["thread_name"], "Greetings")
 
 
+def claude_session(home, slug, sid, cwd, texts):
+    d = home / ".claude/projects" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    rows = [{"type": "user", "uuid": f"{sid}-{i}", "sessionId": sid, "cwd": cwd, "timestamp": f"2026-10-20T10:0{i}:00Z",
+             "message": {"role": "user", "content": t}} for i, t in enumerate(texts)]
+    (d / f"{sid}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+class LeaveOutTests(unittest.TestCase):
+    """$CORPUS_DIR/ai_coding.json's leave_out: sessions run in those folders aren't read, and what an earlier run kept
+    of them goes."""
+    def setUp(self):
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        self.home, self.corpus = Path(t.name) / "home", Path(t.name) / "corpus"
+        self.corpus.mkdir(parents=True)
+        h = str(self.home)
+        claude_session(self.home, "-Users-ada-src-app", "keep", f"{h}/src/app", ["fix the login bug"])
+        claude_session(self.home, "-Users-ada-evals-run-3", "eval", f"{h}/evals/run-3/item", ["HELDOUT-ALPHA"])
+        claude_session(self.home, "-private-var-folders-xy-T-tmp1", "tmp", "/private/var/folders/xy/T/tmp1", ["HELDOUT-BETA"])
+        days = self.home / ".codex/sessions/2026/10/20"
+        days.mkdir(parents=True)
+        def rollout(name, rows):
+            (days / f"rollout-{name}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        # A session in a left-out folder, and a fork of it made somewhere else: the fork's copy of it is left out too.
+        rollout("a", [meta("E", "2026-10-20T09:00:00Z", cwd=f"{h}/evals/run-4"),
+                      msg("user", "HELDOUT-GAMMA", "2026-10-20T09:00:01Z")])
+        rollout("b", [meta("F", "2026-10-20T09:10:00Z", forked="E", cwd=f"{h}/src/app"),
+                      meta("E", "2026-10-20T09:00:00Z", cwd=f"{h}/evals/run-4"),
+                      msg("user", "HELDOUT-GAMMA", "2026-10-20T09:00:01Z"),
+                      msg("user", "now the real question", "2026-10-20T09:10:01Z")])
+
+    def configure(self, leave_out):
+        (self.corpus / "ai_coding.json").write_text(json.dumps({"leave_out": leave_out}))
+
+    def test_sessions_in_left_out_folders_are_not_read(self):
+        self.configure(["~/evals", "/var/folders/xy/*"])
+        texts = " ".join(r["text"] for r in run(self.home, self.corpus))
+        self.assertIn("fix the login bug", texts)
+        self.assertIn("now the real question", texts)
+        self.assertNotIn("HELDOUT", texts)
+
+    def test_what_an_earlier_run_kept_goes(self):
+        before = " ".join(r["text"] for r in run(self.home, self.corpus))
+        self.assertIn("HELDOUT-ALPHA", before)  # nothing set: everything is read
+        self.configure(["~/evals/run-*", "/private/var/folders/xy"])
+        recs = run(self.home, self.corpus)
+        self.assertNotIn("HELDOUT", " ".join(r["text"] for r in recs))
+        self.assertIn("fix the login bug", " ".join(r["text"] for r in recs))
+
+    def test_a_session_that_ever_works_in_a_left_out_folder_is_left_out_whole(self):
+        h = str(self.home)
+        d = self.home / ".claude/projects/-home"
+        d.mkdir(parents=True)
+        rows = [{"type": "user", "uuid": f"mv-{i}", "sessionId": "mv", "cwd": cwd, "timestamp": f"2026-10-21T10:0{i}:00Z",
+                 "message": {"role": "user", "content": text}}
+                for i, (cwd, text) in enumerate([(h, "plan the week"), (f"{h}/evals/run-9", "HELDOUT-DELTA")])]
+        (d / "mv.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        before = " ".join(r["text"] for r in run(self.home, self.corpus))
+        self.assertIn("plan the week", before)  # nothing set: all of it
+        self.configure(["~/evals"])
+        texts = " ".join(r["text"] for r in run(self.home, self.corpus))
+        self.assertNotIn("HELDOUT-DELTA", texts)
+        self.assertNotIn("plan the week", texts)  # said elsewhere, by the same session, and kept by the run before: gone too
+        self.assertIn("fix the login bug", texts)
+
+    def test_a_folder_only_sharing_a_prefix_stays(self):
+        self.configure(["~/src/ap"])
+        self.assertIn("fix the login bug", " ".join(r["text"] for r in run(self.home, self.corpus)))
+
+    def test_resumed_codex_session_in_a_left_out_folder_is_left_out_whole(self):
+        days = self.home / ".codex/sessions/2026/10/21"
+        days.mkdir(parents=True)
+        messages = []
+        for n, (name, cwd, text) in enumerate([("a", self.home / "src/app", "plan the migration"),
+                                              ("b", self.home / "evals/run-9", "HELDOUT-RESUMED"),
+                                              ("c", self.home / "src/app", "finish the migration")]):
+            start = f"2026-10-21T09:{n}0:00Z"
+            messages.append(msg("user", text, f"2026-10-21T09:{n}0:01Z"))
+            rows = [meta("resumed", start, cwd=str(cwd)), *messages]
+            (days / f"rollout-{name}-resumed.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        before = run(self.home, self.corpus)
+        self.assertEqual([r["text"] for r in before if r["thread"] == "resumed"],
+                         ["plan the migration", "HELDOUT-RESUMED", "finish the migration"])
+        self.configure(["~/evals"])
+        after = run(self.home, self.corpus)
+        self.assertEqual([r["text"] for r in after if r["thread"] == "resumed"], [])
+        self.assertIn("fix the login bug", " ".join(r["text"] for r in after))
+
+
 if __name__ == "__main__":
     unittest.main()
