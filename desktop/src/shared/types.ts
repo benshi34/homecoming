@@ -2,7 +2,7 @@
 
 import type { AskSettings, LocalStatus, SignIn } from './ask.ts';
 import type { Inbox } from './inbox.ts';
-import type { AgentReady, BrowserFound, PhoneInfo } from './setup.ts';
+import type { AgentReady, BrowserFound, DriveFound, PhoneInfo } from './setup.ts';
 import type { Release } from './version.ts';
 
 export type Access = 'ok' | 'blocked' | 'absent';
@@ -56,6 +56,7 @@ export interface Probe {
   notifications?: { readable: boolean; iphone: boolean };
   // Your Setup: the browsers here (installed, or with history), the region phone numbers are read in, Mail's accounts.
   browsers?: BrowserFound[];
+  drives?: DriveFound[];
   phone?: PhoneInfo;
   mail_accounts?: string[];
   retention: {
@@ -402,6 +403,7 @@ export interface LibrarySizes {
 // Your Setup, worked out (src/shared/setup.ts): what was found, and what's used.
 export interface SetupView {
   browsers: BrowserFound[];
+  drives: DriveFound[];
   macBrowser: string; // the Mac's own default, by name
   macBrowserId: string | null; // and which of `browsers` it is, when it's one of them
   pageBrowser: string | null; // chosen for export pages (an id), or null for the Mac's default

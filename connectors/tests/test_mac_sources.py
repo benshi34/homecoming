@@ -14,6 +14,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
+os.environ.setdefault("UMP_VOLUMES", "/nonexistent/volumes")  # documents.py: never this Mac's own drives
+
 CONNECTORS = Path(__file__).resolve().parents[1]
 APPLE = 978307200  # 2001-01-01 in Unix seconds
 

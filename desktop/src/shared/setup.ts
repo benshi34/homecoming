@@ -5,6 +5,8 @@ import type { SignIn } from './ask.ts';
 
 // bridge.py probe "browsers" (connectors/browsers.py): installed, or with history here.
 export interface BrowserFound { id: string; name: string; app: string | null; profiles: number; history: boolean; read: boolean; claude: boolean; default: boolean }
+// A mounted external volume, or one whose documents were read before it was unplugged.
+export interface DriveFound { name: string; uuid: string; mount: string | null; size: number | null; used: number | null; free: number | null; read: boolean; connected: boolean }
 // bridge.py probe "phone" (connectors/phones.py): the region numbers without a country code are read in.
 export interface PhoneInfo { region: string; mac: string | null; chosen: boolean; cc: string | null; trunk: string | null; intl: string; known: boolean; regions: string[] }
 

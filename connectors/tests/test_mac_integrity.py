@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common
 from test_mac_sources import APPLE, chat_storage, maps_sync
 
+os.environ.setdefault("UMP_VOLUMES", "/nonexistent/volumes")  # documents.py: never this Mac's own drives
+
 PHONE_WA = "AppDomainGroup-group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite"
 
 

@@ -355,6 +355,7 @@ def probe():
     import browsers
     import phones
     found_browsers = browsers.found()
+    found_drives = drive_inventory()
     histories = [p for b in found_browsers if b["id"] != "safari" for _, p in browsers.history_files(b["id"])]
     for name, paths in MAC_PATHS.items():
         states = [look(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
@@ -386,7 +387,7 @@ def probe():
         "mailbox_sources": mailbox_sources(),
         "notifications": notification_access(),
         # Your Setup: what was found here, for the person to change.
-        "browsers": found_browsers, "phone": phones.info(), "mail_accounts": mail_accounts(),
+        "browsers": found_browsers, "drives": found_drives, "phone": phones.info(), "mail_accounts": mail_accounts(),
         "retention": {
             "claude": claude_retention(),
             "shell": shell_retention(),
@@ -399,6 +400,96 @@ def probe():
             "codex": {"present": (HOME / ".codex/sessions").exists()},
         },
     }
+
+
+def _drive_records():
+    """(name, uuid) of each drive whose documents or photos are in the library, plugged in or not: one indexed
+    query (their ids start "drive:<uuid>/"), so looking at Your Setup never reads the library through."""
+    found = {}
+    db = CORPUS / "corpus.db"
+    if not db.exists():
+        return []
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as con:
+            for name, uuid in con.execute(
+                    "select json_extract(meta, '$.drive'), json_extract(meta, '$.drive_id') from records "
+                    "where source in ('documents', 'drive_photos') and id >= 'drive:' and id < 'drive;' group by 2"):
+                if name:
+                    found.setdefault(uuid or str(name).casefold(), (str(name), str(uuid or "")))
+    except sqlite3.Error:
+        pass
+    return list(found.values())
+
+
+def _drive_policy_read(config, name, uuid):
+    """Whether the documents connector would read this drive under its current policy."""
+    import documents
+    return bool(documents.selected_drives([(name, None, uuid)], config))
+
+
+def drive_inventory():
+    """Return eligible mounted drives and drives whose documents were read before they were unplugged."""
+    import documents
+
+    config = documents.drive_config()
+    available = documents.drives()
+    mounted = []
+    mounted_names = set()
+    mounted_uuids = set()
+    for name, mount, uuid in available:
+        try:
+            usage = shutil.disk_usage(mount)
+        except OSError:
+            usage = None
+        mounted_names.add(name.casefold())
+        if uuid:
+            mounted_uuids.add(uuid)
+        mounted.append({"name": name, "uuid": uuid, "mount": str(mount),
+                        "size": usage.total if usage else None, "used": usage.used if usage else None,
+                        "free": usage.free if usage else None, "read": _drive_policy_read(config, name, uuid),
+                        "connected": True})
+
+    old = []
+    for name, uuid in _drive_records():
+        if (uuid and uuid in mounted_uuids) or (not uuid and name.casefold() in mounted_names):
+            continue
+        old.append({"name": name, "uuid": uuid, "mount": None, "size": None, "used": None, "free": None,
+                    "read": _drive_policy_read(config, name, uuid), "connected": False})
+    return mounted + old
+
+
+def set_drive(uuid, read):
+    """Update one drive's read/skip policy while preserving every other drives.json key."""
+    import documents
+
+    uuid = str(uuid or "").strip()
+    if not uuid:
+        return {"ok": False, "error": "drive uuid is required"}
+    config = documents.drive_config()
+
+    def values(key):
+        value = config.get(key, [])
+        if isinstance(value, (str, int)):
+            return [str(value)]
+        return [str(v) for v in value] if isinstance(value, list) else []
+
+    had_read, had_skip = "read" in config, "skip" in config
+    read_values = [v for v in values("read") if v != uuid]
+    skip_values = [v for v in values("skip") if v != uuid]
+    if read:
+        read_values.append(uuid)
+    else:
+        skip_values.append(uuid)
+    if read_values or had_read:
+        config["read"] = read_values
+    else:
+        config.pop("read", None)
+    if skip_values or had_skip:
+        config["skip"] = skip_values
+    else:
+        config.pop("skip", None)
+    common.write_atomic(CORPUS / "drives.json", json.dumps(config, indent=2, sort_keys=True) + "\n")
+    return {"ok": True, "config": config}
 
 
 # The field that splits each Mac source by what it holds: service, browser, device... (stats -> facets).
@@ -1989,6 +2080,8 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     if cmd == "probe":
         out(probe())
+    elif cmd == "drive-set":
+        out(set_drive(rest[0] if rest else "", "--read" in rest))
     elif cmd == "stats":
         out(stats())
     elif cmd == "describe-export":
