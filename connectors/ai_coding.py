@@ -183,6 +183,8 @@ def codex(w):
     # Archived threads move to archived_sessions (flat, same files): read with the rest. CODEX_HOME moves it all.
     found = [*(root / "sessions").rglob("rollout-*.jsonl"), *(root / "archived_sessions").glob("rollout-*.jsonl")]
     files = [(f, *_codex_file(f)) for f in sorted(found, key=lambda f: f.name)]
+    # A resumed session can have several files with different working folders. Decide for the whole session first.
+    LEFT_OUT_SESSIONS.update(sid for _, sid, cwd, *_ in files if left_out(cwd))
     # A forked session's file starts with a copy of its parent's conversation, read already from the parent's own
     # file: those are skipped, and its own messages are numbered from 1. Parents are read first. A session in more
     # than one file (resumed) goes on from what's been read. The n-th message of a session is codex:<session>:<n>.
@@ -193,7 +195,7 @@ def codex(w):
         ready = [x for x in files if x[0] not in done and (not x[3] or x[3] not in sessions or x[3] in said or x[3] == x[1])]
         for f, sid, cwd, forked, start, msgs in ready or [x for x in files if x[0] not in done]:
             done.add(f)
-            out = _skip(w, cwd)  # still read into said: a fork elsewhere begins with a copy of it, left out too
+            out = _skip(w, cwd) or sid in LEFT_OUT_SESSIONS  # still keep said to recognize a fork's copied conversation
             skip = _copied(msgs, said.get(forked, []), start) if forked and forked != sid else 0
             mine = said.setdefault(sid, [])
             rest = msgs[skip:]
@@ -323,7 +325,7 @@ def agent_session(rec):
     return meta.get("tool") == "claude-code" and AGENT_FOLDER in str(meta.get("cwd") or "")
 
 
-LEFT_OUT_SESSIONS = set()  # this run's: sessions that worked in a left-out folder at some point (claude_code fills it)
+LEFT_OUT_SESSIONS = set()  # this run's: sessions that worked in a left-out folder at some point
 
 
 def forget(rec):

@@ -41,6 +41,8 @@ What the app finds on your Mac (your browsers, Mail's accounts, your region) is 
 
 Everything Homecoming collects stays on your Mac, in your library (readable by your account only): the `Homecoming` folder in your home folder (`~/Homecoming`) if you use the app, or `corpus/` inside the folder you run it from if you run it from source. The decrypted copy of your iPhone backup, and what's read from it, go in `~/Library/Application Support/q1_user_model`, where iCloud never syncs them. Nothing is uploaded, and if your library would sync to iCloud, the app says so and offers to keep it on this Mac.
 
+You can [leave coding folders out](#leave-coding-folders-out) to keep their Claude Code and Codex sessions out of your library.
+
 Only these things ever leave your Mac. The first four are something you start; the last is Homecoming looking for a newer version of itself, which you can turn off:
 
 - **Asking a question.** Ask sends the model you pick (Claude through Claude Code, or a model through Codex) what it looks up to answer you: the text with secrets such as passwords and keys blanked out, and any photo it looks at as it is. Before a company's model is used for the first time, the app shows what that company keeps and how to turn off training on your data, and waits for you. You can also pick a model that runs on your Mac (through Codex, with Ollama or LM Studio).
@@ -93,6 +95,29 @@ Every setting has one home, under Settings in the sidebar. ⌘, opens General, a
   - Do It for Me: on or off, the browser Claude works in, how many sites it works on at once (3 unless you change it), downloading exports when they're ready, looking for them every few hours, and the inboxes Claude may look in for the email saying one is ready.
 
 **Setup Checks**, under This Mac, are the things to fix or turn on: Full Disk Access, Python, keeping your history, free space.
+
+### Leave coding folders out
+
+To leave Claude Code and Codex sessions from some folders out, create `ai_coding.json` in your library. This setting is edited in the file.
+
+- In the app, the default is `~/Homecoming/ai_coding.json`.
+- From source, use `corpus/ai_coding.json` inside your Homecoming folder, such as `~/Developer/homecoming/corpus/ai_coding.json`.
+- From source, if you set `CORPUS_DIR`, put the file in that folder instead. General → Your library shows the library's location.
+
+For example, to leave out a private project and temporary coding runs, save this as plain text with the name `ai_coding.json`.
+
+```json
+{
+  "leave_out": [
+    "~/dev/private-project",
+    "~/dev/scratch-*"
+  ]
+}
+```
+
+Each entry is a folder or a pattern, with `~` for your home folder. A folder includes all its subfolders. `*` matches any characters; matching is case-sensitive. The rule uses the working folders recorded in Claude Code messages and at the start of each Codex session file. It does not filter Cursor or VS Code chat.
+
+A matching session is left out whole, including messages it wrote elsewhere. Records already collected from those sessions are removed on the next read of coding conversations. After saving the file, go to Settings → General and click Read Now beside Read this Mac now to apply it. Your original transcripts stay in Claude Code and Codex.
 
 ## Install and run
 

@@ -175,6 +175,25 @@ class LeaveOutTests(unittest.TestCase):
         self.configure(["~/src/ap"])
         self.assertIn("fix the login bug", " ".join(r["text"] for r in run(self.home, self.corpus)))
 
+    def test_resumed_codex_session_in_a_left_out_folder_is_left_out_whole(self):
+        days = self.home / ".codex/sessions/2026/10/21"
+        days.mkdir(parents=True)
+        messages = []
+        for n, (name, cwd, text) in enumerate([("a", self.home / "src/app", "plan the migration"),
+                                              ("b", self.home / "evals/run-9", "HELDOUT-RESUMED"),
+                                              ("c", self.home / "src/app", "finish the migration")]):
+            start = f"2026-10-21T09:{n}0:00Z"
+            messages.append(msg("user", text, f"2026-10-21T09:{n}0:01Z"))
+            rows = [meta("resumed", start, cwd=str(cwd)), *messages]
+            (days / f"rollout-{name}-resumed.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        before = run(self.home, self.corpus)
+        self.assertEqual([r["text"] for r in before if r["thread"] == "resumed"],
+                         ["plan the migration", "HELDOUT-RESUMED", "finish the migration"])
+        self.configure(["~/evals"])
+        after = run(self.home, self.corpus)
+        self.assertEqual([r["text"] for r in after if r["thread"] == "resumed"], [])
+        self.assertIn("fix the login bug", " ".join(r["text"] for r in after))
+
 
 if __name__ == "__main__":
     unittest.main()
