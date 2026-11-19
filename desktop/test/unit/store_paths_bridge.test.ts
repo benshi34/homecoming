@@ -117,7 +117,7 @@ describe('paths', () => {
     assert.equal(p.bridge, `${res}/app/py/bridge.py`);
     assert.equal(p.corpus, '/Users/ada/Homecoming');
     assert.equal(childEnv(p, {}).PYTHONDONTWRITEBYTECODE, '1');
-    assert.equal(findPython({}, (x) => x === bundled || x === '/usr/local/bin/python3', bundled), bundled, 'its own Python first');
+    assert.equal(findPython({}, (x) => x === bundled || x === '/usr/local/bin/python3', bundled, () => '3.14.0'), bundled, 'its own Python first');
     assert.equal(findPython({ UMP_PYTHON: '/x' }, () => true, bundled), '/x');
     assert.equal(resolvePaths({ HOME: '/Users/ada', CORPUS_DIR: '/c' }, `${res}/app`, '/Users/ada', true).corpus, '/c');
   });
@@ -155,8 +155,8 @@ describe('paths', () => {
   });
 
   test('python and URL overrides', () => {
-    assert.equal(findPython({}, (p) => p === '/opt/homebrew/bin/python3'), '/opt/homebrew/bin/python3');
-    assert.equal(findPython({}, () => false), 'python3');
+    assert.equal(findPython({}, (p) => p === '/opt/homebrew/bin/python3', undefined, () => '3.14.0'), '/opt/homebrew/bin/python3');
+    assert.equal(findPython({}, () => false, undefined, () => null), 'python3');
     assert.equal(findPython({ UMP_PYTHON: '/x' }, () => true), '/x');
     assert.deepEqual(urlOverrides({ UMP_URLS: '{"discord":"http://127.0.0.1:1/"}' }), { discord: 'http://127.0.0.1:1/' });
     assert.deepEqual(urlOverrides({ UMP_URLS: 'nope' }), {});

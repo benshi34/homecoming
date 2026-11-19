@@ -154,7 +154,7 @@ For developers working on Homecoming: it runs from Terminal, without building th
 #### What you need
 
 - **A Mac with Apple silicon** (M1 or later). On an Intel Mac the iPhone backup step can't run.
-- **Python 3.14 from [python.org](https://www.python.org/downloads/macos/).** The iPhone backup step uses packages that come with Homecoming and are built for Python 3.14 only. The app looks for python.org's Python first (`/usr/local/bin/python3`).
+- **Python 3.14 from [python.org](https://www.python.org/downloads/macos/).** The iPhone backup step uses packages that come with Homecoming and are built for Python 3.14 only. The app probes installed versions, including versioned `python3.14` binaries, and uses one that fits those packages. `UMP_PYTHON` still overrides this choice; Setup Checks says if it needs changing.
 - **Node.js** ([nodejs.org](https://nodejs.org/)). Homecoming was built and tested with Node 24.
 - **git**, if you clone rather than download. The first time you type `git` in Terminal, macOS offers to install it.
 - **Optional: the Claude Code or Codex CLI**, signed in, to ask questions about your data.
