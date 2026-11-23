@@ -24,9 +24,11 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 from pathlib import Path
 
@@ -52,7 +54,7 @@ def config():
 _chosen = None
 
 
-def chosen():
+def chosen(cancelled=None):
     """The machines read: UMP_MACHINES if set (and only those); else the ones found by themselves (auto: your own
     Tailscale machines and this Mac's running VMs that sign in without asking and have python3), with machines.json's
     "read" added (an ssh config host, which isn't tried by itself) and its "skip" taken out; "auto": false for only
@@ -63,7 +65,7 @@ def chosen():
     if _chosen is None:
         c = config()
         named = [str(h) for h in c.get("read") or []]
-        found = auto() if c.get("auto", True) is not False else []
+        found = auto(cancelled) if c.get("auto", True) is not False else []
         skip = {str(h) for h in c.get("skip") or []}
         _chosen = [m for m in dict.fromkeys([*named, *found]) if m not in skip]
     return _chosen
@@ -83,8 +85,8 @@ def listed():
             for m in find(contact=False)]
 
 
-def auto():
-    return [m["name"] for m in find() if m.get("mine") and m.get("reachable") and m.get("python")]
+def auto(cancelled=None):
+    return [m["name"] for m in find(cancelled=cancelled) if m.get("mine") and m.get("reachable") and m.get("python")]
 
 
 def target(machine):
@@ -169,17 +171,91 @@ def ssh_failed(stderr):
     return f"couldn't connect: {said[-1][:160]}" if said else "couldn't connect"
 
 
-def check(name):
+class Stopped(RuntimeError):
+    """Permission was removed during a read. Keep what was already brought home."""
+
+
+def permitted(cancelled):
+    if not online("machines"):
+        cancelled.set()
+    if cancelled.is_set():
+        raise Stopped("Other machines is off in Network")
+
+
+def ssh_run(args, *, data=None, timeout, cancelled):
+    """An SSH call with its own process group, stopped when either Network switch goes off.
+
+    Keep stdin open after the bundle: remote_run watches it for a closed connection. communicate(input=...)
+    would close it as soon as the bundle was sent, before the remote readers had finished.
+    """
+    permitted(cancelled)
+    p = subprocess.Popen(args, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    pipe, sender = p.stdin, None
+    if pipe is not None:
+        p.stdin = None  # communicate drains stdout/stderr without closing the connection's input
+
+        def send():
+            try:
+                pipe.write(data)
+                pipe.flush()
+            except (OSError, ValueError):  # SSH closed, or the read was stopped during the upload
+                pass
+
+        sender = threading.Thread(target=send, daemon=True)
+        sender.start()
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            permitted(cancelled)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired(args, timeout)
+            try:
+                out, err = p.communicate(timeout=min(0.1, left))
+                return subprocess.CompletedProcess(args, p.returncode, out, err)
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        # Terminate the group, including a ProxyCommand, rather than leaving children behind with open pipes.
+        if p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if sender is not None:
+            sender.join(timeout=2)
+            if sender.is_alive():
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                sender.join()
+            pipe.close()  # EOF also stops remote_run if sshd leaves a non-interactive remote shell alive
+        try:
+            p.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.communicate()
+
+
+def check(name, cancelled=None):
     """One ssh call that asks for nothing: (reachable, what it is)."""
     try:
-        r = subprocess.run([*SSH[:-6], "-o", "ConnectTimeout=6", *target(name), "uname -s; command -v python3 && python3 -V"],
-                           capture_output=True, text=True, errors="replace", timeout=25)
+        r = ssh_run([*SSH[:-6], "-o", "ConnectTimeout=6", *target(name), "uname -s; command -v python3 && python3 -V"],
+                    timeout=25, cancelled=cancelled if cancelled is not None else threading.Event())
+    except Stopped as e:
+        return {"reachable": False, "why": str(e)}
     except (OSError, subprocess.TimeoutExpired):
         return {"reachable": False, "why": "no answer"}
+    stdout, stderr = r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace")
     if r.returncode == 255:
-        return {"reachable": False, "why": ssh_failed(r.stderr)}
-    lines = r.stdout.split()
-    return {"reachable": True, "system": lines[0] if lines else "?", "python": "Python" in r.stdout}
+        return {"reachable": False, "why": ssh_failed(stderr)}
+    lines = stdout.split()
+    return {"reachable": True, "system": lines[0] if lines else "?", "python": "Python" in stdout}
 
 
 def resolved(name):
@@ -191,7 +267,7 @@ def resolved(name):
     return dict(l.split(" ", 1) for l in r.stdout.splitlines() if " " in l and l.split(" ", 1)[0] in ("hostname", "user", "proxycommand"))
 
 
-def find(with_ssh=False, also=(), contact=True):
+def find(with_ssh=False, also=(), contact=True, cancelled=None):
     """The machines there are to read. contact=False lists them from Tailscale's and the ssh config's own state and
     sends nothing to any of them (for a settings page to draw)."""
     peers = tailscale_peers()
@@ -225,8 +301,9 @@ def find(with_ssh=False, also=(), contact=True):
     theirs = lambda m: m["via"] == "tailscale" and not m.get("mine")
     to_check = [n for n, m in found.items() if n in also or not theirs(m) and (
         (m["via"] in ("tailscale", "VM on this Mac") and m.get("online", True)) or with_ssh)]
+    cancelled = cancelled if cancelled is not None else threading.Event()
     with concurrent.futures.ThreadPoolExecutor(16) as pool:
-        for name, res in zip(to_check, pool.map(check, to_check)):
+        for name, res in zip(to_check, pool.map(lambda name: check(name, cancelled), to_check)):
             found[name].update(res)
     return sorted(found.values(), key=lambda m: (not m.get("reachable"), m["name"]))
 
@@ -285,18 +362,26 @@ def connectors(machine):
     return [c for c in CONNECTORS if c != "machines" and (c in named if named else c not in NOT_THERE)]
 
 
-def fetch(machine, names):
+def fetch(machine, names, cancelled=None):
     """Run the connectors there; {file name: bytes} of what they wrote, and the run's log."""
+    cancelled = cancelled if cancelled is not None else threading.Event()
+    permitted(cancelled)
+    data = bundle()
     script = ('d=$(mktemp -d "${TMPDIR:-/tmp}/homecoming.XXXXXX") || exit 70; trap \'rm -rf "$d"\' EXIT; '
-              'tar -xzf - -C "$d" || exit 71; cd "$d/connectors" || exit 72; command -v python3 >/dev/null || exit 127; '
-              f'CORPUS_DIR="$d/corpus" python3 remote_run.py {" ".join(shlex.quote(n) for n in names)} >&2; '
+              'trap \'exit 130\' HUP INT TERM; '
+              f'head -c {len(data)} | tar -xzf - -C "$d" || exit 71; '
+              'cd "$d/connectors" || exit 72; command -v python3 >/dev/null || exit 127; '
+              f'CORPUS_DIR="$d/corpus" python3 remote_run.py --watch-stdin {" ".join(shlex.quote(n) for n in names)} >&2 || exit $?; '
               'cd "$d/corpus" 2>/dev/null && COPYFILE_DISABLE=1 tar -czf - normalized manifest.json 2>/dev/null')
     for attempt in (1, 2):  # a dropped connection gets one more try; a refused sign-in doesn't
-        r = subprocess.run([*SSH, *target(machine), script], input=bundle(), capture_output=True, timeout=TIMEOUT)
+        r = ssh_run([*SSH, *target(machine), script], data=data, timeout=TIMEOUT, cancelled=cancelled)
         log = r.stderr.decode(errors="replace")
         if r.returncode != 255 or SIGN_IN.search(log) or attempt == 2:
             break
-        time.sleep(RETRY_AFTER)
+        until = time.monotonic() + RETRY_AFTER
+        while time.monotonic() < until:
+            permitted(cancelled)
+            cancelled.wait(min(0.1, until - time.monotonic()))
     if r.returncode == 127:
         raise RuntimeError("no python3 there")
     if r.returncode == 255:
@@ -439,32 +524,56 @@ def main():
         manifest["machines"] = {**(manifest.get("machines") or {}), "off": True}
         write_manifest(manifest)
         return
-    entry = {"avenue": __doc__.split("\n\n")[0], "machines": {m: v for m, v in before.items() if m not in chosen()}}
+    entry = {"avenue": __doc__.split("\n\n")[0], "machines": dict(before)}
+    cancelled = threading.Event()
+    targets = []
+
+    def stop(signum, frame):
+        cancelled.set()  # the SSH workers have their own process groups; let them close and reap those too
+        raise KeyboardInterrupt
+
+    handlers = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM)}
     # Read there a few at a time (each is mostly waiting on that machine); merged here one at a time, as each comes
     # back, so two machines with the same message don't both keep it.
-    with concurrent.futures.ThreadPoolExecutor(AT_ONCE) as pool:
-        started = {pool.submit(lambda m: (time.time(), fetch(m, connectors(m))), m): m for m in chosen()}
-        for done in concurrent.futures.as_completed(started):
-            machine = started[done]
-            try:
-                t, fetched = done.result()
-                entry["machines"][machine] = {**read(machine, fetched), "seconds": round(time.time() - t)}
-            except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as e:
-                entry["machines"][machine] = {"not_read": str(e) if not isinstance(e, subprocess.TimeoutExpired) else "took too long"}
-            # a source not read this time (fewer chosen, or the machine was away) keeps what the last read said of it
-            # (_access is this read's to say; so is why a reader that ran this time couldn't before: it may run now)
-            ran = set(connectors(machine))
-            old = {k: v for k, v in ((before.get(machine) or {}).get("sources") or {}).items()
-                   if k != "_access" and not (k in ran and isinstance(v, dict) and "not_read" in v)}
-            if old and "sources" in entry["machines"][machine]:
-                entry["machines"][machine]["sources"] = {**old, **entry["machines"][machine]["sources"]}
-            print(f"[machines] {machine}: {entry['machines'][machine]}", flush=True)
-    # A machine no longer chosen keeps what was read from it (taking it out is a choice of its own: delete its files).
-    kept = sorted({p.stem.split("@", 1)[1] for p in NORM.glob("*@*.jsonl")} - set(chosen()))
-    if kept:
-        entry["no_longer_read"] = kept
-    manifest["machines"] = {**entry, "count": sum(s.get("count", 0) for m in entry["machines"].values() for s in (m.get("sources") or {}).values())}
-    write_manifest(manifest)
+    try:
+        targets = chosen(cancelled)
+        permitted(cancelled)
+        with concurrent.futures.ThreadPoolExecutor(AT_ONCE) as pool:
+            started = {pool.submit(lambda m: (time.time(), fetch(m, connectors(m), cancelled)), m): m for m in targets}
+            for done in concurrent.futures.as_completed(started):
+                machine = started[done]
+                try:
+                    t, fetched = done.result()
+                    entry["machines"][machine] = {**read(machine, fetched), "seconds": round(time.time() - t)}
+                except Stopped:
+                    continue  # retain this machine's previous records and manifest, including its counts
+                except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as e:
+                    entry["machines"][machine] = {"not_read": str(e) if not isinstance(e, subprocess.TimeoutExpired) else "took too long"}
+                # a source not read this time keeps what the last read said of it (_access is this read's to say;
+                # so is why a reader that ran this time couldn't before: it may run now)
+                ran = set(connectors(machine))
+                old = {k: v for k, v in ((before.get(machine) or {}).get("sources") or {}).items()
+                       if k != "_access" and not (k in ran and isinstance(v, dict) and "not_read" in v)}
+                if old and "sources" in entry["machines"][machine]:
+                    entry["machines"][machine]["sources"] = {**old, **entry["machines"][machine]["sources"]}
+                print(f"[machines] {machine}: {entry['machines'][machine]}", flush=True)
+    except Stopped:
+        pass
+    finally:
+        if cancelled.is_set():
+            if not online("machines"):
+                entry["off"] = True
+            print("[machines] stopped; earlier reads kept", flush=True)
+        # A machine no longer chosen keeps what was read from it (taking it out is a separate choice).
+        kept = sorted({p.stem.split("@", 1)[1] for p in NORM.glob("*@*.jsonl")} - set(targets))
+        if kept:
+            entry["no_longer_read"] = kept
+        manifest["machines"] = {**entry, "count": sum(s.get("count", 0) for m in entry["machines"].values() for s in (m.get("sources") or {}).values())}
+        try:
+            write_manifest(manifest)
+        finally:
+            for s, handler in handlers.items():
+                signal.signal(s, handler)
 
 
 def check_access(machine):

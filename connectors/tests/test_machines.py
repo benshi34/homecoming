@@ -5,14 +5,18 @@ Run: python3 -m unittest discover -s connectors/tests -p 'test_*.py'
 """
 import json
 import os
+import shlex
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 CONNECTORS = Path(__file__).resolve().parents[1]
+BRIDGE = CONNECTORS.parent / "desktop/py/bridge.py"
 
 
 class MachinesTests(unittest.TestCase):
@@ -68,6 +72,244 @@ esac""")
     def records(self, name):
         f = self.corpus / "normalized" / f"{name}.jsonl"
         return [json.loads(l) for l in f.read_text().splitlines()] if f.exists() else []
+
+    def wait_for(self, predicate, why, timeout=10):
+        until = time.monotonic() + timeout
+        while time.monotonic() < until:
+            if predicate():
+                return
+            time.sleep(0.02)
+        self.fail(why)
+
+    def network(self, value):
+        tmp = self.corpus / "network.json.tmp"
+        tmp.write_text(json.dumps(value))
+        tmp.replace(self.corpus / "network.json")  # the app's settings handler writes it this way
+
+    def blocking_reader(self):
+        """The existing stand-in SSH, with a remote shell in a separate session. Killing the client cannot kill
+        that shell: only EOF reaching remote_run, its process-group stop, and the shell's EXIT trap clean it up.
+        """
+        ssh = self.bin / "ssh"
+        slowhome = self.root / "slowhome"
+        slowhome.mkdir()
+        (slowhome / ".zsh_history").write_text(": 1767268800:0;make bench\n")
+        launch = shlex.quote("import subprocess, sys; sys.exit(subprocess.call(['sh', '-c', sys.argv[1]], start_new_session=True))")
+        ssh.write_text(ssh.read_text().replace('  box2)',
+            f'  slow|slow2|queued) TEST_HOST="$host" HOME="{slowhome}" TMPDIR="{self.tmp}" PATH="{self.bin}:/usr/bin:/bin" '
+            f'{shlex.quote(sys.executable)} -c {launch} "$last";;\n  box2)'))
+        reader = self.root / "slow_reader.py"
+        reader.write_text(f'''import json, os, signal, subprocess, sys, time
+from pathlib import Path
+
+def main():
+    host = os.environ.get("TEST_HOST")
+    if not host or os.environ.get("TEST_WAIT") != "1":
+        return
+    root = Path({str(self.root)!r})
+    child_code = "import signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, lambda *a: (Path(sys.argv[1]).touch(), sys.exit(0))); print('ready', flush=True); time.sleep(120)"
+    child = subprocess.Popen([sys.executable, "-c", child_code, str(root / (host + ".child-stopped"))], stdout=subprocess.PIPE)
+    child.stdout.readline()
+    def stopped(*args):
+        (root / (host + ".stopped")).touch()
+        child.wait(timeout=2)
+        raise SystemExit(143)
+    signal.signal(signal.SIGTERM, stopped)
+    (root / (host + ".running")).write_text(json.dumps({{"pid": os.getpid(), "child": child.pid, "shell": os.getppid(), "group": os.getpgrp()}}))
+    time.sleep(120)
+''')
+        (self.bin / "python3").unlink()
+        self.tool("python3", f'if [ "$1" = remote_run.py ]; then cp {shlex.quote(str(reader))} reminders.py; fi\nexec {shlex.quote(sys.executable)} "$@"')
+
+        def stop_readers():
+            for marker in self.root.glob("*.running"):
+                ids = json.loads(marker.read_text())
+                for pid in (ids["child"], ids["pid"], ids["shell"]):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+        self.addCleanup(stop_readers)
+
+    def bridge_read(self, *names, **extra):
+        p = subprocess.Popen([sys.executable, str(BRIDGE), "run", *names], cwd=CONNECTORS,
+                             env=self.env(**extra), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             start_new_session=True)
+
+        def stop():
+            if p.poll() is None:
+                os.killpg(p.pid, signal.SIGKILL)
+            try:
+                p.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.stdout.close()
+                p.stderr.close()
+
+        self.addCleanup(stop)
+        return p
+
+    def stalled_ssh(self, ignore_term=False):
+        """A stuck SSH/ProxyCommand that never reads the upload. Its child exits only if the whole group is stopped."""
+        script = self.root / "stalled_ssh.py"
+        script.write_text(f'''import json, os, signal, subprocess, sys, time
+from pathlib import Path
+root = Path({str(self.root)!r})
+if "-G" in sys.argv:
+    print("hostname " + sys.argv[-1])
+    print("user ada")
+    sys.exit(0)
+code = "import signal, sys, time; from pathlib import Path; signal.signal(signal.SIGTERM, {'signal.SIG_IGN' if ignore_term else 'lambda *a: (Path(sys.argv[1]).touch(), sys.exit(0))'}); print('ready', flush=True); time.sleep(120)"
+child = subprocess.Popen([sys.executable, "-c", code, str(root / "proxy.stopped")], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+child.stdout.readline()
+{'signal.signal(signal.SIGTERM, signal.SIG_IGN)' if ignore_term else ''}
+(root / "proxy.running").write_text(json.dumps({{"pid": child.pid, "ssh": os.getpid()}}))
+time.sleep(120)
+''')
+        self.tool("ssh", f'exec {shlex.quote(sys.executable)} {shlex.quote(str(script))} "$@"')
+
+        def stop_proxy():
+            marker = self.root / "proxy.running"
+            if marker.exists():
+                for pid in json.loads(marker.read_text()).values():
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+        self.addCleanup(stop_proxy)
+
+    def stop_during_read(self, network):
+        self.blocking_reader()
+        # Both completed machines and the previous read of a now-blocked machine must stay in the library.
+        self.py("import machines; machines.main()", UMP_MACHINES="box slow")
+        before = self.records("shell_history@slow")
+        self.assertTrue(before)
+        old = json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]["slow"]
+        (self.box / ".zsh_history").write_text(": 1767272400:0;make test\n")
+        (self.root / "ssh.log").unlink()
+        p = self.bridge_read("machines", "shell_history", UMP_MACHINES="box slow slow2 queued", UMP_MACHINES_AT_ONCE="2",
+                             UMP_MACHINE_SOURCES="shell_history reminders", TEST_WAIT="1")
+        self.wait_for(lambda: all((self.root / (h + ".running")).exists() for h in ("slow", "slow2")), "two SSH reads never started")
+        self.wait_for(lambda: "make test" in [r["text"] for r in self.records("shell_history@box")], "the completed machine was not merged")
+        self.network(network)
+        out, err = p.communicate(timeout=8)
+        self.assertEqual(p.returncode, 0, err + out)
+        events = [json.loads(line) for line in out.splitlines()]
+        self.assertEqual(events[-1], {"type": "finished", "failed": []}, "the bridge job must finish")
+        self.assertTrue(any(e["type"] == "done" and e.get("connector") == "shell_history" for e in events), "local reads still work offline")
+        for host in ("slow", "slow2"):
+            self.assertTrue((self.root / (host + ".stopped")).exists(), "the remote reader survived the connection closing")
+            self.assertTrue((self.root / (host + ".child-stopped")).exists(), "the remote reader's child was not stopped with its group")
+        self.assertEqual(list(self.tmp.iterdir()), [], "the remote shell's EXIT trap must remove its temporary folder")
+        self.assertNotIn("queued", (self.root / "ssh.log").read_text().split(), "a waiting read started after permission was removed")
+        self.assertEqual(self.records("shell_history@slow"), before)
+        manifest = json.loads((self.corpus / "manifest.json").read_text())["machines"]
+        self.assertTrue(manifest["off"])
+        self.assertEqual(manifest["machines"]["slow"], old, "the stopped machine keeps its previous counts too")
+        with sqlite3.connect(self.corpus / "corpus.db") as db:
+            self.assertEqual(db.execute("select count(*) from records where id like '@slow/%'").fetchone()[0], len(before))
+            self.assertEqual(db.execute("select count(*) from records where text = 'make test'").fetchone()[0], 1)
+
+    def test_turning_other_machines_off_stops_running_ssh_and_keeps_earlier_reads(self):
+        self.stop_during_read({"sources": {}})
+
+    def test_turning_the_internet_off_stops_running_ssh_and_keeps_earlier_reads(self):
+        self.stop_during_read({"offline": True, "sources": {"machines": True}})
+
+    def test_turning_off_during_a_retry_wait_does_not_try_ssh_again(self):
+        p = self.bridge_read("--no-index", "machines", UMP_MACHINES="down", UMP_MACHINE_RETRY_AFTER="30")
+        log = self.root / "ssh.log"
+        self.wait_for(lambda: log.exists() and "down" in log.read_text(), "SSH never tried the unreachable machine")
+        self.network({"offline": True, "sources": {"machines": True}})
+        out, err = p.communicate(timeout=5)
+        self.assertEqual(p.returncode, 0, err + out)
+        self.assertEqual(log.read_text().split(), ["down"], "permission was removed, so there is no second attempt")
+
+    def test_cancelling_a_stalled_upload_stops_the_ssh_process_group(self):
+        self.stalled_ssh()
+        p = self.bridge_read("--no-index", "machines", UMP_MACHINES="box")
+        self.wait_for(lambda: (self.root / "proxy.running").exists(), "SSH never started")
+        self.network({"sources": {}})
+        out, err = p.communicate(timeout=8)
+        self.assertEqual(p.returncode, 0, err + out)
+        self.assertTrue((self.root / "proxy.stopped").exists(), "the SSH child must receive SIGTERM with its process group")
+
+    def test_a_timed_out_ssh_call_stops_its_process_group(self):
+        self.stalled_ssh()
+        p = self.bridge_read("--no-index", "machines", UMP_MACHINES="box", UMP_MACHINE_TIMEOUT="1")
+        out, err = p.communicate(timeout=8)
+        self.assertEqual(p.returncode, 0, err + out)
+        self.assertTrue((self.root / "proxy.stopped").exists(), "an SSH timeout must stop its children too")
+        entry = json.loads((self.corpus / "manifest.json").read_text())["machines"]["machines"]["box"]
+        self.assertEqual(entry, {"not_read": "took too long"})
+
+    def test_an_ssh_group_ignoring_term_is_killed_during_a_stalled_upload(self):
+        self.stalled_ssh(ignore_term=True)
+        p = self.bridge_read("--no-index", "machines", UMP_MACHINES="box")
+        self.wait_for(lambda: (self.root / "proxy.running").exists(), "SSH never started")
+        self.network({"sources": {}})
+        out, err = p.communicate(timeout=8)
+        self.assertEqual(p.returncode, 0, err + out)
+        pid = json.loads((self.root / "proxy.running").read_text())["pid"]
+
+        def gone():
+            try:
+                os.kill(pid, 0)
+                return False
+            except ProcessLookupError:
+                return True
+
+        self.wait_for(gone, "the SSH group ignored TERM and was not killed")
+
+    def test_permission_removal_stays_cancelled_if_the_switch_is_turned_back_on(self):
+        self.py('''import machines, threading
+from unittest.mock import patch
+cancelled = threading.Event()
+with patch.object(machines, 'online', return_value=False):
+    try:
+        machines.permitted(cancelled)
+    except machines.Stopped:
+        pass
+assert cancelled.is_set()
+with patch.object(machines, 'online', return_value=True):
+    try:
+        machines.permitted(cancelled)
+    except machines.Stopped:
+        pass
+    else:
+        raise AssertionError('a cancelled read must not resume when permission returns')
+''')
+
+    def test_direct_ssh_check_cannot_start_when_network_is_off(self):
+        self.network({"sources": {}})
+        self.py('''import machines
+from unittest.mock import patch
+with patch.object(machines.subprocess, 'Popen', side_effect=AssertionError('SSH started while Network was off')):
+    result = machines.check('box')
+assert result['reachable'] is False
+assert 'off in Network' in result['why']
+''')
+
+    def test_turning_off_during_discovery_stops_the_probe_process_group(self):
+        self.stalled_ssh()
+        p = self.bridge_read("--no-index", "machines")  # no UMP_MACHINES: discover your own Tailscale machines
+        self.wait_for(lambda: (self.root / "proxy.running").exists(), "the SSH probe never started")
+        self.network({"offline": True, "sources": {"machines": True}})
+        out, err = p.communicate(timeout=8)
+        self.assertEqual(p.returncode, 0, err + out)
+        self.assertTrue((self.root / "proxy.stopped").exists(), "the discovery probe must stop its children too")
+
+    def test_stopping_the_bridge_job_also_stops_ssh_and_cleans_the_remote_folder(self):
+        self.blocking_reader()
+        p = self.bridge_read("--no-index", "machines", UMP_MACHINES="slow", UMP_MACHINE_SOURCES="reminders", TEST_WAIT="1")
+        self.wait_for(lambda: (self.root / "slow.running").exists(), "the remote reader never started")
+        os.killpg(p.pid, signal.SIGTERM)  # desktop/src/main/bridge.ts stops queue jobs this way
+        out, err = p.communicate(timeout=8)
+        self.assertEqual(p.returncode, 1, err + out)
+        self.assertIn('"type": "finished"', out)
+        self.assertTrue((self.root / "slow.child-stopped").exists())
+        self.assertEqual(list(self.tmp.iterdir()), [], "stopping a job must also run remote cleanup")
 
     def test_off_in_network_nothing_goes_over_ssh(self):
         self.py("import shell_history; shell_history.main()")
