@@ -193,6 +193,9 @@ export const CATALOG: Source[] = [
     blurb: 'What you searched for and got directions to in Apple Maps, your favorites and guides, the places you rated, and the places Maps says you visited.' },
   { id: 'voice_memos', name: 'Voice Memos', group: 'mac', connector: 'voice_memos', produces: ['voice_memos'],
     blurb: 'Recordings synced to this Mac.' },
+  { id: 'notifications', name: 'Notifications', group: 'mac', connector: 'notifications', produces: ['notifications'],
+    blurb: 'Each notification this Mac got, from which app, and whether it showed as a banner or alert or went quietly to Notification Center, with those forwarded from your iPhone marked. macOS keeps them for about a week, so Homecoming reads them every ten minutes while it\'s open. Sign-in codes in them are replaced with [code].',
+    knownGaps: ['A notification you cleared before Homecoming looked is missed.'] },
 
   { id: 'notion_local', name: 'Notion (desktop app)', group: 'mac', connector: 'notion_local', produces: ['notion'],
     blurb: 'Pages the Notion app has cached on this Mac, with exact edit times.' },

@@ -20,10 +20,7 @@ with UMP_EXTRA_PYPATH and swap the iPhone pipeline with UMP_IPHONE_MODULE.
 """
 
 import collections
-import contextlib
-import ctypes
 import datetime as dt
-import fcntl
 import hashlib
 import io
 import itertools
@@ -42,7 +39,7 @@ import tarfile
 import zipfile
 import zlib
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
 REPO = Path(os.environ.get("UMP_REPO") or Path(__file__).resolve().parents[2])
 CONNECTORS = REPO / "connectors"
@@ -51,6 +48,8 @@ for extra in filter(None, os.environ.get("UMP_EXTRA_PYPATH", "").split(os.pathse
     sys.path.insert(0, extra)
 from library_paths import photos_libraries
 import common  # noqa: E402 - connectors/common.py: how zips are read, as imports.py reads them
+from common import COPIES, db_copy, drop_copy, notification_access as _notification_access, notification_db as _notification_db, \
+    notification_prefs as _notification_prefs, notification_records, notification_shown as _notification_shown, _read_only
 
 HOME = Path.home()
 LIB = HOME / "Library"
@@ -82,6 +81,7 @@ MAC_PATHS = {
     "photos": [p / "database/Photos.sqlite" for p in photos_libraries(HOME)],
     "apple_maps": [LIB / "Containers/com.apple.Maps/Data/Maps/MapsSync_0.0.1"],
     "voice_memos": [LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"],
+    "notifications": [LIB / "Group Containers/group.com.apple.usernoted/db2/db"],
     "notion_local": [LIB / "Application Support/Notion/notion.db"],
     "zotero": [HOME / "Zotero/zotero.sqlite"],  # or wherever its prefs.js says (zotero.py)
     # and Obsidian vaults wherever they are, read with these (not looked for alone: see PROTECTED)
@@ -357,6 +357,8 @@ def probe():
     found_browsers = browsers.found()
     histories = [p for b in found_browsers if b["id"] != "safari" for _, p in browsers.history_files(b["id"])]
     for name, paths in MAC_PATHS.items():
+        if name == "notifications":
+            paths = [notification_db()]
         states = [look(p) for p in [*paths, *(histories if name == "browser_history" else [])]]
         sources[name] = "ok" if "ok" in states else "blocked" if "blocked" in states else "absent"
     from common import git_bin
@@ -770,157 +772,24 @@ APP_NAMES = {"com.apple.mail": "Mail", "com.apple.mobilesms": "Messages", "com.a
              "com.google.chrome": "Chrome", "com.microsoft.outlook": "Outlook", "com.readdle.smartemail-mac": "Spark"}
 
 
-# Notification Center's database and Mail's index are read from a copy: their apps keep writing to them. The copy is
-# kept (in ~/Library/Caches, which Time Machine leaves out) and made again only once the files have changed; on APFS
-# it's a clone, which shares the original's blocks instead of copying a gigabyte of mail index every few minutes.
-COPIES = Path(os.environ.get("UMP_CACHE_DIR") or LIB / "Caches/Homecoming") / "copies"
-
-
-def _clone(src, dst):
-    """dst as an APFS clone of src (instant, and no space until one of them changes), else a plain copy."""
-    try:
-        if ctypes.CDLL(None).clonefile(os.fsencode(src), os.fsencode(dst), 0) == 0:
-            return
-    except (OSError, AttributeError):
-        pass
-    shutil.copy2(src, dst)
-
-
-@contextlib.contextmanager
-def db_copy(db, name):
-    """The path of a copy of SQLite database `db` (with its -wal and -shm) to read while in the block. Made again
-    when any of them changed (size or time) since; one bridge at a time. Raises OSError if `db` can't be read (no
-    Full Disk Access), and then the copy goes too: what can't be read there isn't kept here."""
-    d = COPIES / name
-    d.mkdir(parents=True, exist_ok=True)
-    os.chmod(COPIES, 0o700)
-    with open(d / "lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            with open(db, "rb") as f:  # as macOS sees it now, not as a copy remembers it
-                f.read(1)
-        except OSError:
-            for s in ("", "-wal", "-shm", ".json"):
-                (d / f"db{s}").unlink(missing_ok=True)
-            raise
-        stamp = {"db": str(db), "files": [[s, st.st_size, st.st_mtime_ns] for s in ("", "-wal", "-shm")
-                                          for st in [_stat(f"{db}{s}")] if st]}
-        try:
-            same = json.loads((d / "db.json").read_text()) == stamp and (d / "db").exists()
-        except (OSError, ValueError):
-            same = False
-        if not same:
-            for s in (".json", "", "-wal", "-shm"):  # one the database no longer has mustn't be read with the new copy
-                (d / f"db{s}").unlink(missing_ok=True)
-            for s, *_ in stamp["files"]:
-                _clone(f"{db}{s}", d / f"db{s}")
-            (d / "db.json").write_text(json.dumps(stamp))  # as it was before the copy: changed during it, copied again
-        yield d / "db"
-
-
-def _stat(p):
-    try:
-        return os.stat(p)
-    except FileNotFoundError:
-        return None
-
-
-def _readable(p):
-    """Whether this app may read the file (Full Disk Access), asked of the file itself: nothing is copied for it."""
-    try:
-        with open(p, "rb") as f:
-            f.read(1)
-        return True
-    except OSError:
-        return False
-
-
-def drop_copy(name):
-    """The copy kept for a place that's no longer looked in (turned off in General): gone, once no bridge is reading
-    it (db_copy's lock)."""
-    d = COPIES / name
-    if not d.exists():
-        return
-    with open(d / "lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        for p in d.iterdir():
-            if p.name != "lock":
-                p.unlink(missing_ok=True)
-        (d / "lock").unlink(missing_ok=True)
-    try:
-        d.rmdir()
-    except OSError:
-        pass
-
-
-def _read_only(p):
-    return f"file:{quote(str(p))}?mode=ro"
-
-
 def notification_db():
-    if os.environ.get("UMP_NOTIFICATIONS_DB"):
-        return Path(os.environ["UMP_NOTIFICATIONS_DB"])
-    new = LIB / "Group Containers/group.com.apple.usernoted/db2/db"  # macOS 15 and later
-    if new.exists():
-        return new
-    try:  # before macOS 15
-        d = subprocess.run(["getconf", "DARWIN_USER_DIR"], capture_output=True, text=True, timeout=5).stdout.strip()
-        return Path(d) / "com.apple.notificationcenter/db2/db"
-    except (OSError, subprocess.SubprocessError):
-        return new
+    return _notification_db()
 
 
 def notifications(since):
     """(when, app id, title, subtitle, body) of each notification delivered since `since`, or None if the
     database can't be read (no Full Disk Access). Read from a copy: Notification Center keeps writing to it."""
-    db = notification_db()
-    try:
-        with db_copy(db, "notifications") as copy:
-            con = sqlite3.connect(_read_only(copy), uri=True)
-            try:
-                rows = con.execute("select a.identifier, r.delivered_date, r.data from record r join app a on a.app_id = r.app_id "
-                                   "where r.delivered_date >= ?", ((since - MAC_EPOCH).total_seconds(),)).fetchall()
-            finally:
-                con.close()
-    except (OSError, sqlite3.Error):
+    rows = notification_records(since)
+    if rows is None:
         return None
-    out = []
-    for ident, when, data in rows:
-        try:
-            req = plistlib.loads(data).get("req") or {}
-        except Exception:
-            continue
-        out.append((MAC_EPOCH + dt.timedelta(seconds=when or 0), ident or "", _text(req.get("titl")), _text(req.get("subt")),
-                    _text(req.get("body"))))
-    return out
+    return [(r["when"], r["bundle"], r["title"], r["subtitle"], r["body"]) for r in rows]
 
 
 def notification_shown(title, since):
     """Whether a notification with this title, posted since `since` (ISO), reached Notification Center, and whether
     macOS put it on screen: it can keep one without showing it (the app's notifications allowed, but delivered quietly
     or set to None). {"readable": False} without Full Disk Access."""
-    db = notification_db()
-    try:
-        with db_copy(db, "notifications") as copy:
-            con = sqlite3.connect(_read_only(copy), uri=True)
-            try:
-                when =(dt.datetime.fromisoformat(since.replace("Z", "+00:00")) - MAC_EPOCH).total_seconds()
-                rows = con.execute("select a.identifier, r.data, r.presented from record r join app a on a.app_id = r.app_id "
-                                   "where r.delivered_date >= ? order by r.delivered_date desc", (when,)).fetchall()
-            finally:
-                con.close()
-    except (OSError, sqlite3.Error, ValueError):
-        return {"readable": False}
-    if os.environ.get("UMP_READY_NOTIFICATIONS") == "0":  # not looked in for exports (General): no copy kept for this one
-        drop_copy("notifications")
-    for ident, data, presented in rows:
-        try:
-            req = plistlib.loads(data).get("req") or {}
-        except Exception:
-            continue
-        if _text(req.get("titl")) == title:
-            return {"readable": True, "found": True, "presented": bool(presented), "app": ident}
-    return {"readable": True, "found": False}
+    return _notification_shown(title, since)
 
 
 def notification_prefs(bundle):
@@ -928,28 +797,12 @@ def notification_prefs(bundle):
     their style (none: kept in Notification Center without showing; banners; alerts). From usernoted's preferences
     (in its group container since macOS 15; com.apple.ncprefs before), each app's flags: bit 25 allows them, bit 3 is
     banners and bit 4 alerts. {"readable": False} if they can't be read, {"found": False} before macOS has asked."""
-    paths = [Path(os.environ["UMP_NOTIFICATION_PREFS"])] if os.environ.get("UMP_NOTIFICATION_PREFS") else [
-        LIB / "Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist",
-        LIB / "Preferences/com.apple.ncprefs.plist"]
-    for p in paths:
-        try:
-            prefs = plistlib.loads(p.read_bytes())
-        except (OSError, plistlib.InvalidFileException, ValueError):
-            continue
-        for a in prefs.get("apps") or []:
-            if isinstance(a, dict) and a.get("bundle-id") == bundle and isinstance(a.get("flags"), int):
-                f = a["flags"]
-                return {"readable": True, "found": True, "allowed": bool(f >> 25 & 1),
-                        "style": "alerts" if f >> 4 & 1 else "banners" if f >> 3 & 1 else "none"}
-        return {"readable": True, "found": False}
-    return {"readable": False}
+    return _notification_prefs(bundle)
 
 
 def _text(x):
     """A notification field: usually a string, sometimes a list (a localized format and its arguments)."""
-    if isinstance(x, list):
-        return " ".join(_text(y) for y in x if not isinstance(y, (dict, bytes)))
-    return x if isinstance(x, str) else ""
+    return common._notification_text(x)
 
 
 # ---------------------------------------------------------------- mail
@@ -1097,20 +950,7 @@ def export_signals(asked):
 def notification_access():
     """Whether the app can read notifications, and whether this Mac gets the iPhone's ("Allow notifications from
     iPhone"): those apps are listed in Notification Center's settings with no app on this Mac."""
-    readable = _readable(notification_db())
-    prefs = LIB / "Group Containers/group.com.apple.usernoted/Library/Preferences/group.com.apple.usernoted.plist"
-    iphone = False
-    try:
-        for a in plistlib.loads(prefs.read_bytes()).get("apps") or []:
-            if not isinstance(a, dict) or str(a.get("bundle-id", "")).startswith("_SYSTEM_CENTER_"):
-                continue
-            paths = [x.get("path") for x in a.get("src") or [] if isinstance(x, dict) and x.get("path")] + ([a["path"]] if a.get("path") else [])
-            if not any(Path(x).exists() for x in paths):
-                iphone = True
-                break
-    except (OSError, ValueError, plistlib.InvalidFileException):
-        pass
-    return {"readable": readable, "iphone": iphone}
+    return _notification_access()
 
 
 def mac_apps():

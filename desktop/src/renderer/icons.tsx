@@ -83,7 +83,7 @@ const SOURCES: Record<string, [string, string]> = {
   imessage: ['bubble', 'green'], contacts: ['person', 'brown'], photos: ['photo', 'orange'], apple_notes: ['note', 'yellow'],
   calendar: ['calendar', 'red'], reminders: ['checklist', 'blue'], calls: ['phone', 'green'], browser_history: ['compass', 'blue'],
   app_usage: ['hourglass', 'indigo'], ai_coding: ['code', 'purple'], documents: ['doc', 'blue'], git_commits: ['branch', 'orange'],
-  notion_local: ['doc', 'graphite'], voice_memos: ['wave', 'red'], iphone_backup: ['iphone', 'graphite'],
+  notion_local: ['doc', 'graphite'], voice_memos: ['wave', 'red'], notifications: ['bell', 'red'], iphone_backup: ['iphone', 'graphite'],
   editor_history: ['code', 'blue'], shell_history: ['terminal', 'graphite'], podcasts: ['wave', 'purple'],
   whatsapp: ['bubble', 'green'], signal: ['bubble', 'blue'], books: ['book', 'orange'], zotero: ['book', 'red'], setup: ['terminal', 'graphite'], apple_maps: ['pin', 'blue'],
   google_takeout: ['tray', 'blue'], google_photos_drive: ['photo', 'teal'], instagram: ['camera', 'pink'], facebook: ['people', 'blue'],
