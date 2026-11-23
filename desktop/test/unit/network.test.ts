@@ -42,9 +42,17 @@ test('the Network list and the connectors that go online are the same', async ()
   const fs = await import('node:fs');
   const path = await import('node:path');
   const dir = path.resolve(import.meta.dirname, '../../../connectors');
+  const files = fs.readdirSync(dir).filter((x) => x.endsWith('.py')).map((f) => path.join(dir, f));
+  files.push(path.resolve(import.meta.dirname, '../../py/bridge.py'));
   const asked = new Set<string>();
-  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.py'))) {
-    for (const m of fs.readFileSync(path.join(dir, f), 'utf8').matchAll(/\b(?:need_)?online\(\s*["']([\w-]+)["']/g)) asked.add(m[1]);
+  for (const f of files) {
+    for (const m of fs.readFileSync(f, 'utf8').matchAll(/\b(?:need_)?online\(\s*["']([\w-]+)["']/g)) asked.add(m[1]);
   }
   assert.deepEqual([...asked].sort(), NETWORK_SOURCES.map((s) => s.id).sort());
+});
+
+test('iCloud export downloads have their own opt-in, and offline still wins', () => {
+  assert.ok(NETWORK_SOURCES.find((s) => s.id === 'icloud-exports'));
+  assert.deepEqual(networkFile({ offline: false }), { offline: false, sources: {} });
+  assert.deepEqual(networkFile({ offline: true, networkOn: ['icloud-exports'] }), { offline: true, sources: { 'icloud-exports': true } });
 });

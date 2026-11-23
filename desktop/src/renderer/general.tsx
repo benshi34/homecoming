@@ -40,15 +40,17 @@ export function GeneralPage({ snap, toolbar, onAssistant, onExport, onWhatsNew, 
             <p>How Homecoming works: reading this Mac, bringing your exports home, telling you what's happening, and your library. Who you are and what's on this Mac are in Your Setup; what AI does, in AI Settings.</p></div>
 
           <Group title="Network" testId="general-network"
-            footer="When it's off, Homecoming stops looking for updates, Ask with a cloud AI, Do It for Me, and the sources below. Everything else Homecoming reads is files on this Mac.">
+            footer="When it's off, Homecoming stops cloud AI, sign-in, web links, updates, Do It for Me, and the sources below. Local files and models on this Mac still work.">
             <GroupRow icon={<GlyphTile glyph="globe" color="blue" />} title="Use the internet" chevron={false} testId="network-internet"
               trailing={<Toggle checked={!offline} onChange={(v) => set({ offline: !v })} label="Use the internet" testId="toggle-network" />} />
-            <GroupRow icon={<GlyphTile glyph="sync" color="blue" />} title="Look for updates" subtitle="raw.githubusercontent.com" chevron={false}
+            <GroupRow icon={<GlyphTile glyph="sync" color="blue" />} title="Updates" subtitle="GitHub and package downloads" chevron={false}
               style={offline ? { opacity: 0.45 } : undefined} testId="network-updates" />
-            <GroupRow icon={<GlyphTile glyph="bubble" color="purple" />} title="Ask" subtitle={askHost(snap)} chevron={false}
+            <GroupRow icon={<GlyphTile glyph="bubble" color="purple" />} title="Ask and export mappings" subtitle={askHost(snap)} chevron={false}
               style={offline ? { opacity: 0.45 } : undefined} testId="network-ask" />
             <GroupRow icon={<GlyphTile glyph="sparkle" color="purple" />} title="Do It for Me" subtitle="the export sites, in your browser" chevron={false}
               style={offline ? { opacity: 0.45 } : undefined} testId="network-agent" />
+            <GroupRow icon={<GlyphTile glyph="globe" color="blue" />} title="Sign-in and web links" subtitle="the sites you open and your AI provider's sign-in" chevron={false}
+              style={offline ? { opacity: 0.45 } : undefined} testId="network-links" />
             {NETWORK_SOURCES.map((source) => {
               const on = (s.networkOn ?? []).includes(source.id);
               return <GroupRow key={source.id} icon={<GlyphTile glyph="globe" color="gray" />} title={source.name} subtitle={source.hosts.join(', ')} chevron={false}

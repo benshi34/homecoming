@@ -94,6 +94,18 @@ test('found at launch: said once, in the sidebar; its sheet; Update runs on its 
   assert.match(await sheet.innerText(), new RegExp(`You have ${VERSION.replace(/\./g, '\\.')}[\\s\\S]*Something new: it does this now[\\s\\S]*builds it from`));
   await shot(run.page, 'update-sheet');
 
+  // A release found online stays visible offline, but neither its button nor a stale IPC caller can install it.
+  await run.page.evaluate(() => window.api.settings({ offline: true }));
+  await until(run.page, 'offline with cached update', (x) => x.settings.offline === true);
+  await sheet.locator('button[data-action=update-start]:disabled').waitFor();
+  assert.equal(await sheet.locator('button[data-action=update-start]').isDisabled(), true);
+  assert.match(await sheet.locator('[data-testid=update-offline]').innerText(), /Homecoming is offline/);
+  assert.match((await run.page.evaluate(() => window.api.update('start'))).error ?? '', /Homecoming is offline/);
+  assert.equal(fs.existsSync(path.join(sb.root, 'args.json')), false, 'the updater was never started');
+  await shot(run.page, 'network-update-offline');
+  await run.page.evaluate(() => window.api.settings({ offline: false }));
+  await until(run.page, 'online again', (x) => x.settings.offline === false);
+  await sheet.locator('button[data-action=update-start]:enabled').waitFor();
   await sheet.locator('button[data-action=update-start]').click();
   await run.page.locator('[data-testid=update-step]').waitFor({ timeout: 10_000 });
   await until(run.page, 'building', (x) => !!x.update?.run?.step?.startsWith('Building Homecoming'), 10_000);
@@ -110,6 +122,13 @@ test('found at launch: said once, in the sidebar; its sheet; Update runs on its 
   assert.match(await run.page.locator('[data-testid=update-log]').innerText(), /it stopped here/, 'its last lines');
   assert.equal(await sheet.locator('button[data-action=update-again]').count(), 1, 'Try Again');
   await shot(run.page, 'update-failed');
+  await run.page.evaluate(() => window.api.settings({ offline: true }));
+  await until(run.page, 'offline after failure', (x) => x.settings.offline === true);
+  await sheet.locator('button[data-action=update-again]:disabled').waitFor();
+  assert.equal(await sheet.locator('button[data-action=update-again]').isDisabled(), true);
+  assert.match((await run.page.evaluate(() => window.api.update('start'))).error ?? '', /Homecoming is offline/);
+  await shot(run.page, 'network-update-retry-offline');
+  await run.page.evaluate(() => window.api.settings({ offline: false }));
   await sheet.locator('button', { hasText: 'Close' }).click();
   await until(run.page, 'put away', (x) => !x.update?.run && !!x.update?.available);
 
