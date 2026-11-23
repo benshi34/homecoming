@@ -9,6 +9,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { DESKTOP, find, launch, readJson, type Running, type Sandbox, sandbox, sandboxEnv, shot, snap, until } from './harness.ts';
 import { PY } from '../python.ts';
+import type { Snapshot } from '../../src/shared/types.ts';
 
 const PASSWORD = 'correct horse battery';
 const FAKE_IPHONE = `
@@ -135,8 +136,12 @@ test('the library page checks where everything goes', async () => {
 
 test('the Mac page shows sources being read', async () => {
   assert.equal(await step(), 'mac');
-  await until(run.page, 'mac read', (x) => ['ai_coding', 'git_commits', 'documents'].every((id) => find(x, id).section === 'done') && !x.jobs.some((j) => j.kind === 'connectors'), 120_000);
-  await run.page.locator('[data-testid=mac-count]', { hasText: '3 of 3 read' }).waitFor();
+  // Every Mac source there is something of in the made-up home: the page counts them all, so the test does too.
+  const counted = (x: Snapshot) => x.sources.filter((s) => s.group === 'mac' && s.section !== 'unavailable');
+  const x = await until(run.page, 'mac read', (x) => ['ai_coding', 'git_commits', 'documents'].every((id) => find(x, id).section === 'done')
+    && counted(x).every((s) => s.section === 'done') && !x.jobs.some((j) => j.kind === 'connectors'), 120_000);
+  const n = counted(x).length;
+  await run.page.locator('[data-testid=mac-count]', { hasText: `${n} of ${n} read` }).waitFor();
   await shot(run.page, 'assistant-05-mac');
   await cont();
 });

@@ -220,10 +220,15 @@ def redact(text, prose=False):
     return re.sub("\x00(\\d+)\x00", lambda m: kept[int(m.group(1))], re.sub("\x00(\\d+)\x00", lambda m: kept[int(m.group(1))], text))
 
 
+# UMP_SETUP_SYSTEM=0: only what's under HOME. The commands and /Applications see the whole Mac whatever HOME says,
+# so a run in a made-up home (the app's end-to-end tests) would otherwise take in the real Mac's.
+SYSTEM = os.environ.get("UMP_SETUP_SYSTEM") != "0"
+
+
 def run(cmd, timeout=20):
     """A read-only command's output, or None when it isn't installed or fails. Homebrew is told to neither update
     itself nor send analytics: a read here must reach nothing outside this Mac."""
-    if not shutil.which(cmd[0]) and not os.path.exists(cmd[0]):
+    if not SYSTEM or (not shutil.which(cmd[0]) and not os.path.exists(cmd[0])):
         return None
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout,
@@ -466,7 +471,7 @@ def aerospace(w, v):
 # ---------------------------------------------------------------- what's installed and running
 
 def apps(w, v):
-    apps = sorted({os.path.basename(p)[:-4] for d in ("/Applications", str(HOME / "Applications")) for p in glob.glob(d + "/*.app")})
+    apps = sorted({os.path.basename(p)[:-4] for d in (*(["/Applications"] if SYSTEM else []), str(HOME / "Applications")) for p in glob.glob(d + "/*.app")})
     if apps:
         v.add(w, "installed:apps", "inventory", f"{len(apps)} apps installed", "\n".join(apps), None, {"group": "installed", "tool": "Applications"})
 

@@ -69,7 +69,7 @@ export async function launch(env: Record<string, string>, opts: { assistant?: bo
     // UMP_APP: a packaged Homecoming.app's executable, to run the same tests against the build testers download.
     executablePath: process.env.UMP_APP || (electronPath as unknown as string),
     args: process.env.UMP_APP ? [] : [DESKTOP],
-    env: { ...base, UMP_PYTHON: PY, UMP_SETTLE_MS: '300', UMP_POLL_MS: '250', UMP_HIDDEN: '1', ...env }, // off screen, so a test run doesn't take over the Mac
+    env: { ...base, UMP_PYTHON: PY, UMP_SETUP_SYSTEM: '0', UMP_SETTLE_MS: '300', UMP_POLL_MS: '250', UMP_HIDDEN: '1', ...env }, // off screen, so a test run doesn't take over the Mac
     timeout: 60_000,
   });
   const page = await app.firstWindow();
