@@ -6,7 +6,9 @@ named on the command line, into CORPUS_DIR there. Prints only to stderr: stdout 
 
 import importlib
 import os
+import signal
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -99,5 +101,23 @@ def main(names):
         print(f"  ({name}: {time.time() - t:.1f}s)")
 
 
+def watch_connection():
+    """SSH without a terminal need not hang up its remote shell when the client closes. The open input pipe is
+    the connection's lifetime: on EOF stop these readers and their children, so the shell runs its EXIT cleanup.
+    """
+    if os.getpgrp() != os.getpid():
+        os.setsid()
+
+    def closed():
+        while os.read(sys.stdin.fileno(), 8192):
+            pass
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+
+    threading.Thread(target=closed, daemon=True).start()
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--watch-stdin"]:
+        watch_connection()
+        del sys.argv[1]
     main(sys.argv[1:])
