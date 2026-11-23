@@ -8,10 +8,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { DESKTOP, launch, type Running, type Sandbox, sandbox, sandboxEnv, shot } from './harness.ts';
+import { PY } from '../python.ts';
 
 let sb: Sandbox;
 let run: Running;
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 
 before(async () => {
   sb = sandbox();

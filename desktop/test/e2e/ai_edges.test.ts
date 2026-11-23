@@ -9,10 +9,10 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, test } from 'node:test';
 import { act, confirmClaude, DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, snap, until } from './harness.ts';
+import { PY } from '../python.ts';
 
 let sb: Sandbox;
 let run: Running;
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 const file = (n: string) => path.join(sb.home, n);
 const opened = () => (fs.existsSync(path.join(sb.userData, 'opened.txt')) ? fs.readFileSync(path.join(sb.userData, 'opened.txt'), 'utf8') : '');
 const runs = () => (fs.existsSync(file('agent.log')) ? fs.readFileSync(file('agent.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);

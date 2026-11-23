@@ -10,8 +10,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import type { Page } from 'playwright-core';
 import { DESKTOP, launch, type Running, sandbox, sandboxEnv } from './harness.ts';
+import { PY } from '../python.ts';
 
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 const HOME = ['year', 'on-this-day', 'people', 'places', 'they-know', 'listening', 'movement', 'curiosity', 'journeys', 'watching', 'rhythms', 'groups', 'firsts', 'made', 'stream'];
 const WRONG = /NaN|Invalid Date|undefined|Infinity|\[object Object\]|Couldn't build/;
 const NOT_A_YEAR = /\b(1970|1985|2099|9999)\b/; // the messy library's times that can't be right

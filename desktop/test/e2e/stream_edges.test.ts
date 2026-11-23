@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { launch, REPO, type Running, type Sandbox, sandbox, sandboxEnv } from './harness.ts';
+import { PY } from '../python.ts';
 
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 let sb: Sandbox | undefined;
 let run: Running | undefined;
 after(async () => {
