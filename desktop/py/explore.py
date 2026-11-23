@@ -685,7 +685,7 @@ def on_this_day(md=None):
             elif source == "health":
                 continue  # Health days are dated, not timed: looked up by date below
             elif (source == "git_commits" and str(is_me) == "1") or source in ("apple_notes", "notion") or \
-                    (source == "documents" and str(is_me) == "1") or kind == "post":
+                    (source == "documents" and str(is_me) == "1") or kind == "post" and not meta_of(meta).get("retweet_of"):
                 made.append({"kind": made_kind(source, kind), "title": (title or (text or "").split("\n")[0])[:100], "rowid": rowid})
         # Health days are stored at local midnight without a zone: look them up by date.
         r = con.execute("select meta from records where source = 'health' and kind = 'health_day' and ts like ?", (f"{d.isoformat()}%",)).fetchone()
@@ -1034,13 +1034,15 @@ def _firsts(con, mine, pg):
 
 # ---------------------------------------------------------------- what you made
 
+NOT_RETWEET = "json_extract(meta, '$.retweet_of') is null"  # someone else's post you passed on (X), not yours
+
 def made():
     con = connect()
     kinds = {
         "code": ("Code", "source = 'git_commits' and is_me = '1'"),
         "ai": ("AI conversations", "(source in ('ai_coding', 'chatgpt', 'claude_ai') or (source = 'x' and kind = 'ai_turn')) and is_me = '1'"),  # x: Grok
         "writing": ("Writing", "source in ('apple_notes', 'notion', 'notion_export') or (source = 'documents' and is_me = '1')"),
-        "posts": ("Posts", "kind = 'post'"),
+        "posts": ("Posts", f"kind = 'post' and {NOT_RETWEET}"),
         "photos": ("Photos", "source = 'photos'"),
     }
     with Progress([label for label, _ in kinds.values()]) as pg:

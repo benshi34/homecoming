@@ -1,0 +1,3 @@
+status,requested_timestamp,requested_lat,requested_lng,pickup_timestamp,pickup_address,pickup_lat,pickup_lng,destination_address,dropoff_timestamp,dropoff_lat,dropoff_lng
+finished,2024-05-01 17:02:11 UTC,37.4275,-122.1697,2024-05-01 17:09:40 UTC,"100 Example St, Palo Alto, CA",37.4271,-122.1690,"200 Sample Ave, San Jose, CA",2024-05-01 17:38:02 UTC,37.3382,-121.8863
+canceled,2024-05-03 08:00:00 UTC,37.4275,-122.1697,,,,,"3 Harbor Way, San Francisco, CA",,,

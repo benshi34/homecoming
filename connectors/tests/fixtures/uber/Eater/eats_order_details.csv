@@ -1,0 +1,3 @@
+Territory,Restaurant ID,Order ID,Order Time,Order Status,Item Name,Customizations,Special Instructions,Item Price,Order Price,Currency
+8a,r-0001,o-0001,2022-05-14 18:25:00 +0000 UTC,completed,Tacos,"Cheese, Salsa",No onions,17,29.5,USD
+8a,r-0001,o-0001,2022-05-14 18:25:00 +0000 UTC,completed,Churros,,,12.5,29.5,USD

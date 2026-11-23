@@ -1,0 +1,7 @@
+{"id":"65983a4c0000000000000001","name":"Home projects","desc":"","closed":false,"url":"https://trello.com/b/wxyz9876/home-projects","dateLastActivity":"2024-01-06T07:15:00.000Z",
+ "lists":[{"id":"L1","name":"Doing","closed":false,"pos":1}],
+ "cards":[{"id":"65983a4c0000000000000002","name":"Fix fence","desc":"Two loose boards","idList":"L1","closed":false,"due":null,"dateLastActivity":"2024-01-05T18:30:00.000Z","url":"https://trello.com/c/abcd1234/3-fix-fence","labels":[{"id":"B1","name":"outdoor","color":"green"}]}],
+ "checklists":[{"id":"C1","name":"Supplies","idCard":"65983a4c0000000000000002","checkItems":[{"id":"I1","name":"Screws","state":"complete"}]}],
+ "members":[{"id":"M1","fullName":"Riley Park","username":"rileyp"}],
+ "actions":[{"id":"A1","idMemberCreator":"M1","type":"commentCard","date":"2024-01-05T18:30:00.000Z","data":{"text":"Bought screws","card":{"id":"65983a4c0000000000000002","name":"Fix fence","idShort":3,"shortLink":"abcd1234"},"list":{"id":"L1","name":"Doing"},"board":{"id":"65983a4c0000000000000001","name":"Home projects","shortLink":"wxyz9876"}},"memberCreator":{"id":"M1","fullName":"Riley Park","username":"rileyp"}},
+            {"id":"A2","idMemberCreator":"M1","type":"createCard","date":"2024-01-05T18:00:00.000Z","data":{"card":{"id":"65983a4c0000000000000002","name":"Fix fence"},"list":{"id":"L1","name":"Doing"}},"memberCreator":{"id":"M1","fullName":"Riley Park","username":"rileyp"}}]}

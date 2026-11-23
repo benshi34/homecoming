@@ -1,0 +1,18 @@
+{
+  "service": "Amazon",
+  "version": 1,
+  "items": [
+    {"describe": "Things you ordered", "file": "Retail.OrderHistory.*.csv", "header": "Website,Order ID,", "kind": "purchase", "time": "Order Date",
+     "title": "Product Name", "text": ["Product Name", "Total Owed", "Currency", "Order Status", "Website"], "thread": "Order ID", "author": "me"},
+    {"describe": "Things you ordered (2026's layout)", "file": "*.csv", "header": "ASIN,Billing Address,", "kind": "purchase", "time": "Order Date",
+     "title": "Product Name", "text": ["Product Name", "Total Amount", "Currency", "Order Status", "Website"], "thread": "Order ID", "author": "me"},
+    {"describe": "Books, music, films and apps you bought", "file": "Digital Items.csv", "header": "ASIN,ProductName,", "kind": "purchase",
+     "time": "OrderDate", "title": "ProductName", "text": ["ProductName", "Publisher", "OurPrice", "OurPriceCurrencyCode", "Marketplace"],
+     "thread": "OrderId", "author": "me"},
+    {"describe": "Your Kindle reading", "file": "Kindle.reading-insights-sessions*.csv", "header": "ASIN,end_time,", "kind": "read",
+     "time": "start_time", "title": ["product_name", "ASIN"], "text": ["product_name", "total_reading_milliseconds", "reading_marketplace"],
+     "author": "me"},
+    {"describe": "Your Kindle reading sessions, by device", "file": "Kindle.Devices.ReadingSession*.csv", "header": "start_timestamp,", "kind": "read",
+     "time": "start_timestamp", "title": "ASIN", "text": ["ASIN", "content_type", "device_family", "total_reading_millis"], "author": "me"}
+  ]
+}

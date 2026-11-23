@@ -9,9 +9,9 @@ import sys
 import time
 import traceback
 
-CONNECTORS = ["contacts", "imessage", "whatsapp", "mail_app", "apple_notes", "calendar_events", "reminders", "calls",
-              "browser_history", "app_usage", "ai_coding", "editor_history", "shell_history", "podcasts", "books", "photos",
-              "apple_maps", "voice_memos", "notifications", "notion_local", "documents", "git_commits", "health", "imports"]  # health, the phone half of contacts/imessage/calls and iLEAPP's phone_*
+CONNECTORS = ["contacts", "imessage", "whatsapp", "signal_desktop", "mail_app", "apple_notes", "calendar_events", "reminders", "calls",
+              "browser_history", "app_usage", "ai_coding", "editor_history", "shell_history", "setup", "podcasts", "books", "photos",
+              "apple_maps", "voice_memos", "notifications", "notion_local", "zotero", "documents", "git_commits", "health", "imports"]  # health, the phone half of contacts/imessage/calls and iLEAPP's phone_*
                                      # sources come from connectors/iphone.py (decrypt + iLEAPP)
 
 

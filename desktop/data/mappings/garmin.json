@@ -1,0 +1,11 @@
+{
+  "service": "Garmin",
+  "version": 1,
+  "items": [
+    {"describe": "Your activities", "file": "*_summarizedActivities.json", "path": "*.summarizedActivitiesExport", "kind": "activity",
+     "time": "beginTimestamp", "title": ["name", "activityType"], "text": ["name", "activityType", "locationName"], "id": "activityId", "author": "me"},
+    {"describe": "How you slept", "file": "*_sleepData.json", "needs": ["calendarDate"], "kind": "activity", "time": "sleepStartTimestampGMT",
+     "zone": "UTC", "author": "me"},
+    {"describe": "Your days: steps, heart rate, stress", "file": "UDSFile_*.json", "kind": "activity", "time": "calendarDate", "id": "uuid", "author": "me"}
+  ]
+}

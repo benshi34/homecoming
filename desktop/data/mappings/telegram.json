@@ -1,0 +1,20 @@
+{
+  "service": "Telegram",
+  "version": 1,
+  "items": [
+    {"describe": "Your chats' messages", "file": "result.json", "path": "chats.list.*.messages", "where": {"type": ["message"]},
+     "kind": "message", "time": "date_unixtime", "text": ["text", "file_name", "media_type", "photo"], "author": "from",
+     "thread": "@up.id", "thread_name": ["@up.name", "@up.type"]},
+    {"describe": "Calls and other events in your chats", "file": "result.json", "path": "chats.list.*.messages", "where": {"type": ["service"]},
+     "kind": "event", "time": "date_unixtime", "text": ["action", "title", "text"], "author": "actor",
+     "thread": "@up.id", "thread_name": ["@up.name", "@up.type"]},
+    {"describe": "Your messages in groups you left", "file": "result.json", "path": "left_chats.list.*.messages", "where": {"type": ["message"]},
+     "kind": "message", "time": "date_unixtime", "text": ["text", "file_name", "media_type", "photo"], "author": "from",
+     "thread": "@up.id", "thread_name": ["@up.name", "@up.type"]},
+    {"describe": "Your contacts", "file": "result.json", "path": "contacts.list", "kind": "contact", "time": "date_unixtime",
+     "title": ["first_name", "phone_number"], "text": ["first_name", "last_name", "phone_number"], "author": "me"},
+    {"describe": "A chat you exported on its own", "file": "result.json", "path": "messages", "where": {"type": ["message"]},
+     "kind": "message", "time": "date_unixtime", "text": ["text", "file_name", "media_type", "photo"], "author": "from",
+     "thread": "@root.id", "thread_name": ["@root.name", "@root.type"]}
+  ]
+}

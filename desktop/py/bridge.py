@@ -63,6 +63,7 @@ MAC_PATHS = {
     "contacts": [LIB / "Application Support/AddressBook"],
     "imessage": [LIB / "Messages/chat.db"],
     "whatsapp": [LIB / "Group Containers/group.net.whatsapp.WhatsApp.shared/ChatStorage.sqlite"],
+    "signal_desktop": [LIB / "Application Support/Signal/sql/db.sqlite"],
     "mail_app": [LIB / "Mail"],
     "apple_notes": [LIB / "Group Containers/group.com.apple.notes/NoteStore.sqlite"],
     "calendar_events": [LIB / "Group Containers/group.com.apple.calendar/Calendar.sqlitedb"],
@@ -73,6 +74,7 @@ MAC_PATHS = {
     "ai_coding": [HOME / ".claude/projects", HOME / ".codex/sessions", LIB / "Application Support/Cursor/User/globalStorage/state.vscdb",
                   LIB / "Application Support/Code/User/workspaceStorage"],
     "editor_history": [LIB / f"Application Support/{e}/User/History" for e in ("Code", "Cursor", "VSCodium", "Windsurf")],
+    "setup": [HOME / ".zshrc", HOME / ".gitconfig", HOME / ".claude/settings.json", HOME / ".config", HOME / "Library/LaunchAgents"],
     "shell_history": [HOME / ".zsh_history", HOME / ".zsh_sessions", HOME / ".bash_history", HOME / ".local/share/fish/fish_history"],
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
     "books": [LIB / "Containers/com.apple.iBooksX/Data/Documents/BKLibrary", LIB / "Containers/com.apple.iBooksX/Data/Documents/AEAnnotation"],
@@ -81,6 +83,7 @@ MAC_PATHS = {
     "voice_memos": [LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"],
     "notifications": [LIB / "Group Containers/group.com.apple.usernoted/db2/db"],
     "notion_local": [LIB / "Application Support/Notion/notion.db"],
+    "zotero": [HOME / "Zotero/zotero.sqlite"],  # or wherever its prefs.js says (zotero.py)
     # and Obsidian vaults wherever they are, read with these (not looked for alone: see PROTECTED)
     "documents": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents", LIB / "CloudStorage", HOME / "Dropbox"],
     "git_commits": [HOME / "Documents", HOME / "Desktop", LIB / "Mobile Documents/com~apple~CloudDocs",
@@ -409,6 +412,7 @@ FACETS = {
     "ai_coding": "json_extract(meta, '$.tool')",
     "editor_history": "json_extract(meta, '$.editor')",
     "shell_history": "json_extract(meta, '$.shell')",
+    "setup": "json_extract(meta, '$.group')",
     # Documents in an export land in imported_documents; split them by the export's folder (a service you added).
     "imported_documents": "substr(json_extract(meta, '$.origin'), 1, instr(json_extract(meta, '$.origin') || '/', '/') - 1)",
     "photos": "json_extract(meta, '$.type')",
@@ -665,7 +669,7 @@ def try_mapping(folder, mapping):
     """Run a mapping over the whole export without writing anything: what each item finds, a few samples,
     and which structured files nothing reads."""
     import mapped_exports as mx
-    from imports import leftover_time
+    from imports import fitbit_reads, leftover_time
     m = mx.validate(mapping)
     es = _export_entries(folder)
     stats = [{"describe": r["describe"], "kind": r["kind"], "file": r["file"], "files": set(), "items": 0, "timed": 0,
@@ -675,8 +679,9 @@ def try_mapping(folder, mapping):
         s = stats[i]
         s["files"].add(e.path)
         # An id another item has too (the mapping's id field isn't unique): kept once when it's used, so said here.
+        # With overlap it's the same item in another file (two bank downloads' dates overlap): only counted once.
         if rec["id"] in ids:
-            s["repeats"] += 1
+            s["repeats"] += 0 if m["items"][i].get("overlap") else 1
             continue
         ids.add(rec["id"])
         s["items"] += 1
@@ -686,7 +691,9 @@ def try_mapping(folder, mapping):
             s["last"] = max(s["last"] or rec["ts"], rec["ts"])
         if len(s["sample"]) < 3:
             s["sample"].append({k: (rec.get(k)[:240] if isinstance(rec.get(k), str) else rec.get(k)) for k in ("ts", "title", "text", "author")})
-    structured = [e.path for e in es if Path(e.path).suffix.lower() in (".json", ".csv", ".js")]
+    # Fitbit's series by the reading (a record a day) and routes (a record each) are read whatever the mapping says
+    # (imports.fitbit_days).
+    structured = [e.path for e in es if Path(e.path).suffix.lower() in (".json", ".csv", ".js") and not fitbit_reads(e.path)]
     mapped = set().union(*[s["files"] for s in stats]) if stats else set()
     for s in stats:
         s["files"] = len(s["files"])

@@ -1,0 +1,10 @@
+{
+  "service": "Microsoft",
+  "version": 1,
+  "items": [
+    {"describe": "Your Bing searches", "file": "SearchRequestsAndQuery.csv", "kind": "search", "time": "DateTime",
+     "formats": ["%m/%d/%Y %I:%M:%S %p %z"], "title": "SearchTerms", "text": ["SearchTerms", "Title", "Url"], "url": "Url", "author": "me"},
+    {"describe": "Your Bing searches (downloads from before 2021)", "file": "SearchRequestsAndQuery.json", "kind": "search", "time": "DateTime",
+     "title": "SearchTerms", "text": ["SearchTerms", "NavigatedToUrls.0.Title", "NavigatedToUrls.0.Url"], "url": "NavigatedToUrls.0.Url", "author": "me"}
+  ]
+}

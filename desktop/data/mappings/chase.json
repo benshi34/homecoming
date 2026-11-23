@@ -1,0 +1,20 @@
+{
+  "service": "Chase",
+  "version": 1,
+  "items": [
+    {"describe": "Your checking and savings activity", "file": "*.[cC][sS][vV]", "header": "Details,Posting Date,", "kind": "transaction", "time": "Posting Date",
+     "formats": ["%m/%d/%Y"], "title": "Description", "text": ["Description", "Amount", "Type"], "author": "me", "thread": "@file", "thread_name": "@file"},
+    {"describe": "Your card activity", "file": "*.[cC][sS][vV]", "header": "Transaction Date,Post Date,", "kind": "transaction", "time": "Transaction Date",
+     "formats": ["%m/%d/%Y"], "title": "Description", "text": ["Description", "Category", "Type", "Amount", "Memo"], "author": "me",
+     "thread": "@file", "thread_name": "@file"},
+    {"describe": "Your card activity (exports from before 2019)", "file": "*.[cC][sS][vV]", "header": "Type,Trans Date,Post Date,", "kind": "transaction",
+     "time": "Trans Date", "formats": ["%m/%d/%Y"], "title": "Description", "text": ["Description", "Type", "Amount"], "author": "me",
+     "thread": "@file", "thread_name": "@file"},
+    {"describe": "Your checking and savings activity, from a QFX, QBO or OFX download", "file": "*.[oOqQ][fFbB][xXoO]", "path": "BANKMSGSRSV1", "kind": "transaction", "overlap": true,
+     "time": ["DTUSER", "DTPOSTED"], "title": ["NAME", "MEMO"], "text": ["NAME", "MEMO", "TRNTYPE", "TRNAMT", "CHECKNUM"], "id": "FITID",
+     "author": "me", "thread": "account", "thread_name": "account"},
+    {"describe": "Your card activity, from a QFX, QBO or OFX download", "file": "*.[oOqQ][fFbB][xXoO]", "path": "CREDITCARDMSGSRSV1", "kind": "transaction", "overlap": true,
+     "time": ["DTUSER", "DTPOSTED"], "title": ["NAME", "MEMO"], "text": ["NAME", "MEMO", "TRNTYPE", "TRNAMT", "CHECKNUM"], "id": "FITID",
+     "author": "me", "thread": "account", "thread_name": "account"}
+  ]
+}

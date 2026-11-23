@@ -1,0 +1,19 @@
+{
+  "service": "Netflix",
+  "version": 1,
+  "items": [
+    {"describe": "What you watched", "file": "ViewingActivity.csv", "where": {"Supplemental Video Type": [""]}, "kind": "watch",
+     "time": "Start Time", "zone": "UTC", "title": "Title", "text": ["Title", "Duration", "Device Type"], "author": "Profile Name"},
+    {"describe": "Trailers and previews that played", "file": "ViewingActivity.csv", "unless": {"Supplemental Video Type": [""]}, "kind": "watch",
+     "time": "Start Time", "zone": "UTC", "title": "Title", "text": ["Title", "Supplemental Video Type", "Duration", "Device Type"],
+     "author": "Profile Name"},
+    {"describe": "Your list", "file": "MyList.csv", "kind": "saved", "time": "Utc Title Add Date", "title": "Title Name", "text": ["Title Name"],
+     "author": "Profile Name"},
+    {"describe": "What you rated", "file": "Ratings.csv", "kind": "review", "time": "Event Utc Ts", "zone": "UTC", "title": "Title Name",
+     "text": ["Title Name", "Rating Type", "Thumbs Value", "Star Value"], "author": "Profile Name"},
+    {"describe": "Your searches", "file": "SearchHistory.csv", "kind": "search", "time": "Utc Timestamp", "zone": "UTC", "title": "Query Typed",
+     "text": ["Query Typed", "Displayed Name", "Action"], "author": "Profile Name"},
+    {"describe": "Shows you said you'd like", "file": "IndicatedPreferences.csv", "kind": "like", "time": "Event Date", "title": "Show",
+     "text": ["Show", "Is Interested", "Has Watched"], "author": "Profile Name"}
+  ]
+}

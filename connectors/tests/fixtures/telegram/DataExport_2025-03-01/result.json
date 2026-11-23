@@ -1,0 +1,22 @@
+{
+ "about": "Here is the data you requested. Remember: Telegram is ad free, it doesn't sell your data.",
+ "personal_information": {"user_id": 123, "first_name": "Riley", "last_name": "Park", "phone_number": "+1 555 0100", "username": "@riley_p"},
+ "contacts": {"about": "This is your contact list.", "list": [{"user_id": 456, "first_name": "Jordan", "last_name": "Example", "phone_number": "+1 555 0101", "date": "2023-05-01T10:00:00", "date_unixtime": "1682935200"}]},
+ "frequent_contacts": {"about": "...", "list": [{"id": 456, "category": "people", "type": "user", "name": "Jordan Example", "rating": 0.53}]},
+ "chats": {"about": "This page lists all chats from this export.", "list": [
+  {"name": "Jordan Example", "type": "personal_chat", "id": 456, "messages": [
+   {"id": 10, "type": "message", "date": "2025-01-05T18:30:00", "date_unixtime": "1736101800", "from": "Jordan Example", "from_id": "user456", "text": "Hi there", "text_entities": [{"type": "plain", "text": "Hi there"}]},
+   {"id": 11, "type": "message", "date": "2025-01-05T18:31:00", "date_unixtime": "1736101860", "from": "Riley Park", "from_id": "user123", "reply_to_message_id": 10,
+    "text": ["Look at ", {"type": "text_link", "text": "this map", "href": "https://example.com/map"}, "!"], "text_entities": [{"type": "plain", "text": "Look at "}, {"type": "text_link", "text": "this map", "href": "https://example.com/map"}, {"type": "plain", "text": "!"}]},
+   {"id": 12, "type": "service", "date": "2025-01-06T09:00:00", "date_unixtime": "1736154000", "actor": "Riley Park", "actor_id": "user123", "action": "phone_call", "duration_seconds": 65, "text": "", "text_entities": []}
+  ]},
+  {"type": "saved_messages", "id": 123, "messages": [
+   {"id": 1, "type": "message", "date": "2025-02-01T08:00:00", "date_unixtime": "1738396800", "from": "Riley Park", "from_id": "user123", "photo": "(File not included. Change data exporting settings to download.)", "width": 800, "height": 600, "text": "", "text_entities": []}
+  ]}
+ ]},
+ "left_chats": {"about": "...", "list": [
+  {"name": "Old Book Club", "type": "private_supergroup", "id": 789, "messages": [
+   {"id": 5, "type": "message", "date": "2022-09-01T20:00:00", "date_unixtime": "1662062400", "from": "Riley Park", "from_id": "user123", "text": "Thanks, all!", "text_entities": [{"type": "plain", "text": "Thanks, all!"}]}
+  ]}
+ ]}
+}

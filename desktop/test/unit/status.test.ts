@@ -216,6 +216,25 @@ describe('Mac sources', () => {
     assert.equal(view('voice_memos', { stats: stats({ voice_memos: { count: 0 } }) }).section, 'unavailable');
   });
 
+  test('Signal read failures explain Keychain access and preserve collected records', () => {
+    for (const count of [0, 12]) {
+      const failed = view('signal', { stats: stats({ signal: { count, notes: { not_read: 'keychain_refused' } } }) });
+      assert.deepEqual(place(failed), [count ? 'done' : 'todo', true]);
+      assert.equal(failed.status, 'Signal needs Keychain access');
+      assert.match(failed.detail!, /allow access to Signal Safe Storage/);
+      assert.equal(failed.records, count);
+      assert.equal(failed.ranAt, undefined, 'a failed attempt is not a fresh successful read');
+      assert.equal(failed.actions[0].label, 'Try Again');
+      assert.deepEqual(actionIds(failed), ['run', 'skip']);
+    }
+    const unreadable = view('signal', { stats: stats({ signal: { notes: { not_read: 'wrong_key_or_damaged' } } }) });
+    assert.equal(unreadable.status, "Couldn't read Signal");
+    assert.equal(unreadable.needsYou, true);
+    const recovered = view('signal', { stats: stats({ signal: { count: 12 } }) });
+    assert.equal(recovered.status, '12 records');
+    assert.equal(recovered.needsYou, undefined);
+  });
+
   test('Mail with no accounts: nothing to read, said so; once read, what it read stays', () => {
     const none = view('apple_mail', { probe: probe({ mail_accounts: [] }) });
     assert.equal(none.section, 'unavailable');

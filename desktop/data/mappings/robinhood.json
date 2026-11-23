@@ -1,0 +1,9 @@
+{
+  "service": "Robinhood",
+  "version": 1,
+  "items": [
+    {"describe": "Your Robinhood account activity", "file": "*.[cC][sS][vV]", "header": "Activity Date,Process Date,", "needs": ["Trans Code"], "kind": "transaction",
+     "time": "Activity Date", "formats": ["%m/%d/%Y"], "title": ["Instrument", "Trans Code"],
+     "text": ["Instrument", "Description", "Trans Code", "Quantity", "Price", "Amount"], "author": "me"}
+  ]
+}

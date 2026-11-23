@@ -1,0 +1,9 @@
+Description,,Summary Amt.
+Beginning balance as of 03/01/2026,,"1,000.00"
+Total credits,,"125.00"
+Total debits,,"-250.00"
+Ending balance as of 03/31/2026,,"875.00"
+
+Date,Description,Amount,Running Bal.
+03/01/2026,Beginning balance as of 03/01/2026,,"1,000.00"
+03/02/2026,SAMPLE GROCERY 41,-42.50,"957.50"

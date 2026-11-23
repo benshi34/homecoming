@@ -1,0 +1,19 @@
+{
+  "service": "MyAnimeList",
+  "version": 1,
+  "items": [
+    {"describe": "Anime you watched or are watching", "file": "animelist_*.xml*", "path": "anime", "unless": {"my_status": ["Plan to Watch", "6"]},
+     "kind": "watch", "time": ["my_finish_date", "my_start_date"], "title": "series_title",
+     "text": ["series_title", "series_type", "my_status", "my_comments", "my_tags"], "id": "series_animedb_id", "author": "me"},
+    {"describe": "Anime you plan to watch", "file": "animelist_*.xml*", "path": "anime", "where": {"my_status": ["Plan to Watch", "6"]},
+     "kind": "saved", "time": "my_start_date", "title": "series_title", "text": ["series_title", "series_type", "my_comments", "my_tags"],
+     "id": "series_animedb_id", "author": "me"},
+    {"describe": "Manga you read or are reading", "file": "mangalist_*.xml*", "path": "manga", "unless": {"my_status": ["Plan to Read", "6"]},
+     "kind": "read", "time": ["my_finish_date", "my_start_date"], "title": "manga_title",
+     "text": ["manga_title", "my_status", "my_comments", "my_tags"], "id": "manga_mangadb_id", "author": "me"},
+    {"describe": "Manga you plan to read", "file": "mangalist_*.xml*", "path": "manga", "where": {"my_status": ["Plan to Read", "6"]},
+     "kind": "saved", "time": "my_start_date", "title": "manga_title", "text": ["manga_title", "my_comments", "my_tags"],
+     "id": "manga_mangadb_id", "author": "me"},
+    {"describe": "Your list's totals", "file": "*list_*.xml*", "path": "myinfo", "kind": "record", "author": "me"}
+  ]
+}

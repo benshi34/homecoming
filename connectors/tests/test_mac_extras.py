@@ -196,6 +196,40 @@ class NoDeveloperToolsTests(Base):
         self.assertEqual(manifest["notes"], {"no_git": 1})
 
 
+class GitCopiesTests(Base):
+    """A worktree or a second clone repeats its repository's history: each commit is one record, not one per copy."""
+
+    def git(self, *args, cwd=None):
+        env = {**os.environ, "HOME": str(self.home), "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "Ada",
+               "GIT_AUTHOR_EMAIL": "ada@example.com", "GIT_COMMITTER_NAME": "Ada", "GIT_COMMITTER_EMAIL": "ada@example.com"}
+        subprocess.run(["git", *(["-C", str(cwd)] if cwd else []), "-c", "commit.gpgsign=false", *args], check=True, env=env,
+                       capture_output=True)
+
+    def test_worktrees_and_clones(self):
+        dev = self.home / "Developer"
+        app = dev / "app"
+        app.mkdir(parents=True)
+        self.git("init", "-q", "-b", "main", str(app))
+        for n in ("One", "Two"):
+            (app / "a.txt").write_text(n)
+            self.git("add", ".", cwd=app)
+            self.git("commit", "-q", "-m", n, cwd=app)
+        self.git("worktree", "add", "-q", "-b", "side", str(dev / "app-wt"), cwd=app)
+        (dev / "app-wt/b.txt").write_text("only here")
+        self.git("add", ".", cwd=dev / "app-wt")
+        self.git("commit", "-q", "-m", "Side work", cwd=dev / "app-wt")
+        self.git("clone", "-q", str(app), str(dev / "app-clone"))
+        # An earlier run kept a copy of every commit under each path.
+        (self.corpus / "normalized").mkdir()
+        h = subprocess.run(["git", "-C", str(app), "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
+        old = [{"id": f"{name}:{h}", "source": "git_commits", "kind": "commit", "title": "Two"} for name in ("app-clone", "app-wt")]
+        (self.corpus / "normalized/git_commits.jsonl").write_text("".join(json.dumps(r) + "\n" for r in old))
+        run(self.home, self.corpus, "git_commits")
+        rs = records(self.corpus, "git_commits")
+        self.assertEqual(sorted(r["title"] for r in rs), ["One", "Side work", "Two"])
+        self.assertEqual({r["id"].split(":")[0] for r in rs}, {"app"}, "the first path read keeps each commit")
+
+
 class BrowserTests(Base):
     """Every browser's history, not just Safari and Chrome; and the ones turned off in Your Setup aren't read."""
 

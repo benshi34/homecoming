@@ -1,0 +1,2 @@
+City,Product Type,Trip or Order Status,Request Time,Begin Trip Time,Begin Trip Lat,Begin Trip Lng,Begin Trip Address,Dropoff Time,Dropoff Lat,Dropoff Lng,Dropoff Address,Distance (miles),Fare Amount,Fare Currency
+1,uberX,COMPLETED,2020-11-07 18:30:00 +0000 UTC,2020-11-07 18:35:00 +0000 UTC,37.77,-122.42,1 Example Rd,2020-11-07 18:50:00 +0000 UTC,37.80,-122.41,3 Harbor Way,4.10,21.50,USD

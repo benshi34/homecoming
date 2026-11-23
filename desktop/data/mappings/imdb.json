@@ -1,0 +1,21 @@
+{
+  "service": "IMDb",
+  "version": 1,
+  "items": [
+    {"describe": "Titles you rated", "file": "*.csv", "header": "Const,Your Rating,", "kind": "review", "time": "Date Rated",
+     "title": "Title", "text": ["Title", "Year", "Title Type", "Directors"], "url": "URL", "id": "Const", "author": "me"},
+    {"describe": "Titles on your watchlist", "file": "*atchlist*.csv", "header": "Position,Const,", "kind": "saved",
+     "time": "Created", "title": "Title", "text": ["Title", "Year", "Title Type", "Directors", "Description"], "url": "URL",
+     "id": "Const", "author": "me"},
+    {"describe": "Titles in your lists", "file": "*.csv", "not": ["*atchlist*.csv"], "header": "Position,Const,", "kind": "saved",
+     "time": "Created", "title": "Title", "text": ["Title", "Year", "Title Type", "Directors", "Description"], "url": "URL",
+     "id": "Const", "thread": "@file", "thread_name": "@file", "author": "me"},
+    {"describe": "Titles you rated (exports from before 2018)", "file": "*ratings*.csv", "header": "position,const,", "kind": "review",
+     "time": "created", "formats": ["%a %b %d %H:%M:%S %Y"], "title": "Title", "text": ["Title", "Year", "Title type", "Directors"],
+     "url": "URL", "id": "const", "author": "me"},
+    {"describe": "Titles on your watchlist and lists (exports from before 2018)", "file": "*.csv", "not": ["*ratings*.csv"],
+     "header": "position,const,", "kind": "saved", "time": "created", "formats": ["%a %b %d %H:%M:%S %Y"], "title": "Title",
+     "text": ["Title", "Year", "Title type", "Directors", "description"], "url": "URL", "id": "const",
+     "thread": "@file", "thread_name": "@file", "author": "me"}
+  ]
+}

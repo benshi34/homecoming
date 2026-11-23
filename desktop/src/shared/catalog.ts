@@ -156,6 +156,9 @@ export const CATALOG: Source[] = [
     blurb: 'iMessage, SMS and RCS from this Mac, merged with the iPhone backup by message ID.' },
   { id: 'whatsapp', name: 'WhatsApp (desktop app)', group: 'mac', connector: 'whatsapp', produces: ['whatsapp'],
     blurb: 'Your chats in the WhatsApp app on this Mac, both sides, and who said what in groups. Messages the iPhone backup also has are counted once.' },
+  { id: 'signal', name: 'Signal (desktop app)', group: 'mac', connector: 'signal_desktop', produces: ['signal'],
+    blurb: 'Your chats and calls in Signal on this Mac, both sides, and who said what in groups. Signal keeps them encrypted: macOS asks once to let Homecoming use its key.',
+    knownGaps: ['Signal Desktop has only what reached it since it was linked to your phone; older messages stay on the phone.'] },
   { id: 'apple_mail', name: 'Mail', group: 'mac', connector: 'mail_app', produces: ['mail'],
     blurb: 'Every account in Mail on this Mac: Gmail, Outlook and Exchange, iCloud, school and work mail. Mail you also exported is kept once.' },
   { id: 'apple_notes', name: 'Notes', group: 'mac', connector: 'apple_notes', produces: ['apple_notes'],
@@ -178,6 +181,8 @@ export const CATALOG: Source[] = [
     blurb: 'Which files you saved in VS Code, Cursor and similar editors, and when. Not the files themselves.' },
   { id: 'shell_history', name: 'Terminal history', group: 'mac', connector: 'shell_history', produces: ['shell_history'],
     blurb: 'The commands you typed in Terminal. Passwords, tokens and keys in them are replaced with [redacted].' },
+  { id: 'setup', name: 'Your setup', group: 'mac', connector: 'setup', produces: ['setup'],
+    blurb: 'How you have set up this Mac and the tools you work in: terminal, shell, editor, window manager and coding agent configs, the Dock, keyboard and trackpad settings, your Warp, tmux and AeroSpace layouts, the apps and background jobs you installed, and the machines you reach. Each change is kept, with what changed. Keys and tokens in configs are replaced with [redacted].' },
   { id: 'podcasts', name: 'Podcasts', group: 'mac', connector: 'podcasts', produces: ['podcasts'],
     blurb: 'The shows you follow and the episodes you played in Apple Podcasts.' },
   { id: 'books', name: 'Books', group: 'mac', connector: 'books', produces: ['books'],
@@ -194,6 +199,9 @@ export const CATALOG: Source[] = [
 
   { id: 'notion_local', name: 'Notion (desktop app)', group: 'mac', connector: 'notion_local', produces: ['notion'],
     blurb: 'Pages the Notion app has cached on this Mac, with exact edit times.' },
+  { id: 'zotero', name: 'Zotero', group: 'mac', connector: 'zotero', produces: ['zotero'],
+    blurb: 'The papers and pages you saved in Zotero, your notes on them and your highlights in their PDFs, from the Zotero app on this Mac: your library and your groups.',
+    knownGaps: ['Only what the Zotero app on this Mac has. A library kept only on zotero.org comes in once the app has synced it here.'] },
   { id: 'documents', name: 'Documents', group: 'mac', connector: 'documents', produces: ['documents'],
     blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
@@ -567,6 +575,8 @@ export const IMPORT_PARSER_SOURCES: Record<string, string[]> = {
   // Exports read with a mapping Claude wrote (connectors/mapped_exports.py): services you added. main.ts adds
   // those, and adds them to the catch-alls below, when it attributes an import's errors.
   mapped_exports: [],
+  // Fitbit's series by the minute, a record a day: in Takeout, or in a Fitbit download you added (main.ts adds those).
+  fitbit_days: ['google_takeout'],
   // Catch-alls: structured files and media in any export that no parser above read (imports.py).
   other_data: ['google_takeout', 'discord', 'x', 'linkedin', 'instagram', 'facebook', 'notion'],
   other_files: ['google_takeout', 'discord', 'x', 'instagram', 'facebook', 'notion'],

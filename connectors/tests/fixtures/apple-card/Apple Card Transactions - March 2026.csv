@@ -1,0 +1,3 @@
+Transaction Date,Clearing Date,Description,Merchant,Category,Type,Amount (USD),Purchased By
+03/14/2026,03/15/2026,"SAMPLE COFFEE 123 MAIN ST PALO ALTO CA",Sample Coffee,Restaurants,Purchase,6.75,Riley Park
+03/20/2026,03/20/2026,"ACH DEPOSIT INTERNET TRANSFER",Payment,Payment,Payment,-250.00,Riley Park

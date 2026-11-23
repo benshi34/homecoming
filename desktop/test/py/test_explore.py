@@ -125,6 +125,9 @@ class Explore(unittest.TestCase):
         self.assertEqual(out["streak"], {"days": 3, "start": "2025-03-10", "end": "2025-03-12"})
         self.assertEqual(out["totals"]["2025"]["code"], 3)
         self.assertEqual(out["days"]["2025-03-12"]["writing"], 1)
+        self.assertEqual(out["days"]["2025-05-01"]["posts"], 1, "a retweet isn't a post you made")
+        day = next(y for y in self.run_explore("on-this-day", "05-01")["years"] if y["year"] == 2025)
+        self.assertEqual([m["title"] for m in day["made"]], ["Shipped the engine"])
 
     def test_summary_and_thumbs(self):
         s = self.run_explore("summary")

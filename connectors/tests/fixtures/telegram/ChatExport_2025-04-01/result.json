@@ -1,0 +1,8 @@
+{
+ "name": "Harbor Club",
+ "type": "private_group",
+ "id": 999,
+ "messages": [
+  {"id": 1, "type": "message", "date": "2025-03-30T12:00:00", "date_unixtime": "1743336000", "from": "Sam Ortiz", "from_id": "user777", "text": "Meet at the pier", "text_entities": [{"type": "plain", "text": "Meet at the pier"}]}
+ ]
+}

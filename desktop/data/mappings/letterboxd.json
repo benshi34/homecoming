@@ -1,0 +1,25 @@
+{
+  "service": "Letterboxd",
+  "version": 1,
+  "deleted": ["deleted/*", "*/deleted/*"],
+  "items": [
+    {"describe": "Films you logged in your diary", "file": "diary.csv", "kind": "watch", "time": ["Watched Date", "Date"],
+     "title": "Name", "text": ["Name", "Year", "Tags"], "url": "Letterboxd URI", "author": "me"},
+    {"describe": "Your reviews", "file": "reviews.csv", "not": ["likes/*"], "kind": "review", "time": ["Watched Date", "Date"],
+     "title": "Name", "text": ["Review", "Tags"], "url": "Letterboxd URI", "author": "me"},
+    {"describe": "Films you rated", "file": "ratings.csv", "kind": "review", "time": "Date",
+     "title": "Name", "text": ["Name", "Year"], "url": "Letterboxd URI", "author": "me"},
+    {"describe": "Films you marked as watched", "file": "watched.csv", "kind": "watch", "time": "Date",
+     "title": "Name", "text": ["Name", "Year"], "url": "Letterboxd URI", "author": "me"},
+    {"describe": "Films on your watchlist", "file": "watchlist.csv", "kind": "saved", "time": "Date",
+     "title": "Name", "text": ["Name", "Year"], "url": "Letterboxd URI", "author": "me"},
+    {"describe": "Films you liked", "file": "likes/films.csv", "kind": "like", "time": "Date",
+     "title": "Name", "text": ["Name", "Year"], "url": "Letterboxd URI", "author": "me"},
+    {"describe": "Reviews you liked", "file": "likes/reviews.csv", "kind": "like", "time": "Date", "text": ["Content"], "author": "me"},
+    {"describe": "Lists you liked", "file": "likes/lists.csv", "kind": "like", "time": "Date", "text": ["Content"], "author": "me"},
+    {"describe": "Lists you made", "file": "lists/*.csv", "header": "Date,Name,", "kind": "post", "time": "Date",
+     "title": "Name", "text": ["Name", "Description", "Tags"], "url": "URL", "author": "me"},
+    {"describe": "Films in your lists", "file": "lists/*.csv", "header": "Position,", "kind": "saved",
+     "title": "Name", "text": ["Name", "Year", "Description"], "url": "URL", "thread": "@file", "thread_name": "@file", "author": "me"}
+  ]
+}

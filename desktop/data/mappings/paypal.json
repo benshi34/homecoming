@@ -1,0 +1,9 @@
+{
+  "service": "PayPal",
+  "version": 1,
+  "items": [
+    {"describe": "Your PayPal activity", "file": "*.[cC][sS][vV]", "header": "Date,Time,TimeZone,", "kind": "transaction", "time": "Date",
+     "formats": ["%m/%d/%Y"], "title": ["Name", "Item Title", "Type"],
+     "text": ["Name", "Type", "Item Title", "Subject", "Note", "Gross", "Amount", "Currency", "Status"], "id": "Transaction ID", "author": "me"}
+  ]
+}

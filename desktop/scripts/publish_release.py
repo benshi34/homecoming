@@ -8,7 +8,10 @@
    --allow benshi34 "Instagram User" "Facebook user" (the GitHub username in the clone URL; Meta's names for deleted
    accounts) and any terms given here.
 3. A fresh clone of the public repository, and the copy in place of everything in it but .git
-   (rsync -a --delete --exclude .git).
+   (rsync -a --delete --exclude .git). Before that, a check: the public repository's commits since its last release
+   (a community PR merged there, an edit made on GitHub) must be in private main, or that rsync would undo them. One
+   is when private main cherry-picked it with -x (which names it), or when its change is already in the copy;
+   --skip-public SHA names one you chose to leave out.
 4. Checks: something changed; desktop/package.json's version is newer than the public one; CHANGELOG.md says what's
    new in it. Without a newer version, testers' What's New would have nothing to show.
 5. Its tests, in the clone: npm ci, then npm test (--quick: the unit and Python suites, not the end-to-end ones).
@@ -84,6 +87,32 @@ def release_notes(changelog: str, v: str) -> tuple[list[str], list[str]] | None:
     return (text, bullets) if on else None
 
 
+RELEASE = re.compile(r"^Homecoming \d+(\.\d+)*$")  # a release's title, as commit_message writes it
+
+
+def public_only(clone: Path, copy: Path, private_log: str, skip: list[str]) -> tuple[str | None, list[str], list[str]]:
+    """The public repository's last release, and its commits since then that the copy would undo, as "sha author:
+    subject": those private main hasn't, and those --skip-public leaves out. Private main has one when it cherry-picked
+    it with -x (its log names it), or when its change is in the copy already (it comes off in reverse). Merges are
+    left out: one brings its commits' changes, and a conflict it resolved only puts both sides together."""
+    last = next((h for h, s in (l.split("\t", 1) for l in git(clone, "log", "--first-parent", "--format=%H\t%s").splitlines())
+                 if RELEASE.match(s)), None)
+    if not last:
+        return None, [], []
+    picked = set(re.findall(r"cherry picked from commit ([0-9a-f]{40})", private_log))
+    missing, skipped = [], []
+    for line in git(clone, "log", "--no-merges", "--reverse", "--format=%H\t%h %an: %s", f"{last}..HEAD").splitlines():
+        h, what = line.split("\t", 1)
+        if h in picked:
+            continue
+        patch = subprocess.run(["git", "-C", str(clone), "show", "--format=", "--binary", h], capture_output=True, text=True).stdout
+        if not patch.strip() or not subprocess.run(["git", "apply", "--reverse", "--check", "-"], cwd=copy, input=patch,
+                                                   capture_output=True, text=True).returncode:
+            continue
+        (skipped if any(h.startswith(s.lower()) for s in skip) else missing).append(what)
+    return last, missing, skipped
+
+
 def commit_message(v: str, text: list[str], bullets: list[str]) -> str:
     """A title line, a blank line, then the bullets (the words before them as bullets too), in plain text."""
     plain = lambda s: s.replace("**", "")
@@ -98,6 +127,8 @@ def main():
     ap.add_argument("--into", type=Path, help="where to clone it (default: a new folder in the temporary folder)")
     ap.add_argument("--corpus", type=Path, help="the corpus to check against (default: corpus/ in the main checkout)")
     ap.add_argument("--allow", nargs="*", default=[], help=f"more terms that belong in it, besides {', '.join(ALLOW)}")
+    ap.add_argument("--skip-public", nargs="*", default=[], metavar="SHA",
+                    help="public commits since its last release that you chose not to bring into private main: publishing undoes them")
     ap.add_argument("--quick", action="store_true", help="only the unit and Python tests, not the end-to-end ones")
     ap.add_argument("--test-command", help="run this in the clone's desktop/ instead of npm ci and npm test")
     a = ap.parse_args()
@@ -120,6 +151,7 @@ def main():
     try:
         commit = git(src, "rev-parse", "--short", "HEAD")
         print(f"   at {commit}: {git(src, 'log', '-1', '--format=%s')}")
+        private_log = git(src, "log", "--format=%B")  # which public commits it cherry-picked
 
         print("\n== The release copy, checked for personal data")
         copy = work / "copy"
@@ -139,6 +171,14 @@ def main():
     branch = git(clone, "symbolic-ref", "--short", "-q", "HEAD", check=False) or "main"
     had = git(clone, "rev-parse", "--short", "HEAD", check=False)
     public_version = version(clone)
+    # What was merged or edited on GitHub since the last release: the rsync below would undo it.
+    last, missing, skipped = public_only(clone, copy, private_log, a.skip_public) if had else (None, [], [])
+    if missing:
+        stop(f"{a.public} has {len(missing)} commit{'s' * (len(missing) > 1)} since its last release ({last[:7]}) that private "
+             f"{a.ref} doesn't, and publishing would undo:\n  " + "\n  ".join(missing) + "\nBring them into private main first "
+             "(git cherry-pick -x, so this knows them), or name each one you're leaving out with --skip-public SHA.")
+    if skipped:
+        print("   undoing, as --skip-public says: " + "; ".join(skipped))
     subprocess.run(["rsync", "-a", "--delete", "--exclude", ".git", f"{copy}/", f"{clone}/"], check=True)
     shutil.rmtree(copy)
     git(clone, "add", "-A")

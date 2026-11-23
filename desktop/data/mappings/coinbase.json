@@ -1,0 +1,12 @@
+{
+  "service": "Coinbase",
+  "version": 1,
+  "items": [
+    {"describe": "Your Coinbase transactions", "file": "*.[cC][sS][vV]", "header": "ID,Timestamp,Transaction Type,", "kind": "transaction", "time": "Timestamp",
+     "title": ["Notes", "Transaction Type"], "text": ["Notes", "Transaction Type", "Asset", "Quantity Transacted",
+     "Total (inclusive of fees and/or spread)"], "id": "ID", "author": "me"},
+    {"describe": "Your Coinbase transactions (reports from before 2024)", "file": "*.[cC][sS][vV]", "header": "Timestamp,Transaction Type,", "kind": "transaction",
+     "time": "Timestamp", "title": ["Notes", "Transaction Type"], "text": ["Notes", "Transaction Type", "Asset", "Quantity Transacted",
+     "Total (inclusive of fees and/or spread)", "Total (inclusive of fees)", "USD Total (inclusive of fees)"], "author": "me"}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "service": "Instapaper",
+  "version": 1,
+  "items": [
+    {"describe": "Articles you saved", "file": "*.csv", "header": "URL,Title,", "kind": "saved", "time": "Timestamp",
+     "title": "Title", "text": ["Title", "Selection", "Folder"], "url": "URL", "author": "me"}
+  ]
+}

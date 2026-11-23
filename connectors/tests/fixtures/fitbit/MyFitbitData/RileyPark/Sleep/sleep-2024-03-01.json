@@ -1,0 +1,19 @@
+[{
+  "logId" : 40000000001,
+  "dateOfSleep" : "2024-03-02",
+  "startTime" : "2024-03-01T23:10:30.000",
+  "endTime" : "2024-03-02T06:52:00.000",
+  "duration" : 27660000,
+  "minutesToFallAsleep" : 0,
+  "minutesAsleep" : 412,
+  "minutesAwake" : 49,
+  "minutesAfterWakeup" : 0,
+  "timeInBed" : 461,
+  "efficiency" : 93,
+  "type" : "stages",
+  "infoCode" : 0,
+  "logType" : "auto_detected",
+  "levels" : {"summary" : {"deep" : {"count" : 4, "minutes" : 70, "thirtyDayAvgMinutes" : 66}, "wake" : {"count" : 30, "minutes" : 49, "thirtyDayAvgMinutes" : 52}, "light" : {"count" : 28, "minutes" : 250, "thirtyDayAvgMinutes" : 240}, "rem" : {"count" : 6, "minutes" : 92, "thirtyDayAvgMinutes" : 88}},
+              "data" : [{"dateTime" : "2024-03-01T23:10:30.000", "level" : "wake", "seconds" : 600}]},
+  "mainSleep" : true
+}]

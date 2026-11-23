@@ -1,0 +1,9 @@
+{
+  "service": "Raindrop.io",
+  "version": 1,
+  "items": [
+    {"describe": "Bookmarks you saved", "file": "*.csv", "header": "id,title,", "kind": "saved", "time": "created",
+     "title": "title", "text": ["title", "note", "excerpt", "highlights", "tags", "folder"], "url": "url", "id": "id",
+     "thread": "folder", "thread_name": "folder", "author": "me"}
+  ]
+}

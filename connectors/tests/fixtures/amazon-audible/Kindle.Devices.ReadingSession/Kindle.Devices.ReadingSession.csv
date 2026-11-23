@@ -1,0 +1,2 @@
+start_timestamp,end_timestamp,ASIN,device_family,reading_marketplace,content_type,total_reading_millis,number_of_page_flips
+2025-01-03T21:00:00.000Z,2025-01-03T21:25:00.000Z,B0K0000001,Kindle E-reader,US,Ebook,1500000,20

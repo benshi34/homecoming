@@ -1,0 +1,14 @@
+{
+  "service": "Capital One",
+  "version": 1,
+  "items": [
+    {"describe": "Your card activity", "file": "*.[cC][sS][vV]", "header": "Transaction Date,Posted Date,Card No.,", "kind": "transaction", "time": "Transaction Date",
+     "title": "Description", "text": ["Description", "Category", "Debit", "Credit"], "author": "me", "thread": "Card No.", "thread_name": "Card No."},
+    {"describe": "Your checking and savings activity, from a QFX, QBO or OFX download", "file": "*.[oOqQ][fFbB][xXoO]", "path": "BANKMSGSRSV1", "kind": "transaction", "overlap": true,
+     "time": ["DTUSER", "DTPOSTED"], "title": ["NAME", "MEMO"], "text": ["NAME", "MEMO", "TRNTYPE", "TRNAMT", "CHECKNUM"], "id": "FITID",
+     "author": "me", "thread": "account", "thread_name": "account"},
+    {"describe": "Your card activity, from a QFX, QBO or OFX download", "file": "*.[oOqQ][fFbB][xXoO]", "path": "CREDITCARDMSGSRSV1", "kind": "transaction", "overlap": true,
+     "time": ["DTUSER", "DTPOSTED"], "title": ["NAME", "MEMO"], "text": ["NAME", "MEMO", "TRNTYPE", "TRNAMT", "CHECKNUM"], "id": "FITID",
+     "author": "me", "thread": "account", "thread_name": "account"}
+  ]
+}

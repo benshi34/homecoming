@@ -1,0 +1,29 @@
+{
+  "service": "Snapchat",
+  "version": 1,
+  "items": [
+    {"describe": "Your chats", "file": "chat_history.json", "path": "*",
+     "unless": {"@key": ["Received Saved Chat History", "Sent Saved Chat History", "Received Chat History", "Sent Chat History"]},
+     "kind": "message", "time": "Created", "text": ["Content"], "author": "From", "mine": {"IsSender": ["True"]},
+     "thread": "@key", "thread_name": ["Conversation Title", "@key"]},
+    {"describe": "Chats you got (exports from before 2024)", "file": "chat_history.json", "path": "Received Saved Chat History",
+     "kind": "message", "time": "Created", "text": ["Text"], "author": "From", "thread": "From", "thread_name": "From"},
+    {"describe": "Chats you sent (exports from before 2024)", "file": "chat_history.json", "path": "Sent Saved Chat History",
+     "kind": "message", "time": "Created", "text": ["Text"], "author": "me", "thread": "To", "thread_name": "To"},
+    {"describe": "Chats you got (exports from 2020)", "file": "chat_history.json", "path": "Received Chat History",
+     "kind": "message", "time": "Created", "text": ["Text"], "author": "From", "thread": "From", "thread_name": "From"},
+    {"describe": "Chats you sent (exports from 2020)", "file": "chat_history.json", "path": "Sent Chat History",
+     "kind": "message", "time": "Created", "text": ["Text"], "author": "me", "thread": "To", "thread_name": "To"},
+    {"describe": "Snaps you sent and got", "file": "snap_history.json", "path": "*", "unless": {"@key": ["Received Snap History", "Sent Snap History"]},
+     "kind": "message", "time": "Created", "text": ["Media Type"], "author": "From", "mine": {"IsSender": ["True"]},
+     "thread": "@key", "thread_name": ["Conversation Title", "@key"]},
+    {"describe": "Snaps you got (exports from before 2024)", "file": "snap_history.json", "path": "Received Snap History",
+     "kind": "message", "time": "Created", "text": ["Media Type"], "author": "From", "thread": "From", "thread_name": "From"},
+    {"describe": "Snaps you sent (exports from before 2024)", "file": "snap_history.json", "path": "Sent Snap History",
+     "kind": "message", "time": "Created", "text": ["Media Type"], "author": "me", "thread": "To", "thread_name": "To"},
+    {"describe": "Your friends", "file": "friends.json", "path": "Friends", "kind": "follow", "time": "Creation Timestamp",
+     "title": ["Display Name", "Username"], "text": ["Display Name", "Username", "Source"], "author": "me"},
+    {"describe": "Memories you saved", "file": "memories_history.json", "path": "Saved Media", "kind": "photo", "time": "Date",
+     "text": ["Media Type", "Location"], "author": "me"}
+  ]
+}

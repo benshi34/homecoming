@@ -50,7 +50,10 @@ def history_in_icloud_only(repo):
 
 def main():
     git = git_bin()
-    with Writer("git_commits", AVENUE) as w:
+    # A worktree or another clone of a repository repeats its history: each commit is kept once, under the first
+    # path it's read from, and an earlier run's copies under the other paths go.
+    seen = set()
+    with Writer("git_commits", AVENUE, forget=lambda old: str(old.get("id")).rsplit(":", 1)[-1] in seen) as w:
         if not git:  # no git to read them with (and the stub would ask to install the developer tools)
             w.notes["no_git"] = 1
             return
@@ -75,8 +78,9 @@ def main():
                 h, ts, name, email, subject, body = (chunk.split(SEP) + [""] * 6)[:6]
                 me = mine(name, email)
                 rid = f"{repo.name}:{h}"
-                if w.has(rid):
+                if w.has(rid) or h in seen:
                     continue
+                seen.add(h)
                 w.add(id=rid, kind="commit", ts=ts, author="me" if me else (name or email), is_me=me, thread=str(repo),
                       thread_name=repo.name,
                       title=subject, text="\n".join(x for x in (subject, body.strip()) if x),

@@ -1,0 +1,9 @@
+You can use this transaction report to inform your likely tax obligations. For US customers, Sells, Converts, Rewards Income, and Coinbase Earn transactions are taxable events.
+
+
+
+Transactions
+User,riley@example.com,00000000aaaaaaaa
+
+Timestamp,Transaction Type,Asset,Quantity Transacted,Spot Price Currency,Spot Price at Transaction,Subtotal,Total (inclusive of fees),Fees,Notes
+2022-03-01T10:00:00Z,Receive,ETH,0.1,USD,2900.00,"","","",Received 0.1 ETH from an external account

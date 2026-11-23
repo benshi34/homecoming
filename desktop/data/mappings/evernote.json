@@ -1,0 +1,9 @@
+{
+  "service": "Evernote",
+  "version": 1,
+  "items": [
+    {"describe": "Your notes", "file": "*.enex", "path": "note", "kind": "note", "time": "created", "formats": ["%Y%m%dT%H%M%SZ"], "zone": "UTC",
+     "title": "title", "text": ["title", "content", "tag", "note-attributes.source-url"], "html": ["content"], "author": "me",
+     "thread": "@file", "thread_name": "@file"}
+  ]
+}

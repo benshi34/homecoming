@@ -1,0 +1,3 @@
+city,product_type,status,request_time,begin_trip_time,begintrip_lat,begintrip_lng,begintrip_address,dropoff_time,dropoff_lat,dropoff_lng,dropoff_address,distance,fare_currency,fare_amount
+San Francisco,UberX,completed,2025-05-29T21:02:22.000Z,2025-05-29T21:06:21.000Z,37.77,-122.42,"1 Example Rd, San Francisco",2025-05-29T21:18:20.000Z,37.80,-122.41,"2 Pier St, San Francisco",3.74,US Dollar,18.41
+San Francisco,UberX,rider_canceled,2025-06-01T08:00:00.000Z,,,,,,,,,0,US Dollar,0

@@ -1,0 +1,12 @@
+{
+  "service": "Venmo",
+  "version": 1,
+  "items": [
+    {"describe": "Your Venmo payments and transfers", "file": "*.csv", "header": ",ID,Datetime,", "needs": ["ID"], "kind": "transaction",
+     "time": "Datetime", "title": ["Note", "Type"], "text": ["Note", "Type", "From", "To", "Amount (total)", "Status"], "id": "ID",
+     "author": "From"},
+    {"describe": "Your Venmo payments (statements from before 2018)", "file": "*.csv", "header": " ID,Datetime,", "needs": [" ID"],
+     "kind": "transaction", "time": "Datetime", "title": ["Note", "Type"], "text": ["Note", "Type", "From", "To", "Amount (total)", "Status"],
+     "id": " ID", "author": "From"}
+  ]
+}
