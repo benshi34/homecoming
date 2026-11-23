@@ -3057,6 +3057,12 @@ function wireIpc() {
     if ('agentsAtOnce' in patch) patch.agentsAtOnce = agentsAtOnce(patch); // 1 to 5
     store.update((s) => Object.assign(s.settings, patch));
     if ('offline' in patch || 'networkOn' in patch) writeNetworkFile();
+    const machinesWasAllowed = was.offline !== true && (was.networkOn ?? []).includes('machines');
+    const machinesAllowed = store.state.settings.offline !== true && (store.state.settings.networkOn ?? []).includes('machines');
+    if (machinesWasAllowed && !machinesAllowed) {
+      const running = queue.list().find((j) => j.state === 'running' && j.current === 'machines');
+      if (running) queue.cancel(running.id);
+    }
     setupChanged(was, store.state.settings);
     if ('background' in patch || 'openAtLogin' in patch) syncLoginItem();
     // No longer working with the window closed: its menu bar icon goes (the window is open: it's where this was changed).
