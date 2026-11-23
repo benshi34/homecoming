@@ -54,6 +54,34 @@ LIB = HOME / "Library"
 # symlink to ~/Library/Application Support/q1_user_model/iphone, outside iCloud Drive).
 IPHONE = RAW / "iphone" / "files"
 
+NETWORK = CORPUS / "network.json"  # the app writes it from its Network settings; scheduled and command-line runs read it too
+
+
+class Offline(RuntimeError):
+    """A source asked to go online when it may not: Homecoming is offline, or that source's switch is off."""
+
+
+def online(source):
+    """Whether this source may reach the internet. Everything Homecoming reads comes from this Mac's own files unless
+    a source is switched on here: network.json {"offline": false, "sources": {"slack": true}}, off unless named.
+    UMP_OFFLINE=1, or "offline": true, turns every one of them off, whatever the switches say."""
+    if os.environ.get("UMP_OFFLINE") == "1":
+        return False
+    conf = read_json(NETWORK, {})
+    if not isinstance(conf, dict) or conf.get("offline") is True:
+        return False
+    sources = conf.get("sources")
+    return isinstance(sources, dict) and sources.get(source) is True
+
+
+def need_online(source, notes=None):
+    """online(source), or note it in a run's notes ("offline": what it would have reached) and raise Offline."""
+    if online(source):
+        return True
+    if notes is not None:
+        notes["offline"] = notes.get("offline", 0) + 1
+    raise Offline(f"{source} is off: Homecoming reaches the internet only for sources switched on in Network")
+
 
 def phone(domain, rel=""):
     """A file (or folder) from the decrypted iPhone backup, e.g. phone("HomeDomain", "Library/SMS/sms.db")."""
