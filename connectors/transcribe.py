@@ -3,6 +3,10 @@ Messages, voicemails from the iPhone with no transcript. Off unless asked for (U
 audio on this Mac"). Apple's own speech recognition does it (SpeechTranscriber, macOS 26 on, through hear.swift,
 compiled here once): nothing leaves the Mac.
 
+Installed speech models work offline. A missing model is downloaded only with common.online("speech_models"):
+corpus/network.json {"offline": false, "sources": {"speech_models": true}}. UMP_OFFLINE=1 also denies downloads.
+Turning on transcription alone never permits a download.
+
 Each file is heard in each language you use (UMP_TRANSCRIBE_LANGS, "en-US,zh-CN"; else the Mac's preferred languages)
 and the hearing Apple is surest of is kept. What it heard is kept in raw/transcripts.json, by the file's path, size and
 time; the readers (voice_memos.py, imessage.py, ileapp.py's voicemail) take their text from there when Apple's own is
@@ -19,7 +23,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common import CORPUS, HOME, NORM, TRANSCRIPTS, audio_key, read_json, write_atomic
+from common import CORPUS, HOME, NORM, TRANSCRIPTS, audio_key, online, read_json, write_atomic
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE / "hear.swift"
@@ -104,17 +108,26 @@ def main():
         return []
     budget = float(os.environ.get("UMP_TRANSCRIBE_SECONDS") or 600)
     exe, langs = hearer(), languages()
-    t, n, empty, failed, worded = time.time(), 0, 0, 0, set()
+    t, n, empty, failed, waiting, worded, noted = time.time(), 0, 0, 0, 0, set(), set()
     for i, (k, path, src) in enumerate(todo):
         try:  # one file a process, given time by its size: one Apple's recognizer never answers can't stall the rest
-            out = subprocess.run([exe, langs], input=path + "\n", capture_output=True, text=True,
+            args = [exe, langs] + (["--allow-model-downloads"] if online("speech_models") else [])
+            out = subprocess.run(args, input=path + "\n", capture_output=True, text=True,
                                  timeout=float(os.environ.get("UMP_TRANSCRIBE_WAIT") or 60) + os.path.getsize(path) / 2000).stdout
             got = json.loads(out.strip().splitlines()[-1]) if out.strip() else {"error": "no answer"}
         except subprocess.TimeoutExpired:
             got = {"error": "timed out"}
         except (OSError, ValueError) as e:
             got = {"error": str(e)}
-        if got.get("error"):
+        for note in got.get("notes") or []:
+            if note not in noted:
+                print(f"[transcribe] {note}")
+                noted.add(note)
+        if got.get("error") and got.get("missingModels"):
+            waiting += 1
+            # A permission or missing model isn't an unreadable file. Try again once the model is available.
+            done[k] = {"error": str(got["error"])[:300], "missingModels": got["missingModels"]}
+        elif got.get("error"):
             failed += 1
             tries = (done.get(k) or {}).get("tries", 0) + 1
             # tried three times: given up on, as one with nothing heard (a file Apple can't read)
@@ -132,7 +145,8 @@ def main():
             break  # the rest next run
     write_atomic(TRANSCRIPTS, json.dumps(done))
     print(f"[transcribe] heard {n} of {len(todo)} ({empty} with no speech, {failed} unreadable) in {time.time() - t:.0f}s; "
-          f"{'the rest next run; ' if n + failed < len(todo) else ''}their readers take the text next time they run")
+          f"{waiting} waiting for speech models; "
+          f"{'the rest next run; ' if n + failed + waiting < len(todo) else ''}their readers take the text next time they run")
     return sorted(worded)
 
 

@@ -6,6 +6,7 @@ Run: python3 -m unittest discover -s connectors/tests -p 'test_*.py'
 """
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -18,16 +19,31 @@ CONNECTORS = Path(__file__).resolve().parents[1]
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
 log = os.environ["HEAR_LOG"]
+allowed = "--allow-model-downloads" in sys.argv[2:]
+open(log + ".permissions", "a").write(json.dumps({"args": sys.argv[1:], "allowed": allowed}) + "\n")
+models = os.environ.get("HEAR_MODELS")
+installed = json.load(open(models)) if models else sys.argv[1].split(",")
 for line in sys.stdin:
     p = line.strip()
     open(log, "a").write(p + "\n")
+    missing = [lang for lang in sys.argv[1].split(",") if lang not in installed]
+    if missing and allowed:
+        open(log + ".downloads", "a").write(json.dumps(missing) + "\n")
+        installed += missing
+        json.dump(installed, open(models, "w"))
+        missing = []
+    notes = [f"The speech model for {lang} isn't on this Mac. Allow speech_models in corpus/network.json to download it (offline must be false)." for lang in missing]
+    if missing and all(lang in missing for lang in sys.argv[1].split(",")):
+        print(json.dumps({"path": p, "error": notes[0], "missingModels": missing, "notes": notes}))
+        continue
     if p.endswith("hang.caf"):  # Apple's recognizer, never answering
         import time; time.sleep(30)
     if not os.path.exists(p):
         print(json.dumps({"path": p, "error": "can't open it"}))
     else:
         said = open(p).read()
-        print(json.dumps({"path": p, "text": "" if said == "music" else said, "locale": "en_US", "confidence": 0.9}))
+        print(json.dumps({"path": p, "text": "" if said == "music" else said, "locale": "en_US", "confidence": 0.9,
+                          "missingModels": missing, "notes": notes}))
 '''
 
 
@@ -54,9 +70,10 @@ class TranscribeTests(unittest.TestCase):
     def norm(self, source, recs):
         (self.corpus / "normalized" / f"{source}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
 
-    def run_it(self, on=True, wait="60"):
-        env = {**os.environ, "UMP_TRANSCRIBE_WAIT": wait, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_HEAR": str(self.fake),
-               "HEAR_LOG": str(self.log), "UMP_TRANSCRIBE_LANGS": "en-US"}
+    def run_it(self, on=True, wait="60", **extra):
+        env = {**{k: v for k, v in os.environ.items() if k not in ("UMP_OFFLINE", "HEAR_MODELS")},
+               "UMP_TRANSCRIBE_WAIT": wait, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_HEAR": str(self.fake),
+               "HEAR_LOG": str(self.log), "UMP_TRANSCRIBE_LANGS": "en-US", **extra}
         env.pop("UMP_TRANSCRIBE", None)
         if on:
             env["UMP_TRANSCRIBE"] = "1"
@@ -69,6 +86,119 @@ class TranscribeTests(unittest.TestCase):
 
     def kept(self):
         return json.loads((self.corpus / "raw/transcripts.json").read_text())
+
+    def network(self, conf):
+        (self.corpus / "network.json").write_text(json.dumps(conf))
+
+    def permissions(self):
+        return [json.loads(line) for line in Path(str(self.log) + ".permissions").read_text().splitlines()]
+
+    def test_installed_models_still_transcribe_offline_without_download_permission(self):
+        memo = self.file("memo.m4a", "the ferry leaves at ten")
+        self.norm("voice_memos", [{"meta": {"path": memo}}])
+        self.network({"offline": True, "sources": {"speech_models": True}})
+        self.run_it(UMP_OFFLINE="1")
+        self.assertEqual(list(self.kept().values())[0]["text"], "the ferry leaves at ten")
+        self.assertEqual(self.permissions(), [{"args": ["en-US"], "allowed": False}])
+        self.assertFalse(Path(str(self.log) + ".downloads").exists())
+
+    def test_missing_models_need_permission_and_offline_always_wins(self):
+        memo = self.file("memo.m4a", "the ferry leaves at ten")
+        self.norm("voice_memos", [{"meta": {"path": memo}}])
+        models = self.root / "models.json"
+        models.write_text("[]")
+        cases = [(None, {}), ({"sources": {"other": True}}, {}),
+                 ({"sources": {"speech_models": "yes"}}, {}),
+                 ({"offline": True, "sources": {"speech_models": True}}, {}),
+                 ({"sources": {"speech_models": True}}, {"UMP_OFFLINE": "1"})]
+        for conf, env in cases:
+            with self.subTest(conf=conf, env=env):
+                if conf is not None:
+                    self.network(conf)
+                output = self.run_it(HEAR_MODELS=str(models), **env)
+                got = list(self.kept().values())[0]
+                self.assertNotIn("text", got, "a missing model must remain retryable after three runs")
+                self.assertNotIn("tries", got, "permission isn't an unreadable audio file")
+                self.assertEqual(got["missingModels"], ["en-US"])
+                self.assertIn("speech model for en-US isn't on this Mac", output)
+                self.assertIn("speech_models in corpus/network.json", output)
+                self.assertIn("1 waiting for speech models", output)
+                self.assertFalse(self.permissions()[-1]["allowed"], "the helper must not receive download permission")
+                self.assertFalse(Path(str(self.log) + ".downloads").exists())
+        self.network({"offline": False, "sources": {"speech_models": True}})
+        self.run_it(HEAR_MODELS=str(models))
+        self.assertEqual(list(self.kept().values())[0]["text"], "the ferry leaves at ten")
+        self.assertTrue(self.permissions()[-1]["allowed"])
+        self.assertEqual(json.loads(Path(str(self.log) + ".downloads").read_text()), ["en-US"])
+
+    def test_permission_is_read_again_for_each_file(self):
+        files = [self.file(f"m{i}.m4a", f"memo {i}") for i in range(2)]
+        self.norm("voice_memos", [{"ts": str(i), "meta": {"path": f}} for i, f in enumerate(files)])
+        self.network({"sources": {"speech_models": True}})
+        self.fake.write_text(FAKE + '\nopen(os.path.join(os.environ["CORPUS_DIR"], "network.json"), "w").write(\'{"offline": true}\')\n')
+        self.run_it()
+        self.assertEqual([r["allowed"] for r in self.permissions()], [True, False])
+        self.assertEqual(sorted(v["text"] for v in self.kept().values()), ["memo 0", "memo 1"])
+
+    def test_a_missing_language_is_not_silenced_by_an_installed_one(self):
+        memo = self.file("memo.m4a", "the ferry leaves at ten")
+        self.norm("voice_memos", [{"meta": {"path": memo}}])
+        models = self.root / "models.json"
+        models.write_text('["en-US"]')
+        output = self.run_it(HEAR_MODELS=str(models), UMP_TRANSCRIBE_LANGS="en-US,fr-FR")
+        self.assertEqual(list(self.kept().values())[0]["text"], "the ferry leaves at ten")
+        self.assertIn("speech model for fr-FR isn't on this Mac", output)
+        self.assertFalse(Path(str(self.log) + ".downloads").exists())
+
+    def test_the_desktop_bridge_waits_for_permission_then_reads_offline(self):
+        rec = self.home / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
+        rec.mkdir(parents=True)
+        (rec / "first.m4a").write_text("the ferry leaves at ten")
+        db = rec / "CloudRecordings.db"
+        with sqlite3.connect(db) as con:
+            con.executescript("""
+                create table ZCLOUDRECORDING (Z_PK integer primary key, ZUNIQUEID text, ZDATE real,
+                    ZDURATION real, ZPATH text, ZCUSTOMLABEL text, ZEVICTIONDATE real);
+                insert into ZCLOUDRECORDING values (1, 'V1', 794000000, 12, 'first.m4a', 'Harbor', null);
+            """)
+        models = self.root / "models.json"
+        models.write_text("[]")
+        env = {**{k: v for k, v in os.environ.items() if k != "UMP_OFFLINE"},
+               "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "UMP_HEAR": str(self.fake),
+               "HEAR_LOG": str(self.log), "HEAR_MODELS": str(models), "UMP_TRANSCRIBE_LANGS": "en-US",
+               "UMP_TRANSCRIBE": "1"}
+
+        def run_bridge():
+            result = subprocess.run([sys.executable, str(CONNECTORS.parent / "desktop/py/bridge.py"), "run", "voice_memos"],
+                                    env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(events[-1], {"type": "finished", "failed": []})
+            self.assertFalse([event for event in events if event["type"] == "error"], events)
+            with sqlite3.connect(self.corpus / "corpus.db") as index:
+                texts = [row[0] for row in index.execute("select text from records where source = 'voice_memos' order by id")]
+            return events, texts
+
+        self.network({"offline": True, "sources": {"speech_models": True}})
+        events, texts = run_bridge()
+        self.assertEqual(texts, ["Harbor"])
+        self.assertTrue(any("speech model for en-US isn't on this Mac" in event.get("line", "") for event in events), events)
+        self.assertEqual([p["allowed"] for p in self.permissions()], [False])
+        self.assertEqual(json.loads(models.read_text()), [])
+
+        self.network({"offline": False, "sources": {"speech_models": True}})
+        _, texts = run_bridge()
+        self.assertEqual(texts, ["Harbor\nthe ferry leaves at ten"])
+        self.assertEqual([p["allowed"] for p in self.permissions()], [False, True])
+
+        self.network({"offline": True, "sources": {"speech_models": True}})
+        (rec / "second.m4a").write_text("the last ferry is at six")
+        with sqlite3.connect(db) as con:
+            con.execute("insert into ZCLOUDRECORDING values (2, 'V2', 794086400, 12, 'second.m4a', 'Pier', null)")
+        _, texts = run_bridge()
+        self.assertEqual(texts, ["Harbor\nthe ferry leaves at ten", "Pier\nthe last ferry is at six"])
+        self.assertEqual([p["allowed"] for p in self.permissions()], [False, True, False])
+        self.assertEqual(Path(str(self.log) + ".downloads").read_text().splitlines(), ['["en-US"]'])
 
     def test_only_audio_apple_left_without_words_and_only_when_asked(self):
         memo, done_memo, music = self.file("memo.m4a", "pick up the tripod"), self.file("done.m4a", "x"), self.file("song.m4a", "music")

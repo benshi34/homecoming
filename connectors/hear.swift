@@ -1,11 +1,13 @@
 // What's said in audio files, heard on this Mac by Apple's own speech recognition (SpeechTranscriber, macOS 26 on):
 // nothing leaves the Mac. connectors/transcribe.py compiles it once and runs it.
 //
-//     hear en-US,zh-CN < paths      one audio file a line in; one JSON line out for each:
+//     hear en-US,zh-CN [--allow-model-downloads] < paths
+//                                 one audio file a line in; one JSON line out for each:
 //                                   {"path", "text", "locale", "confidence"} or {"path", "error"}
 //
 // Each file is heard in each language given, and the hearing Apple is surest of (mean confidence over what it heard)
-// is kept. A language whose model isn't on the Mac is downloaded once, by the system, as Dictation's are.
+// is kept. Installed models work offline. Missing models are downloaded only with --allow-model-downloads, which
+// transcribe.py supplies when Network permits speech_models. Otherwise that language is noted and left for later.
 
 import AVFoundation
 import Foundation
@@ -17,12 +19,24 @@ struct Heard: Encodable {
     var locale: String?
     var confidence: Double?
     var error: String?
+    var missingModels: [String]?
+    var notes: [String]?
 }
 
-func hear(_ url: URL, _ locale: Locale) async throws -> (String, Double) {
+struct MissingSpeechModel: Error, CustomStringConvertible {
+    let locale: String
+    var description: String {
+        "The speech model for \(locale) isn't on this Mac. Allow speech_models in corpus/network.json to download it (offline must be false)."
+    }
+}
+
+func hear(_ url: URL, _ locale: Locale, allowModelDownloads: Bool) async throws -> (String, Double) {
     let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [],
                                         attributeOptions: [.transcriptionConfidence])
+    // No request means the model is on this Mac. (status(forModules:) says .supported even for an installed model,
+    // so it can't tell.) Asking downloads nothing; only downloadAndInstall does.
     if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+        guard allowModelDownloads else { throw MissingSpeechModel(locale: locale.identifier) }
         try await install.downloadAndInstall()
     }
     let analyzer = SpeechAnalyzer(modules: [transcriber])
@@ -49,6 +63,7 @@ func hear(_ url: URL, _ locale: Locale) async throws -> (String, Double) {
 }
 
 let asked = CommandLine.arguments.count > 1 ? CommandLine.arguments[1].split(separator: ",").map(String.init) : ["en-US"]
+let allowModelDownloads = CommandLine.arguments.dropFirst(2).contains("--allow-model-downloads")
 var locales: [Locale] = []
 for id in asked {
     if let l = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: id)),
@@ -66,13 +81,17 @@ while let line = readLine() {
     }
     for locale in locales {
         do {
-            let (text, confidence) = try await hear(URL(fileURLWithPath: path), locale)
+            let (text, confidence) = try await hear(URL(fileURLWithPath: path), locale, allowModelDownloads: allowModelDownloads)
             // the surest hearing that heard something; nothing heard in any language is an empty text
             if out.text == nil || (!text.isEmpty && (out.text!.isEmpty || confidence > out.confidence!)) {
                 out.text = text
                 out.locale = locale.identifier
                 out.confidence = confidence
             }
+        } catch let error as MissingSpeechModel {
+            out.missingModels = (out.missingModels ?? []) + [error.locale]
+            out.notes = (out.notes ?? []) + [error.description]
+            if out.text == nil { out.error = error.description }
         } catch {
             if out.text == nil { out.error = "\(error)" }
         }

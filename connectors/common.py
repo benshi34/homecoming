@@ -54,6 +54,21 @@ LIB = HOME / "Library"
 # symlink to ~/Library/Application Support/q1_user_model/iphone, outside iCloud Drive).
 IPHONE = RAW / "iphone" / "files"
 
+NETWORK = CORPUS / "network.json"  # the app writes it from its Network settings; scheduled and command-line runs read it too
+
+
+def online(source):
+    """Whether this source may reach the internet. Everything Homecoming reads comes from this Mac's own files unless
+    a source is switched on here: network.json {"offline": false, "sources": {"slack": true}}, off unless named.
+    UMP_OFFLINE=1, or "offline": true, turns every one of them off, whatever the switches say."""
+    if os.environ.get("UMP_OFFLINE") == "1":
+        return False
+    conf = read_json(NETWORK, {})
+    if not isinstance(conf, dict) or conf.get("offline") is True:
+        return False
+    sources = conf.get("sources")
+    return isinstance(sources, dict) and sources.get(source) is True
+
 
 def phone(domain, rel=""):
     """A file (or folder) from the decrypted iPhone backup, e.g. phone("HomeDomain", "Library/SMS/sms.db")."""
