@@ -136,6 +136,44 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(by["machines:ssh"]["text"], "box hostname=100.64.0.9 user=ada", "hosts, never their keys")
         self.assertEqual(by["machines:vms"]["text"], "Parallels: Win11 stopped")
 
+    def vm_tools(self, docker_host="unix:///made/up/docker.sock"):
+        home = self.home
+        self.tool("limactl", f"""echo '{{"name": "dev", "status": "Running", "dir": "{home}/.lima/dev", "vmType": "vz", "arch": "aarch64", "cpus": 4, "memory": 4294967296, "sshLocalPort": 60022}}'""")
+        self.tool("orbctl", """echo '[{"name": "ubuntu", "state": "running", "image": {"distro": "ubuntu", "version": "noble"}}]'""")
+        self.tool("VBoxManage", """printf '"Old XP" {0b1c2d3e-0000-4000-8000-000000000001}\n'""")
+        self.tool("tart", """echo '[{"Name": "sequoia-base", "Source": "local", "State": "stopped", "Disk": 50}]'""")
+        self.tool("multipass", """echo '{"list": [{"name": "primary", "state": "Running", "release": "24.04 LTS", "ipv4": ["192.168.64.2"]}]}'""")
+        (home / "Virtual Machines.localized/Win10.vmwarevm").mkdir(parents=True, exist_ok=True)
+        asked = self.root / "docker-asked"
+        self.tool("docker", f"""[ "$1" = context ] && {{ echo '{docker_host}'; exit 0; }}
+echo "$@" >> '{asked}'
+case "$3" in ps) printf 'web\tnginx:1.27\tshop\ndb\tpostgres:17\tshop\nscratch\talpine:3.20\t\n';; images) printf 'nginx:1.27\npostgres:17\n<none>:<none>\n';; *) exit 1;; esac""")
+        return asked
+
+    def test_every_vm_tool_and_docker_without_running_state(self):
+        asked = self.vm_tools()
+        by, recs, _ = self.run_setup()
+        self.assertEqual(by["machines:vms"]["text"], "\n".join([
+            "Parallels: Win11 stopped", "Lima: dev (vz, aarch64, 4 CPUs, 4 GB)", "OrbStack: ubuntu (ubuntu noble)",
+            "VirtualBox: Old XP", "tart: sequoia-base (local)", "multipass: primary (24.04 LTS)", "VMware Fusion: Win10"]))
+        self.assertEqual(by["machines:docker:containers"]["text"],
+                         "db: postgres:17 (compose: shop)\nscratch: alpine:3.20\nweb: nginx:1.27 (compose: shop)")
+        self.assertEqual(by["machines:docker:images"]["text"], "nginx:1.27\npostgres:17", "untagged layers aren't images you named")
+        self.assertEqual(by["machines:docker:containers"]["meta"]["group"], "machines")
+        everything = "\n".join(r.get("text", "") for r in recs if r["meta"]["what"].startswith("machines:"))
+        for live in ("Running", "running", "192.168.64", "60022", str(self.home)):
+            self.assertNotIn(live, everything, "what's set up, not what's up right now or where it sits")
+        self.assertIn("-H unix:///made/up/docker.sock ps", asked.read_text(), "the socket it checked is the one asked")
+
+    def test_docker_somewhere_else_is_never_asked(self):
+        for host in ("ssh://ada@box", "tcp://10.0.0.5:2376"):
+            with self.subTest(host=host):
+                asked = self.vm_tools(docker_host=host)
+                asked.unlink(missing_ok=True)
+                by, _, _ = self.run_setup()
+                self.assertFalse(asked.exists(), "a Docker on another machine is reached over the network")
+                self.assertNotIn("machines:docker:containers", by)
+
     def test_devices_without_addresses_or_serials(self):
         by, recs, _ = self.run_setup()
         self.assertEqual(by["device:phone:Ada iPhone"]["text"], "Ada iPhone\nmodel: iPhone 16\ntype: iPhone\nos: iOS 26.1\npaired: paired\ndeveloper mode: on")
