@@ -34,7 +34,9 @@ AVENUE = ("Local files and read-only commands. Configs (each version kept, with 
           "Finder, Stage Manager and apps like Rectangle and iTerm2, filtered to settings. Layouts: Warp's warp.sqlite "
           "(windows, tabs, pane splits, each pane's folder), `tmux list-panes -a`, `aerospace list-windows --all`. "
           "Installed: /Applications, `brew leaves`, ~/Library/LaunchAgents, scripts in ~/.local/bin and ~/bin. "
-          "Machines: `tailscale status --json`, ~/.ssh/config's hosts, `prlctl list`, `colima list`, UTM's VMs. Devices, each "
+          "Machines: `tailscale status --json`, ~/.ssh/config's hosts, `prlctl list`, `colima list`, `limactl list`, "
+          "`orbctl list`, `VBoxManage list vms`, `tart list`, `multipass list`, UTM's and VMware Fusion's VMs; Docker's containers "
+          "and images (`docker ps -a`, `docker images`), only from a Docker on this Mac, never one a context points at elsewhere. Devices, each "
           "its own record: `xcrun devicectl list devices` (iPhones, iPads, Watches), `adb devices -l`, `system_profiler` for "
           "paired Bluetooth devices, displays and USB devices (names and kinds, never addresses or serials). Linux too: i3, "
           "sway, Hyprland, systemd user units; and crontab and the OS. Another machine is read by machines.py.")
@@ -567,16 +569,59 @@ def ssh_hosts(w, v):
                   {"group": "machines", "tool": "ssh", "hosts": len(lines)})
 
 
+def json_lines(out):
+    """Each line's JSON object, or a whole JSON array's items (tools print either)."""
+    out = (out or "").strip()
+    if out.startswith("["):
+        try:
+            return [x for x in json.loads(out) if isinstance(x, dict)]
+        except ValueError:
+            return []
+    found = []
+    for l in out.splitlines():
+        try:
+            x = json.loads(l)
+        except ValueError:
+            continue
+        if isinstance(x, dict):
+            found.append(x)
+    return found
+
+
+def gb(n):
+    try:
+        return round(float(n) / 2**30)
+    except (TypeError, ValueError):
+        return None
+
+
 def vms(w, v):
-    vms = []  # what each is, not whether it's running
+    vms = []  # what each is, not whether it's running: that changes all day and would make a new version each time
     prl = run(["prlctl", "list", "-a", "-o", "name"]) or run(["/usr/local/bin/prlctl", "list", "-a", "-o", "name"])
     vms += [f"Parallels: {l.strip()}" for l in (prl or "").splitlines()[1:] if l.strip()]
-    col = run(["colima", "list", "--json"])
-    for l in (col or "").splitlines():
+    for c in json_lines(run(["colima", "list", "--json"])):
+        vms.append(f"colima: {c.get('name')} ({c.get('cpus')} CPUs, {gb(c.get('memory') or 0)} GB)")
+    for c in json_lines(run(["limactl", "list", "--json"])):  # colima's own VMs live in another Lima home, so not twice
+        facts = [x for x in (c.get("vmType"), c.get("arch"), c.get("cpus") and f"{c['cpus']} CPUs", gb(c.get("memory")) and f"{gb(c['memory'])} GB") if x]
+        vms.append(f"Lima: {c.get('name')}" + (f" ({', '.join(facts)})" if facts else ""))
+    for c in json_lines(run(["orbctl", "list", "--format", "json"])):
+        image = c.get("image") if isinstance(c.get("image"), dict) else {}
+        what = " ".join(str(x) for x in (image.get("distro"), image.get("version")) if x)
+        vms.append(f"OrbStack: {c.get('name')}" + (f" ({what})" if what else ""))
+    vbox = run(["VBoxManage", "list", "vms"]) or run(["/usr/local/bin/VBoxManage", "list", "vms"])
+    vms += [f"VirtualBox: {m.group(1)}" for m in re.finditer(r'^"(.*)" \{[0-9a-f-]+\}$', vbox or "", re.M)]
+    for c in json_lines(run(["tart", "list", "--format", "json"])):
+        vms.append(f"tart: {c.get('Name')}" + (f" ({c['Source']})" if c.get("Source") else ""))
+    mp = run(["multipass", "list", "--format", "json"])
+    try:
+        for c in (json.loads(mp).get("list") or []) if mp else []:
+            vms.append(f"multipass: {c.get('name')}" + (f" ({c['release']})" if c.get("release") else ""))
+    except (ValueError, AttributeError, TypeError):
+        pass
+    for d in ("Virtual Machines.localized", "Virtual Machines"):  # VMware Fusion's folder
         try:
-            c = json.loads(l)
-            vms.append(f"colima: {c.get('name')} ({c.get('cpus')} CPUs, {round((c.get('memory') or 0) / 2**30)} GB)")
-        except (ValueError, AttributeError, TypeError):
+            vms += [f"VMware Fusion: {p.stem}" for p in sorted((HOME / d).glob("*.vmwarevm"))]
+        except OSError:
             pass
     utm = LIB / "Containers/com.utmapp.UTM/Data/Documents"
     try:
@@ -584,7 +629,33 @@ def vms(w, v):
     except OSError:  # a container the Mac won't let us read
         pass
     if vms:
-        v.add(w, "machines:vms", "inventory", f"{len(vms)} virtual machines", "\n".join(vms), None, {"group": "machines", "tool": "VMs"})
+        v.add(w, "machines:vms", "inventory", f"{len(vms)} virtual machine" + ("" if len(vms) == 1 else "s"), "\n".join(vms), None, {"group": "machines", "tool": "VMs"})
+    docker(w, v)
+
+
+def docker_host():
+    """The Docker to ask, only when it's on this Mac (a unix socket). DOCKER_HOST or a context can point at another
+    machine (ssh://, tcp://), and asking that one would reach it over the network."""
+    host = os.environ.get("DOCKER_HOST") or (run(["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]) or "").strip()
+    return host if host.startswith("unix://") else None
+
+
+def docker(w, v):
+    """Your containers and images: what they are, not whether they're up (no status, ports or sizes). Docker that isn't
+    running answers nothing, and asking doesn't start it."""
+    if not shutil.which("docker") or not (host := docker_host()):
+        return
+    ps = run(["docker", "-H", host, "ps", "-a", "--format", '{{.Names}}\t{{.Image}}\t{{.Label "com.docker.compose.project"}}'])
+    rows = sorted(tuple((l.split("\t") + ["", ""])[:3]) for l in (ps or "").splitlines() if l.strip())
+    if rows:
+        text = "\n".join(f"{name}: {image}" + (f" (compose: {project})" if project else "") for name, image, project in rows)
+        v.add(w, "machines:docker:containers", "inventory", f"Docker: {len(rows)} container" + ("" if len(rows) == 1 else "s"), text, None,
+              {"group": "machines", "tool": "Docker", "containers": len(rows)})
+    images = run(["docker", "-H", host, "images", "--format", "{{.Repository}}:{{.Tag}}"])
+    names = sorted({l.strip() for l in (images or "").splitlines() if l.strip() and "<none>" not in l})
+    if names:
+        v.add(w, "machines:docker:images", "inventory", f"Docker: {len(names)} image" + ("" if len(names) == 1 else "s"), "\n".join(names), None,
+              {"group": "machines", "tool": "Docker", "images": len(names)})
 
 
 # ---------------------------------------------------------------- devices: phones, Bluetooth, displays, USB
