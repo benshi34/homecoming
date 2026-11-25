@@ -810,7 +810,8 @@ def scripts(w, v):
 # ---------------------------------------------------------------- machines
 
 def tailscale(w, v):
-    d = tailscale_status()
+    # UMP_SETUP_SYSTEM=0 (the app's end-to-end tests, test-python): only what's under HOME, so not this Mac's Tailscale.
+    d = tailscale_status() if os.environ.get("UMP_SETUP_SYSTEM") != "0" else None
     if d:
         try:
             peers = tailscale_devices(d)
