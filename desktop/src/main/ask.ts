@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { addEvent, answerOf, explainError, followupPrompt, isLocalAddress, PROVIDER, streams, titleOf, type AskConversation, type AskEvent, type AskProvider,
+import { addEvent, answerOf, explainError, followupPrompt, isLocalAddress, needText, PROVIDER, streams, titleOf, type AskConversation, type AskEvent, type AskProvider,
   type AskSettings, type AskSummary, type AskTurn, type LocalStatus, type SignIn } from '../shared/ask.ts';
 import { lineSplitter } from './bridge.ts';
 import { NO_HOOKS, runDir, runRoot } from './run_dirs.ts';
@@ -27,6 +27,7 @@ export interface AskHost {
   paths: Paths;
   dir: string; // where conversations and keys live (the app's user data)
   settings(): AskSettings;
+  offline?(): boolean;
   name(): string | null; // the person's name, for the instructions
   send(channel: string, payload: unknown): void;
   log(line: string): void;
@@ -105,6 +106,7 @@ export class Ask {
   private host: AskHost;
   private defs: ToolDef[] | null = null;
   private running = new Map<string, AbortController>();
+  private cloud = new Set<AbortController>();
 
   constructor(host: AskHost) {
     this.host = host;
@@ -189,7 +191,7 @@ export class Ask {
     for (const w of this.all) w.kill();
     this.all.clear();
     this.idle = [];
-    for (const c of this.running.values()) c.abort();
+    this.stopAll();
   }
 
   // A tool input that doesn't fit the tool's schema (a truncated or garbled call) is answered with an error, not run.
@@ -290,23 +292,36 @@ export class Ask {
     for (const c of this.completing) c.abort();
   }
 
+  // The provider is captured when a run starts: choosing a local model later doesn't make a cloud run local.
+  stopCloud() {
+    for (const c of this.cloud) c.abort('Stopped: the internet was turned off.');
+  }
+
+  private controller(s: AskSettings): AbortController {
+    const cloud = PROVIDER[s.provider].cloud || !isLocalAddress(s.localUrl);
+    if (cloud && this.host.offline?.()) throw new Error(needText({ kind: 'offline' }));
+    const ctl = new AbortController();
+    if (cloud) this.cloud.add(ctl);
+    return ctl;
+  }
+
   stop(id: string) {
     this.running.get(id)?.abort();
   }
 
   // Starts an answer; events stream to the window as "ask-event", and "ask-done" when it's over.
   ask(id: string | null, question: string): { id: string } {
-    const s = this.host.settings();
+    const s = structuredClone(this.host.settings());
     const now = new Date().toISOString();
     const conv = (id && this.get(id)) || { id: id ?? crypto.randomUUID(), title: titleOf(question), createdAt: now, updatedAt: now, turns: [] };
     if (this.running.has(conv.id)) throw new Error('Still answering the last question.');
+    const ctl = this.controller(s);
     const model = s.models[s.provider] || PROVIDER[s.provider].models[0] || '';
     const turn: AskTurn = { question, provider: s.provider, model, startedAt: now, events: [], answer: '' };
     const history = conv.turns.slice();
     conv.turns.push(turn);
     conv.updatedAt = now;
     this.save(conv);
-    const ctl = new AbortController();
     this.running.set(conv.id, ctl);
     // An answer has ten minutes: past that it's stopped, and says so (an agent stuck retrying would otherwise go on).
     let tooLong = false;
@@ -360,6 +375,7 @@ export class Ask {
         addEvent(turn, { t: 'notice', text: 'Answered without looking anything up in your library, so it may not be from your data. Try Again, or ask it to look.' });
       }
       this.running.delete(conv.id);
+      this.cloud.delete(ctl);
       conv.updatedAt = turn.endedAt;
       this.save(conv);
       this.host.send('ask-done', { id: conv.id, turn: index, conversation: conv });
@@ -385,9 +401,9 @@ export class Ask {
   // Text in, text out, with the agent, sign-in and model Ask uses, and none of its tools: for making sense of a
   // download. Errors come back in plain words (Error.message), with the agent's own under detail.
   async complete(prompt: string, timeoutMs = 300_000): Promise<string> {
-    const s = this.host.settings();
+    const s = structuredClone(this.host.settings());
     const model = s.models[s.provider] || PROVIDER[s.provider].models[0] || '';
-    const ctl = new AbortController();
+    const ctl = this.controller(s);
     let late = false;
     const timer = setTimeout(() => {
       late = true;
@@ -405,9 +421,10 @@ export class Ask {
     } finally {
       clearTimeout(timer);
       this.completing.delete(ctl);
+      this.cloud.delete(ctl);
     }
     if (late) throw new Error(`${PROVIDER[s.provider].name} took longer than ${Math.round(timeoutMs / 60_000)} minutes, so it was stopped.`);
-    if (ctl.signal.aborted) throw new Error('Stopped: AI was turned off.');
+    if (ctl.signal.aborted) throw new Error(typeof ctl.signal.reason === 'string' ? ctl.signal.reason : 'Stopped: AI was turned off.');
     const text = turn.answer || answerOf(turn.events);
     if (!text.trim()) throw new Error(`${PROVIDER[s.provider].name} didn't reply.`);
     return text;
