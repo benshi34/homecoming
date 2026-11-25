@@ -32,6 +32,7 @@ function settingsCallback(paths: Pick<Paths, 'corpus'>, queue: JobQueue) {
     fs, path, P: paths, networkFile, store, READONLY: false, DEMO: false, queue,
     ipcMain: { handle(_channel: string, fn: typeof settings) { settings = fn; } },
     setupChanged() {}, stopAgents() {}, visiting: null, push() {}, maybeAutoRefresh() {},
+    ask: { stopCloud() {}, stopAll() {} }, signInProcs: new Map(), pumpAgents() {}, // what going offline also stops (network-switch)
     settingsView: () => store.state.settings,
   });
   return settings;
