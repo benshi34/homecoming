@@ -558,6 +558,7 @@ export const MAC_CONNECTORS = CATALOG.filter((s) => s.group === 'mac').map((s) =
 // error belongs to one of these, not to whichever export happened to trigger the run.
 export const IMPORT_PARSER_SOURCES: Record<string, string[]> = {
   ai_exports: ['chatgpt', 'claude_ai'],
+  ai_studio: ['google_photos_drive'],  // Google AI Studio's folder in Drive, as Takeout exports it
   google: ['google_takeout', 'other_mail', 'iphone_vcard', 'maps_timeline'],
   youtube: ['google_takeout'],
   google_chat: ['google_takeout'],
