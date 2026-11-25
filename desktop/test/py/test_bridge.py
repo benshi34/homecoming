@@ -26,7 +26,9 @@ REAL_IMPORTS = REPO / "corpus" / "imports"
 
 def bridge(args, home, corpus, stdin=None, extra_env=None):
     env = {k: v for k, v in os.environ.items() if k not in ("CORPUS_DIR", "UMP_EXTRA_PYPATH", "UMP_IPHONE_MODULE", "IPHONE_BACKUP_PASSWORD")}
-    env.update(HOME=str(home), CORPUS_DIR=str(corpus), UMP_REPO=str(REPO), PYTHONDONTWRITEBYTECODE="1", **(extra_env or {}))
+    # UMP_VOLUMES: no drives unless a test plugs one in (the Mac running the tests may have one)
+    env.update(HOME=str(home), CORPUS_DIR=str(corpus), UMP_REPO=str(REPO), PYTHONDONTWRITEBYTECODE="1",
+               UMP_VOLUMES=str(Path(home) / "Volumes"), **(extra_env or {}))
     return subprocess.run([sys.executable, str(BRIDGE), *args], input=stdin, capture_output=True, text=True, env=env, timeout=300)
 
 
@@ -68,6 +70,11 @@ class Sandbox(unittest.TestCase):
 
 
 class ProbeTests(Sandbox):
+    def test_photos_on_drives_are_there_only_with_a_drive_plugged_in(self):
+        self.assertEqual(self.probe()["sources"]["drive_photos"], "absent", "no drive, though /Volumes is on every Mac")
+        (self.home / "Volumes/Camera Card").mkdir(parents=True)
+        self.assertEqual(self.probe()["sources"]["drive_photos"], "ok")
+
     def test_empty_home(self):
         p = self.probe()
         self.assertIsNone(p["fda"])

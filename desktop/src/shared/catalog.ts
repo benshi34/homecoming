@@ -201,6 +201,8 @@ export const CATALOG: Source[] = [
     knownGaps: ['Only what the Zotero app on this Mac has. A library kept only on zotero.org comes in once the app has synced it here.'] },
   { id: 'documents', name: 'Documents', group: 'mac', connector: 'documents', produces: ['documents'],
     blurb: 'Text from documents and spreadsheets in Documents, Desktop, Downloads, iCloud Drive and your cloud drives (OneDrive, Google Drive, Dropbox, Box), and your Obsidian notes. Files only in the cloud are listed, not downloaded.' },
+  { id: 'drive_photos', name: 'Photos on external drives', group: 'mac', connector: 'drive_photos', produces: ['drive_photos'],
+    blurb: 'Dates, places, cameras and sizes for loose photos and videos on the external drives you plug in. No pixels are copied.' },
   { id: 'git_commits', name: 'Git commits', group: 'mac', connector: 'git_commits', produces: ['git_commits'],
     blurb: 'Your commits across every repository under Documents, Desktop and your code folders (Developer, Code, Projects...).' },
 

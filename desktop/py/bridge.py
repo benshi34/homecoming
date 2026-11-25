@@ -59,6 +59,17 @@ BACKUPS = LIB / "Application Support/MobileSync/Backup"
 KEYCHAIN_ITEM = "q1_user_model iPhone backup"
 SF_DATALESS = 0x40000000  # st_flags bit for iCloud files that are only in the cloud
 
+
+def plugged_in():
+    """The volumes mounted beside the startup disk (UMP_VOLUMES: a folder of their own, in tests). /Volumes itself is
+    there on every Mac, so it can't say a drive is plugged in."""
+    root = Path(os.environ.get("UMP_VOLUMES") or "/Volumes")
+    try:
+        return [p for p in sorted(root.iterdir()) if os.path.realpath(p) != "/"]
+    except OSError:
+        return []
+
+
 # Where each Mac connector reads from. A source is present if any path is readable.
 MAC_PATHS = {
     "contacts": [LIB / "Application Support/AddressBook"],
@@ -80,6 +91,7 @@ MAC_PATHS = {
     "podcasts": [LIB / "Group Containers/243LU875E5.groups.com.apple.podcasts/Documents/MTLibrary.sqlite"],
     "books": [LIB / "Containers/com.apple.iBooksX/Data/Documents/BKLibrary", LIB / "Containers/com.apple.iBooksX/Data/Documents/AEAnnotation"],
     "photos": [p / "database/Photos.sqlite" for p in photos_libraries(HOME)],
+    "drive_photos": plugged_in(),
     "apple_maps": [LIB / "Containers/com.apple.Maps/Data/Maps/MapsSync_0.0.1"],
     "voice_memos": [LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"],
     "notion_local": [LIB / "Application Support/Notion/notion.db"],
