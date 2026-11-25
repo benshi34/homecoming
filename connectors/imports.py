@@ -22,6 +22,7 @@ Formats are auto-detected from file names / columns, so exports can be dropped i
     Spotify ......... Streaming_History_*.json (endsong_*.json) / StreamingHistory*.json, Playlist*.json, YourLibrary.json,
                       SearchQueries.json, Inferences.json, Marquee.json -> spotify
     WhatsApp ........ exported chat .txt (iPhone or Android, any language), with its media -> whatsapp_export
+    Tumblr .......... Blog settings > Export (posts.zip with posts_index.html and html/<post id>.html, plus media/) -> tumblr
     Slack ........... users.json / org_users.json, channels.json, groups.json, dms.json, mpims.json +
                       <conversation>/<YYYY-MM-DD>.json; one member's export as channels/*.txt, dms/*.txt -> slack
     Mail ............ outside Takeout, .mbox (Mail.app's <Folder>.mbox/mbox; Thunderbird's without an extension), .eml,
@@ -100,6 +101,7 @@ AV = {
     "reddit": f"reddit.com/settings/data-request (emailed, ~days). {DROP}",
     "spotify": f"Spotify account > Privacy settings > Download your data: Account data (playlists, library, searches, ~5 days) and Extended streaming history (every play, ~days-30 days), which arrive separately. {DROP}",
     "whatsapp_export": f"WhatsApp on phone > chat > Export chat (without media), per chat. History retained on the phone comes from connectors/iphone.py via iLEAPP (phone_whatsapp). {DROP}",
+    "tumblr": f"Tumblr > Settings > blog > Export. {DROP}",
     "slack": f"Slack workspace export (admin) or slackdump. {DROP}",
     "zoom": f"Zoom web > Recordings > Cloud recordings > download transcript (.vtt). {DROP}",
     "notion_export": f"Notion > Settings > General > Export all workspace content (Markdown & CSV, include subpages). {DROP}",
@@ -3691,6 +3693,88 @@ def zoom(es, W, used):
                       thread="zoom", thread_name="Zoom transcripts", meta={"file": e.path})
 
 
+TUMBLR_PART = re.compile(r"(?:^|.*?/)(?:posts\.zip/)?(?:html/(\d+)\.html|posts_index\.html|style\.css|media/(\d+)_\d+\.\w+)$")
+
+
+def tumblr_text(fragment):
+    """A piece of a post page as text: a paragraph, block or <br> a line, markup gone, entities decoded."""
+    s = re.sub(r"(?i)<br\s*/?>|</(?:p|div|h\d|li|blockquote|figure|pre)>", "\n", fragment)
+    lines = (re.sub(r"[ \t\xa0]+", " ", x).strip() for x in html.unescape(re.sub(r"<[^>]+>", "", s)).splitlines())
+    return "\n".join(x for x in lines if x)
+
+
+def tumblr_time(when):
+    """ "November 11, 2026 8:46pm", on the clock of the account's time zone setting, which the export doesn't carry.
+    Tumblr's default is US Eastern, and a post made at 1:42am in California prints as 4:42am, so Eastern it is."""
+    try:
+        return iso(datetime.strptime(when, "%B %d, %Y %I:%M%p").replace(tzinfo=ZoneInfo("America/New_York")))
+    except ValueError:
+        return None
+
+
+def tumblr_page(src):
+    """One post page. Tumblr writes them all from one template: an optional <h1>, for a reblog a "<blog>:" line and
+    a blockquote holding what was reblogged (earlier reblogs nested inside it), the owner's own words, then a footer
+    with the time and tags."""
+    body = re.search(r"(?is)<body[^>]*>(.*)</body>", src)
+    body, _, footer = (body.group(1) if body else src).partition('<div id="footer">')
+    h1 = re.search(r"(?is)<h1[^>]*>(.*?)</h1>", body)
+    via = re.search(r'(?is)<p>\s*(<a\b[^>]*\bclass="tumblr_blog"[^>]*>)(.*?)</a>:?\s*</p>', body)  # href before or after class
+    quote = re.search(r"(?is)<blockquote[^>]*>(.*)</blockquote>", body) if via else None
+    for m in (h1, via, quote):
+        body = body.replace(m.group(0), "", 1) if m else body
+    stamp = re.search(r'(?is)<span id="timestamp">(.*?)</span>', footer)
+    when = re.sub(r"(?<=\d)(?:st|nd|rd|th)\b", "", tumblr_text(stamp.group(1)) if stamp else "")
+    return {"title": tumblr_text(h1.group(1)) if h1 else "", "own": tumblr_text(body),
+            "quote": tumblr_text(quote.group(1)) if quote else "",
+            "via": via and {"blog": tumblr_text(via.group(2)),
+                            "url": html.unescape((re.search(r'href="([^"]*)"', via.group(1)) or [None, ""])[1])},
+            "ts": tumblr_time(when),
+            "tags": [x for x in (tumblr_text(m) for m in re.findall(r'(?is)<span class="tag">(.*?)</span>', footer)) if x]}
+
+
+def tumblr(es, W, used):
+    """Tumblr's blog backup (blog settings > Export): posts.zip with a page per post, and media/<post id>_<n>.<ext>
+    beside it. A post is one record with its time, tags, what it reblogged and its pictures, which are the post's
+    rather than loose files. The export is known by its shape (posts_index.html beside html/<digits>.html), since its
+    zip is named by a hash."""
+    groups = collections.defaultdict(list)
+    for e in es:
+        if TUMBLR_PART.match(e.path):
+            groups[(e.origin, re.sub(r"(?:posts\.zip/)?(?:html/[^/]+|[^/]+)$|media/[^/]+$", "", e.path))].append(e)
+    for (origin, _), group in groups.items():
+        if not any(e.name == "posts_index.html" for e in group):
+            continue
+        blog = next((m.group(1) for m in (re.search(r"([\w-]+)\.tumblr\.com", f"{origin}/{e.path}") for e in group) if m), None)
+        media = collections.defaultdict(list)
+        for e in group:
+            m = TUMBLR_PART.match(e.path)
+            if m.group(2):
+                media[m.group(2)].append(e)
+            elif not m.group(1):
+                used.add(e.path)  # the index and the stylesheet: nothing of the owner's in them
+        for e in group:
+            pid = TUMBLR_PART.match(e.path).group(1)
+            if not pid:
+                continue
+            used.add(e.path)
+            try:
+                p = tumblr_page(e.text())
+            except Exception as x:  # noqa: BLE001 - one damaged page doesn't lose the rest
+                unreadable(e, x, used)
+                continue
+            files = []
+            for f in sorted(media.get(pid, []), key=lambda f: f.name):
+                used.add(f.path)
+                if saved := save_media(f, MEDIA / "tumblr" / pid / f.name, p["ts"]):
+                    files.append(saved)
+            text = "\n".join(x for x in (p["own"], p["via"] and f"Reblogged from {p['via']['blog']}:", p["quote"]) if x)
+            W("tumblr").add(id=pid, kind="post", ts=p["ts"], author="me", is_me=True,
+                            title=p["title"] or (p["own"] or p["quote"]).split("\n", 1)[0][:300] or None, text=text,
+                            url=f"https://{blog}.tumblr.com/post/{pid}" if blog else None,
+                            meta={k: v for k, v in (("tags", p["tags"]), ("reblogged_from", p["via"]), ("files", files)) if v})
+
+
 NOTION_EXPORT = re.compile(r"Export-[0-9a-f]{8}-[0-9a-f-]{27}")
 NOTION_ID = re.compile(r" ([0-9a-f]{32})(?:_all)?\.(md|csv|html)$")
 NOTION_HTML_TIME = r'property-row-{}(?:(?!</tr>).)*?<time>([^<]+)</time>'  # a property's time in a page of the HTML export
@@ -4436,7 +4520,7 @@ def other_files(es, W, used):
 
 
 PARSERS = [ai_exports, google, youtube, google_chat, discord, meta, x_archive, csv_exports, spotify, whatsapp, slack, zoom,
-           notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
+           tumblr, notion_export, mapped_exports, fitbit_days, other_documents, other_data, other_files]
 
 
 def main():

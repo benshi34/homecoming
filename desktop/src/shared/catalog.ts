@@ -572,6 +572,8 @@ export const IMPORT_PARSER_SOURCES: Record<string, string[]> = {
   // Exports read with a mapping Claude wrote (connectors/mapped_exports.py): services you added. main.ts adds
   // those, and adds them to the catch-alls below, when it attributes an import's errors.
   mapped_exports: [],
+  // Tumblr's blog backup: not a service in the catalog, so it comes in as one you added (main.ts adds those).
+  tumblr: [],
   // Fitbit's series by the minute, a record a day: in Takeout, or in a Fitbit download you added (main.ts adds those).
   fitbit_days: ['google_takeout'],
   // Catch-alls: structured files and media in any export that no parser above read (imports.py).

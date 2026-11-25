@@ -154,7 +154,7 @@ queue.onChange((progress) => {
 queue.onLine((job, line) => log(line));
 queue.onFinish(({ job, result, cancelled }) => {
   const mine = CATALOG.filter((s) => s.custom).map((s) => s.id);  // services you added are read by these too
-  const parsers = { ...IMPORT_PARSER_SOURCES, mapped_exports: mine, fitbit_days: [...IMPORT_PARSER_SOURCES.fitbit_days, ...mine],
+  const parsers = { ...IMPORT_PARSER_SOURCES, mapped_exports: mine, tumblr: mine, fitbit_days: [...IMPORT_PARSER_SOURCES.fitbit_days, ...mine],
     other_data: [...IMPORT_PARSER_SOURCES.other_data, ...mine], other_files: [...IMPORT_PARSER_SOURCES.other_files, ...mine],
     other_documents: [...IMPORT_PARSER_SOURCES.other_documents, ...mine] };
   const errs = cancelled ? {} : errorsBySource(job, result, CONNECTOR_TO_SOURCE, parsers, (id) => !!store.state.sources[id]?.lastFileAt);
