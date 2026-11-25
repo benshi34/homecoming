@@ -17,7 +17,7 @@ type Mode = 'years' | 'recent' | 'random';
 const GLYPH: Record<string, string> = {
   message: 'bubble', email: 'envelope', call: 'phone', photo: 'photo', video: 'video', visit: 'globe', search: 'search', media: 'play',
   song: 'music', listen: 'music', note: 'note', event: 'calendar', commit: 'branch', document: 'doc', ai_turn: 'sparkle', app_usage: 'hourglass',
-  health_day: 'heart', transaction: 'card', voice_memo: 'wave', reminder: 'checklist', post: 'bubbles', comment: 'bubbles', reaction: 'heart',
+  health_day: 'heart', transaction: 'card', voice_memo: 'wave', edit: 'doc', reminder: 'checklist', post: 'bubbles', comment: 'bubbles', reaction: 'heart',
   file_edit: 'doc', command: 'terminal', trip: 'airplane', activity: 'compass', follow: 'person', like: 'heart',
 };
 

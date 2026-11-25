@@ -82,6 +82,118 @@ class Base(unittest.TestCase):
         return {x for g in self.manifest.get("_imports_unclaimed", []) for x in g["examples"]}
 
 
+# ---------------------------------------------------------------- Google AI Studio and small Takeout gaps
+
+class AIStudioTests(Base):
+    def test_ai_studio_chats_builds_applets_and_attachments(self):
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            z.writestr("metadata.json", json.dumps({"name": "Tide app", "description": "A small tide dashboard."}))
+            z.writestr("index.tsx", "export default function App() { return null }")
+            z.writestr("README.md", "Tide dashboard")
+        odd = json.dumps([{"id": "m1", "author": "user", "payload": {"type": "text", "text": "decoded prompt"}},
+                          {"id": "m2", "author": "model", "payload": {"type": "text", "text": "decoded answer"}}])
+        self.zip("ai-studio.zip", {
+            TK + "Drive/Google AI Studio/First chat": {
+                "runSettings": {"model": "models.gemini-test", "temperature": 0.2},
+                "systemInstruction": {"parts": [{"text": "Use short answers."}]},
+                "citations": [{"uri": "https://example.test/source"}],
+                "chunkedPrompt": {"chunks": [
+                    {"role": "user", "text": "show the tide", "driveImage": {"name": "diagram.png"}},
+                    {"role": "model", "text": "private thought", "isThought": True},
+                    {"role": "model", "text": "Here is the tide."},
+                ]},
+            },
+            TK + "Drive/Google AI Studio/Second chat": {"chunkedPrompt": {"chunks": [{"role": "user", "text": odd}]}},
+            TK + "Drive/Google AI Studio/applet_access_history.json": {
+                "applets": [{"id": "app-1", "name": "Canvas", "firstAccessTime": "2026-10-01T10:00:00Z",
+                              "lastAccessTime": "2026-10-02T11:00:00Z"}]},
+            TK + "Drive/Google AI Studio/diagram.png": b"fake image",
+            TK + "Drive/Google AI Studio/notes.pdf": b"%PDF-1.4 fake attachment",
+            TK + "Drive/Google AI Studio/Build.zip": inner.getvalue(),
+        })
+        self.run_import()
+        turns = self.of("ai_studio", "ai_turn")
+        self.assertEqual(len(turns), 4)
+        first = next(r for r in turns if r["thread_name"] == "First chat" and r["is_me"])
+        self.assertIn("show the tide", first["text"])
+        self.assertEqual(first["meta"]["model"], "models.gemini-test")
+        self.assertEqual(first["meta"]["system_instruction"], "Use short answers.")
+        self.assertEqual(first["meta"]["citations"][0]["uri"], "https://example.test/source")
+        self.assertTrue(first["meta"]["attachments"][0]["path"].endswith("diagram.png"))
+        self.assertFalse(any("private thought" in r["text"] for r in turns))
+        self.assertTrue(any("decoded prompt" in r["text"] and r["is_me"] for r in turns))
+        [project] = self.of("ai_studio", "project")
+        self.assertEqual((project["title"], project["meta"]["build"]), ("Tide app", True))
+        self.assertEqual(len(self.of("ai_studio", "activity")), 1)
+        self.assertTrue(any(r["title"] == "notes.pdf" for r in self.of("imported_documents")))
+        self.assertEqual(self.unclaimed(), set())
+
+    def test_a_build_app_saved_without_zip_on_its_name(self):
+        # How real Takeouts carry a Build app: a zip named for the app, no extension, beside the chats
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            z.writestr("metadata.json", json.dumps({"name": "Tide app", "description": "A small tide dashboard."}))
+            z.writestr("index.tsx", "export default function App() { return null }")
+        self.zip("ai-studio.zip", {TK + "Drive/Google AI Studio/Tide Dashboard": inner.getvalue()})
+        self.run_import()
+        [project] = self.of("ai_studio", "project")
+        self.assertEqual(project["title"], "Tide app")
+        self.assertIn("index.tsx", project["text"])
+        self.assertEqual(self.unclaimed(), set())
+
+    def test_a_build_mode_chat_with_a_title_cut_short(self):
+        # Google cuts a long title to end in ".._"; Build-mode chats are one chunk holding the messages as a JSON string
+        msgs = [{"id": "1", "author": "user", "payload": {"type": "text", "text": "make a tide app"},
+                 "createdTimestamp": {"seconds": 1767225600}},
+                {"id": "2", "author": "model", "payload": {"type": "thinking", "text": "weighing layouts"},
+                 "createdTimestamp": {"seconds": 1767225601}},
+                {"id": "3", "author": "model", "payload": {"type": "text", "text": "Here is a tide app."},
+                 "createdTimestamp": {"seconds": 1767225660}}]
+        self.zip("ai-studio.zip", {TK + "Drive/Google AI Studio/make a tide app that shows the next high tide for a.._":
+                                   {"chunkedPrompt": {"chunks": [{"role": "user", "text": json.dumps(msgs)}]}}})
+        self.run_import()
+        turns = sorted(self.of("ai_studio", "ai_turn"), key=lambda r: r["ts"])
+        self.assertEqual([r["text"] for r in turns], ["make a tide app", "Here is a tide app."])
+        self.assertTrue(turns[0]["ts"].startswith("2026-01-01T00:00:00"))
+        self.assertEqual(self.unclaimed(), set())
+
+    def test_drive_notebooks_without_ipynb_spreadsheets_and_empty_files(self):
+        nb = {"nbformat": 4, "nbformat_minor": 0, "metadata": {}, "cells": [{"cell_type": "code", "source": ["import tides\n"]}]}
+        sheet = io.BytesIO()
+        with zipfile.ZipFile(sheet, "w") as z:
+            z.writestr("[Content_Types].xml", "<Types/>")
+            z.writestr("xl/workbook.xml", '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="Budget" sheetId="1"/></sheets></workbook>')
+            z.writestr("xl/sharedStrings.xml", '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Rent</t></si></sst>')
+            z.writestr("xl/worksheets/sheet1.xml", '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>')
+        self.files({"Drive/Colab Notebooks/Tide model": nb, "Drive/Budget.xlsx": sheet.getvalue(), "Chrome/Dictionary.csv": b""})
+        self.run_import()
+        docs = {r["title"]: r for r in self.of("imported_documents")}
+        self.assertIn("import tides", docs["Tide model"]["text"])
+        self.assertIn("Budget", docs)
+        self.assertEqual(self.unclaimed(), set())
+
+    def test_small_takeout_leftovers_are_claimed_or_documents(self):
+        self.files({
+            "My Activity/Gemini Apps/reference.pdf": b"%PDF-1.4 Gemini attachment",
+            "Google Wallet/Boarding passes, event tickets and other passes/boarding.pdf": b"%PDF-1.4 boarding pass",
+            "Chrome/Dictionary.csv": "tide\nmodel\n",
+            "Chrome/Device Information.json": {"device": "made-up tablet"},
+            "Google Account/2026.ChangeHistory.html": "<html>change history</html>",
+            "Google Account/2026.SubscriberInfo.html": "<html>subscriber info</html>",
+            "News/empty.txt": b"",
+            "Gemini/empty.html": "<html></html>",
+            "Maps/Requests for services/request.json": "{}",
+            "Home App/SecurityAlarmClips.json": "{}",
+            "Google Workspace Marketplace/README": "",
+        })
+        self.run_import()
+        self.assertEqual(self.unclaimed(), set())
+        titles = {r["title"] for r in self.of("imported_documents")}
+        self.assertTrue({"reference", "boarding", "2026.ChangeHistory", "2026.SubscriberInfo"} <= titles)
+        self.assertTrue(any("Dictionary.csv" in r["meta"]["file"] for r in self.of("takeout_other")))
+
+
 # ---------------------------------------------------------------- Mail
 
 def takeout_sep(n, when="Sat Jan 13 18:57:09 +0000 2024"):
