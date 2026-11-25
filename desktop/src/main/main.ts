@@ -21,7 +21,7 @@ import { identityKeys, setPhoneRegion } from '../shared/identity.ts';
 import { inboxesFor, inboxUrl } from '../shared/inbox.ts';
 import { agentBrowser, agentProvider, agentReady, claudeInboxes, macDefault, pageBrowser, setupEnv, type AgentReady } from '../shared/setup.ts';
 import { buildNote, compareVersions, parseChangelog, type Release, whatsNewSince } from '../shared/version.ts';
-import { INTERNET_OFF, networkFile } from '../shared/network.ts';
+import { INTERNET_OFF, networkFile, networkOff } from '../shared/network.ts';
 import type { AgentMode, AgentState, AppState, BuildInfo, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MachineAccess, MachineView, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats, UpdateView } from '../shared/types.ts';
 import { agentLink } from '../shared/agent_link.ts';
 import { agentProfile, Ask, findClaude, findCodex, addShellPath } from './ask.ts';
@@ -953,7 +953,7 @@ function maybeAutoRefresh() {
   const now = Date.now();
   const due = CATALOG.filter((s) => s.group === 'mac').filter((s) => {
     const st = store.state.sources[s.id];
-    if (st?.skipped || probe!.sources[s.connector!] !== 'ok' || noMailAccounts(s, probe)) return false;
+    if (st?.skipped || probe!.sources[s.connector!] !== 'ok' || noMailAccounts(s, probe) || networkOff(s.id, store.state.settings)) return false;
     const t = totals(s.produces ?? [], undefined, stats);
     // Failed since it last read: tried again every few hours, not in a loop (it says why on its page meanwhile).
     if (st?.lastErrorAt && later(st.lastErrorAt, t.ranAt) && now - Date.parse(st.lastErrorAt) < RETRY_FAILED) return false;
