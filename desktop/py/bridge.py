@@ -1780,11 +1780,15 @@ def materialize(root, timeout=None):
     pending = cloud_only(root)
     if not pending:
         return []
-    print(f"[imports] {len(pending)} export files are only in iCloud; downloading them first")
+    print(f"[imports] {len(pending)} export files are only in iCloud; checking Network permission")
+    # iCloud may fetch these exports from Apple's servers. Keep the operation behind its own Network permission
+    # and the global switch, and check again between files in case either is turned off during a large import.
     for p in pending:
+        if not common.online("icloud-exports"):
+            break
         subprocess.run(["brctl", "download", p], capture_output=True)
     end, shown = time.time() + timeout, None
-    while pending and time.time() < end:
+    while common.online("icloud-exports") and pending and time.time() < end:
         time.sleep(2)
         pending = [p for p in pending if os.path.exists(p) and os.lstat(p).st_flags & SF_DATALESS]
         if len(pending) != shown:
@@ -1803,8 +1807,9 @@ def resilient_imports(real):
     stuck = materialize(im.IMPORTS)
     if stuck:
         names = ", ".join(os.path.relpath(p, im.IMPORTS) for p in stuck[:5]) + (" …" if len(stuck) > 5 else "")
-        raise RuntimeError(f"{len(stuck)} export files are still only in iCloud ({names}). In Finder, right-click "
-                           f"corpus/imports and choose Download Now (or keep the corpus out of iCloud), then import again.")
+        raise RuntimeError(f"{len(stuck)} export files aren't on this Mac yet ({names}). Turn on Use the internet and "
+                           f"allow iCloud exports in Settings > General > Network to download them, or in Finder, "
+                           f"right-click corpus/imports and choose Download Now, then import again.")
     es = im.entries()
     if not es:
         print(f"[imports] nothing in {im.IMPORTS}")
@@ -1882,6 +1887,28 @@ def run_connectors(names, index=True, argv_for=None):
                 real.write(json.dumps({"type": "error", "connector": name, "error": msg[:1000]}) + "\n")
             if isinstance(e, KeyboardInterrupt):
                 break
+        real.flush()
+    # Transcribe audio on this Mac (UMP_TRANSCRIBE): after the readers whose audio Apple left without words, what's new
+    # is heard, and those readers read again to take it (transcribe.py; the iPhone's voicemail waits for its next read)
+    heard_in = [n for n in ("voice_memos", "imessage") if n in names and n not in failed]
+    if os.environ.get("UMP_TRANSCRIBE") == "1" and heard_in:
+        current[0], t = "transcribe", time.time()
+        real.write(json.dumps({"type": "start", "connector": "transcribe"}) + "\n")
+        real.flush()
+        try:
+            worded = importlib.import_module("transcribe").main() or []
+            real.write(json.dumps({"type": "done", "connector": "transcribe", "seconds": round(time.time() - t, 1)}) + "\n")
+        except Exception as e:
+            traceback.print_exc()
+            worded = []
+            real.write(json.dumps({"type": "error", "connector": "transcribe", "error": f"{type(e).__name__}: {e}"[:1000]}) + "\n")
+        for name in heard_in:
+            if name in worded:
+                current[0] = name
+                try:
+                    importlib.import_module(name).main()
+                except Exception:
+                    traceback.print_exc()
         real.flush()
     if index and names:
         current[0] = "build_index"

@@ -21,7 +21,7 @@ WORD = {"message": ("message", "messages"), "email": ("email", "emails"), "photo
         "visit": ("page visited", "pages visited"), "search": ("search", "searches"), "call": ("call", "calls"), "note": ("note", "notes"),
         "event": ("event", "events"), "commit": ("commit", "commits"), "document": ("document", "documents"), "ai_turn": ("AI prompt", "AI prompts"),
         "media": ("video watched", "videos watched"), "song": ("song played", "songs played"), "app_usage": ("app session", "app sessions"),
-        "health_day": ("day of Health data", "days of Health data"), "transaction": ("payment", "payments"), "voice_memo": ("recording", "recordings"),
+        "health_day": ("day of Health data", "days of Health data"), "transaction": ("payment", "payments"), "voice_memo": ("recording", "recordings"), "voicemail": ("voicemail", "voicemails"),
         "reaction": ("reaction", "reactions"), "post": ("post", "posts"), "comment": ("comment", "comments"), "listen": ("episode played", "episodes played"),
         "file_edit": ("saved version", "saved versions"), "command": ("command", "commands"),
         "saved": ("thing saved", "things saved"),

@@ -208,6 +208,28 @@ class PhoneTests(unittest.TestCase):
             self.assertEqual(rows[0]['author'], 'me')
             self.assertEqual(rows[0]['thread'], 'chat')
 
+    def test_voicemail_as_a_voicemail(self):
+        con = self.db()
+        con.execute('create table voicemail(date_and_time, sender, receiver, duration, deleted, audio_file, transcript, transcript_confidence)')
+        con.executemany('insert into voicemail values (?,?,?,?,?,?,?,?)', [
+            (1772471051, '+14155550142', '+13025550100', '00:00:41', 'No', 'ref1', "Hey it's Mo, call me back about Saturday", '0.92'),
+            (1772528400, '+16505550199', '+13025550100', '00:00:07', 'Yes', '', '', None)])
+        artifact = {'name': 'Voicemail', 'tablename': 'voicemail', 'artifact_key': 'voicemail',
+                    'column_map': [['date_and_time', 'Date and time'], ['sender', 'Sender'], ['receiver', 'Receiver'], ['duration', 'Duration'],
+                                   ['deleted', 'Deleted'], ['audio_file', 'Audio File'], ['transcript', 'Transcript'],
+                                   ['transcript_confidence', 'Transcript confidence']],
+                    'object_columns': [{'name': 'date_and_time', 'type': 'datetime'}, {'name': 'audio_file', 'type': 'media'}]}
+        names = types.SimpleNamespace(label=lambda h: {'+14155550142': 'Mo Reyes'}.get(h, h))
+        with patch('contacts.Resolver', lambda: names):
+            ileapp.write_module('voicemail', [('Call History', artifact)], con, {'ref1': 'raw/iphone/files/HomeDomain/Library/Voicemail/12.amr'}, 'fixture', {}, {})
+        got = sorted(self.records('phone_voicemail'), key=lambda r: r['ts'])
+        mo, empty = got
+        self.assertEqual((mo['kind'], mo['author'], mo['title'], mo['text']),
+                         ('voicemail', 'Mo Reyes', 'Voicemail from Mo Reyes', "Hey it's Mo, call me back about Saturday"))
+        self.assertEqual(mo['meta']['files'], ['raw/iphone/files/HomeDomain/Library/Voicemail/12.amr'])
+        self.assertEqual((mo['meta']['duration'], mo['meta'].get('deleted')), ('00:00:41', None))
+        self.assertEqual((empty['author'], empty['text'], empty['meta']['deleted']), ('+16505550199', '[voicemail, 00:00:07, no transcript]', True))
+
     def test_wechat_group_sender_and_compressed_text(self):
         conv = ileapp.CONVERSATIONS['weChatMessages']
         row = {'type_as_stored':1, 'message':'wxid_test:\nHello', 'chat_partner':'group@chatroom'}

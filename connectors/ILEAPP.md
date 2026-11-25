@@ -60,3 +60,5 @@
 **No module yet**: Skype, Xiaohongshu, Apple Journal, and food and shopping apps (order and search histories).
 
 **Checked, nothing to parse** (iLEAPP's "no data" is right): KakaoTalk, LINE, TikTok DMs, voicemail, Podcasts.
+
+**Voicemail** (`voicemail`, iLEAPP's own module): read as `kind: voicemail`, not a row of fields. The caller is named as Contacts names the number, the text is Apple's transcript (or `[voicemail, <duration>, no transcript]`), the audio is in `files`, and one in the phone's deleted voicemails is `deleted`. `ileapp.py:write_artifact`.

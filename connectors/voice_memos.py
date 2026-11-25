@@ -5,7 +5,7 @@ so they can be transcribed later (e.g. local Whisper)."""
 import json
 import re
 
-from common import LIB, Writer, connect, from_apple, select, snapshot_sqlite, tables
+from common import LIB, Writer, connect, from_apple, heard, select, snapshot_sqlite, tables
 
 ROOT = LIB / "Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
 AVENUE = ("Local: ~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db "
@@ -48,10 +48,13 @@ def main():
             title = r["ZENCRYPTEDTITLE"] or r["ZCUSTOMLABEL"]
             path = ROOT / (r["ZPATH"] or "")
             transcript = embedded_transcript(path) if r["ZPATH"] else None
+            here = None if transcript or not r["ZPATH"] else heard(path)  # transcribe.py's, when Apple made none
+            transcript = transcript or here
             deleted = bool(r["ZEVICTIONDATE"])
             w.add(id=r["ZUNIQUEID"] or r["Z_PK"], kind="voice_memo", ts=from_apple(r["ZDATE"]), author="me", is_me=True,
                   title=title, text="\n".join(x for x in (title, transcript) if x),
                   meta={"seconds": round(r["ZDURATION"] or 0), "path": str(path), "transcribed": bool(transcript),
+                        **({"transcribed_on": "this Mac"} if here else {}),
                         **({"deleted": True, "tier": "deleted", "deleted_at": from_apple(r["ZEVICTIONDATE"])} if deleted else {})})
 
 
