@@ -175,7 +175,7 @@ def cursor(w):
     if not CURSOR_DB.exists():
         return
     try:
-        con = sqlite3.connect(snapshot_sqlite(CURSOR_DB, "ai_coding/cursor-state.vscdb"))
+        con = sqlite3.connect(f"file:{snapshot_sqlite(CURSOR_DB, 'ai_coding/cursor-state.vscdb')}?mode=ro", uri=True)
         rows = dict(con.execute("select key, value from cursorDiskKV where key like 'composerData:%' or key like 'bubbleId:%'"))
     except sqlite3.Error:
         return

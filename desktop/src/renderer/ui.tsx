@@ -57,12 +57,12 @@ export const ReadOnly = createContext<string | null>(null); // the note to show,
 export const useReadOnly = () => useContext(ReadOnly);
 
 // anyway: one read-only mode still lets change (turning AI on, for Ask).
-export function Toggle({ checked, onChange, label, testId, anyway }: { checked: boolean; onChange: (v: boolean) => void; label?: string; testId?: string; anyway?: boolean }) {
+export function Toggle({ checked, onChange, label, testId, anyway, disabled }: { checked: boolean; onChange: (v: boolean) => void; label?: string; testId?: string; anyway?: boolean; disabled?: boolean }) {
   // Flip at once; the saved value catches up a moment later.
   const [on, setOn] = useState(checked);
   useEffect(() => setOn(checked), [checked]);
   const locked = useReadOnly();
-  const off = !!locked && !anyway;
+  const off = disabled || (!!locked && !anyway);
   return (
     <button type="button" role="switch" aria-checked={on} aria-label={label} data-testid={testId} disabled={off} title={off ? locked! : undefined}
       className={`switch ${on ? 'on' : ''}`} style={off ? { opacity: 0.45 } : undefined} onClick={() => { setOn(!on); onChange(!on); }}>

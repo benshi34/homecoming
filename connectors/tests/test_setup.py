@@ -4,6 +4,7 @@ aerospace, brew, tailscale and ssh. Everyone and everything is made up.
 Run: python3 -m unittest discover -s connectors/tests -p 'test_*.py'
 """
 import json
+import plistlib
 import os
 import sqlite3
 import subprocess
@@ -27,6 +28,61 @@ RECTANGLE = """<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
 </dict></plist>"""
 
 
+WARP_PANE = "0123456789abcdef0123456789abcdef"
+S1, S2, S3 = "4ccc0001-0000-4000-8000-000000000000", "4ccc0002-0000-4000-8000-000000000000", "4ccc0003-0000-4000-8000-000000000000"
+C4 = "01a10004-0000-7000-8000-000000000000"
+C1, C2, C3 = "01a10001-0000-7000-8000-000000000000", "01a10002-0000-7000-8000-000000000000", "01a10003-0000-7000-8000-000000000000"
+STARTED = 1767261600  # 2026-01-01 10:00 UTC, when the made-up agents started
+
+
+def processes(home):
+    """Made-up processes for a stand-in ps: (pid, ppid, tty, args, environment)."""
+    return [
+        (100, 1, "??", "/Applications/Warp.app/Contents/MacOS/stable", {}),
+        (101, 100, "ttys001", "-zsh", {"TERM_PROGRAM": "WarpTerminal", "WARP_TERMINAL_SESSION_UUID": WARP_PANE}),
+        (102, 101, "ttys001", "claude --resume", {"TERM_PROGRAM": "WarpTerminal", "WARP_TERMINAL_SESSION_UUID": WARP_PANE}),
+        (103, 102, "ttys001", "node /usr/local/lib/node_modules/@openai/codex/bin/codex exec hi", {"TERM_PROGRAM": "WarpTerminal"}),  # started by the agent
+        (200, 1, "??", "/Applications/Ghostty.app/Contents/MacOS/ghostty", {}),
+        # an iTerm id inherited from where Ghostty was opened isn't Ghostty's pane
+        (202, 200, "ttys002", "claude", {"TERM_PROGRAM": "ghostty", "ITERM_SESSION_ID": "w9t9p9:STALE"}),
+        (203, 200, "ttys003", "claude", {"TERM_PROGRAM": "ghostty"}),
+        (301, 300, "ttys004", "claude", {"TERM_PROGRAM": "tmux", "TMUX_PANE": "%0"}),
+        (400, 1, "??", "/Users/x/.codex/bin/codex app-server", {"TERM_PROGRAM": "ghostty"}),  # a server, in no terminal
+        (401, 1, "ttys005", f"node /usr/local/bin/codex resume {C1}", {"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t0p0:ABC"}),
+        (402, 1, "ttys006", "codex", {"TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": "w0t1p0:DEF"}),
+        (204, 200, "ttys007", "codex", {"TERM_PROGRAM": "ghostty"}),
+        (500, 1, "??", "/opt/lanes/bin/lane-runner --all", {}),
+        (501, 500, "ttys008", "zsh (a shell integration's own terminal)", {}),
+        (503, 501, "ttys009", "bash", {}),
+        (502, 503, "ttys009", "claude", {}),  # a runner's agent: no terminal says where it is
+        (600, 1, "??", "herdr server", {}),
+        (601, 600, "ttys010", "claude", {"HERDR_ENV": "1", "HERDR_SESSION": "work", "HERDR_PANE_ID": "w1:pA"}),  # herdr's pane 10
+    ]
+
+
+def agent_files(home):
+    (home / ".claude/sessions").mkdir(parents=True)
+    (home / ".claude/projects/-tides").mkdir(parents=True)
+    # rewritten shorter in place: stale bytes after the object
+    (home / ".claude/sessions/102.json").write_text(json.dumps({"pid": 102, "sessionId": S1, "cwd": str(home)}) + '"cwd": "/old"}')
+    (home / ".claude/sessions/202.json").write_text(json.dumps({"pid": 202, "sessionId": S2, "cwd": str(home)}))
+    (home / ".claude/sessions/203.json").write_text(json.dumps({"pid": 203, "sessionId": S3, "cwd": str(home / "tides")}))
+    (home / ".claude/sessions/202.made-up.key").write_text("KEYFILE-NEVER-READ")
+    (home / f".claude/projects/-tides/{S1}.jsonl").write_text(
+        json.dumps({"type": "ai-title", "aiTitle": "Tide chart"}) + "\n" + json.dumps({"type": "custom-title", "customTitle": "Fix the tide chart"}) + "\n")
+    (home / f".claude/projects/-tides/{S2}.jsonl").write_text(json.dumps({"type": "ai-title", "aiTitle": "Moon phases\nand more"}) + "\n")
+    (home / ".codex").mkdir()
+    con = sqlite3.connect(home / ".codex/state_5.sqlite")
+    con.execute("create table threads (id text, cwd text, created_at_ms integer, title text, name text, source text, originator text)")
+    con.executemany("insert into threads values (?, ?, ?, ?, ?, ?, ?)", [
+        (C1, str(home), (STARTED - 86400) * 1000, "Port the tide tables", None, "cli", "codex-tui"),
+        (C2, str(home / "tides"), (STARTED + 2) * 1000, "Reply with exactly: ok", None, "exec", "codex_exec"),  # `codex exec`'s
+        (C3, str(home / "tides"), (STARTED + 3) * 1000, "can you add alerts for low tide", "Tide alerts", "vscode", "codex-tui"),
+        (C4, str(home), (STARTED + 4) * 1000, "make the moon tables", "Moon tables", "cli", "codex-tui")])
+    con.commit()
+    con.close()
+
+
 def warp_db(path):
     path.parent.mkdir(parents=True)
     con = sqlite3.connect(path)
@@ -36,19 +92,22 @@ def warp_db(path):
         CREATE TABLE pane_nodes (id INTEGER, tab_id INTEGER, parent_pane_node_id INTEGER, flex REAL, is_leaf INTEGER);
         CREATE TABLE pane_branches (id INTEGER, pane_node_id INTEGER, horizontal INTEGER);
         CREATE TABLE pane_leaves (pane_node_id INTEGER, kind TEXT, is_focused INTEGER, custom_vertical_tabs_title TEXT);
-        CREATE TABLE terminal_panes (id INTEGER, kind TEXT, cwd TEXT);
+        CREATE TABLE terminal_panes (id INTEGER, kind TEXT, uuid BLOB, cwd TEXT);
         INSERT INTO windows VALUES (1, 1, 1440, 900, 0);
         INSERT INTO tabs VALUES (1, 1, NULL, NULL, NULL, 0), (2, 1, 'servers', NULL, NULL, 1);
         INSERT INTO pane_nodes VALUES (1, 1, NULL, NULL, 1), (2, 2, NULL, NULL, 0), (3, 2, 2, 1.0, 1), (4, 2, 2, 3.0, 1);
         INSERT INTO pane_branches VALUES (1, 2, 1);
         INSERT INTO pane_leaves VALUES (1, 'terminal', 1, NULL), (3, 'terminal', 0, NULL), (4, 'code', 1, NULL);
     """)
-    con.execute("INSERT INTO terminal_panes VALUES (1, 'terminal', ?), (3, 'terminal', ?)", (str(path.parents[6] / "tides"), str(path.parents[6])))
+    con.execute("INSERT INTO terminal_panes VALUES (1, 'terminal', ?, ?), (3, 'terminal', ?, ?)",
+                (bytes.fromhex("11" * 16), str(path.parents[6] / "tides"), bytes.fromhex(WARP_PANE), str(path.parents[6])))
     con.commit()
     con.close()
 
 
 class SetupTests(unittest.TestCase):
+    may_script = "yes"
+
     def setUp(self):
         t = tempfile.TemporaryDirectory()
         self.addCleanup(t.cleanup)
@@ -66,15 +125,63 @@ class SetupTests(unittest.TestCase):
             <key>Label</key><string>com.ada.sync</string><key>ProgramArguments</key><array><string>/usr/bin/true</string></array>
             <key>StartInterval</key><integer>3600</integer></dict></plist>""")
         warp_db(self.home / WARP)
+        agent_files(self.home)
+        procs = processes(self.home)
+        (self.root / "ps.json").write_text(json.dumps(procs))
+        # ps: the list, one's environment (macOS's -E: the command, then it), or when it started
+        self.tool("ps", f"""exec {sys.executable} - "$@" <<'X'
+import json, sys, time
+a = sys.argv[1:]
+procs = json.load(open("{self.root}/ps.json"))
+if "-axwwo" in a:
+    for p, pp, tty, args, env in procs:
+        print(p, pp, tty, args)
+elif "-E" in a:  # pid=,command= for the pids asked, each with its environment after
+    want = {{int(x) for x in a[a.index("-p") + 1].split(",")}}
+    for q, _, _, args, env in procs:
+        if q in want:
+            print(q, args + "".join(" " + k + "=" + v for k, v in env.items()))
+elif "lstart=" in a:
+    print(time.strftime("%a %b %d %H:%M:%S %Y", time.localtime({STARTED})))
+X""")
+        self.tool("lsof", '[ "$5" = 402 ] && echo "n$HOME/tides"; [ "$5" = 204 ] && echo "n$HOME"; exit 0')
+        self.ghostty("✳ Fix the tide chart", "◐ Moon phases")
+        self.tool("osascript", f'[ "$1" = -l ] && cat "{self.root}/windows.json" || cat "{self.root}/ghostty.txt"')
+        # the window server's list: two apps' windows, AppKit's hidden one in three apps (all at one frame), a tiny one
+        (self.root / "windows.json").write_text(json.dumps({"screens": [["Studio Display", 0, 0, 2560, 1440]], "windows": [
+            ["Ghostty", 1, 0, 25, 1280, 1415], ["Ghostty", 0, 0, 25, 1280, 1415], ["Firefox", 1, 1280, 25, 1280, 1415], ["Firefox", 0, 0, 617, 500, 500],
+            ["Mail", 0, 0, 617, 500, 500], ["Ghostty", 0, 0, 617, 500, 500], ["Mail", 0, 300, 200, 900, 700]]}))
+        self.write(".config/herdr/sessions/work/session.json", json.dumps({"version": 1, "workspaces": [{"id": "w1", "custom_name": "tides",
+            "identity_cwd": f"{self.home}/tides", "tabs": [{"custom_name": "charts", "layout": {"Split": {"direction": "Vertical", "ratio": 0.5,
+            "first": {"Pane": 10}, "second": {"Pane": 11}}}, "panes": {"10": {"cwd": f"{self.home}/tides"}, "11": {"cwd": str(self.home)}}}]}]}))
+        self.write("Library/Application Support/taiku/tui-layout.json", json.dumps({"version": 1, "workspaces": {str(self.home): {"snapshot": {
+            "tabs": [{"layout": {"kind": "split", "direction": "horizontal", "ratio": 0.4, "first": {"kind": "leaf", "tiles": [1]},
+                                 "second": {"kind": "leaf", "tiles": [2]}}}], "tile_names": {"2": "logs"}}}}}))
+        app = self.write("sims/A/data/Containers/Bundle/Application/X/Tides.app/Info.plist", "")
+        app.write_bytes(plistlib.dumps({"CFBundleDisplayName": "Tides", "CFBundleShortVersionString": "0.3", "CFBundleIdentifier": "org.ada.tides"}))
+        self.write(".android/avd/Tide_Pixel.avd/config.ini", "avd.ini.displayname=Tide Pixel\nhw.device.name=pixel_8\nabi.type=arm64-v8a\n")
+        self.tool("pmset", "printf 'AC Power:\\n sleep 10\\n displaysleep 5\\n'")
         self.tool("defaults", f"""case "$2" in com.apple.dock) cat <<'X'\n{DOCK}\nX\n;; com.knollsoft.Rectangle) cat <<'X'\n{RECTANGLE}\nX\n;; *) exit 1;; esac""")
-        self.tool("tmux", "printf 'work\\t0\\teditor\\t5d1e,200x50,0,0\\t0\\t%s/tides\\tnvim\\n' \"$HOME\"")
+        self.tool("tmux", "printf 'work\\t0\\teditor\\t5d1e,200x50,0,0\\t0\\t%s/tides\\tnode\\t%%0\\n' \"$HOME\"")
         self.tool("aerospace", "printf '1\\tGhostty\\n1\\tGhostty\\n2\\tFirefox\\n'")
         self.tool("brew", '[ "$1" = leaves ] && echo ripgrep || echo ghostty')
         self.tool("tailscale", """echo '{"Self": {"HostName": "laptop"}, "Peer": {"a": {"HostName": "box", "OS": "linux", "Online": true}, "b": {"HostName": "funnel-ingress-node"}}}'""")
         self.tool("prlctl", "printf 'NAME STATUS\\nWin11 stopped\\n'")
         self.tool("colima", "exit 1")
-        self.tool("xcrun", """[ "$1" = devicectl ] || exit 1; echo 'Devices:'; echo '{"result": {"devices": [{"deviceProperties": {"name": "Ada iPhone", "osVersionNumber": "26.1", "developerModeStatus": "enabled"}, "hardwareProperties": {"marketingName": "iPhone 16", "deviceType": "iPhone", "platform": "iOS"}, "connectionProperties": {"pairingState": "paired", "tunnelState": "connected", "lastConnectionDate": "2026-10-01T10:00:00Z"}}]}}'""")
-        self.tool("adb", "printf 'List of devices attached\\nR5CT1 device usb:1-1 product:tide model:Pixel_9 device:tide\\nX1 unauthorized\\n'")
+        self.tool("xcrun", f"""case "$1 $2 $3" in
+"simctl list devices") echo '{{"devices": {{"com.apple.CoreSimulator.SimRuntime.iOS-26-4": [{{"name": "iPhone 17", "udid": "5111A000-0000-4000-8000-000000000000", "isAvailable": true, "state": "Shutdown", "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17", "dataPath": "{self.home}/sims/A/data"}}]}}}}';;
+"devicectl device info") echo '{{"result": {{"apps": [{{"name": "Tides", "version": "0.3", "bundleIdentifier": "org.ada.tides", "builtByDeveloper": true, "removable": true}}, {{"name": "Moonwatch", "version": "2.1", "bundleIdentifier": "com.moon.watch", "removable": true}}, {{"name": "Safari", "defaultApp": true}}, {{"name": "Hidden", "hidden": true}}]}}}}';;
+"devicectl list devices") echo 'Devices:'; echo '{{"result": {{"devices": [{{"identifier": "D1", "deviceProperties": {{"name": "Ada iPhone", "osVersionNumber": "26.1", "developerModeStatus": "enabled"}}, "hardwareProperties": {{"marketingName": "iPhone 16", "deviceType": "iPhone", "platform": "iOS"}}, "connectionProperties": {{"pairingState": "paired", "tunnelState": "connected", "lastConnectionDate": "2026-10-01T10:00:00Z"}}}}]}}}}';;
+*) exit 1;; esac""")
+        # adb: the phone, its OS, the apps you installed and its settings (some the phone's own or naming it)
+        self.tool("adb", """case "$*" in
+"devices -l") printf 'List of devices attached\\nR5CT1 device usb:1-1 product:tide model:Pixel_9 device:tide\\nX1 unauthorized\\n';;
+*getprop*) echo 15;;
+*"pm list packages -3") printf 'package:org.ada.tides\\npackage:com.moon.watch\\n';;
+*"settings list system") printf 'font_scale=1.15\\nscreen_off_timeout=60000\\nbluetooth_name=Ada Pixel\\nwallpaper_finish_drawing=1792801435669\\n';;
+*"settings list secure") printf 'android_id=9f8e7d6c5b4a3921\\nlocation_mode=3\\nlast_setup_shown=1\\n';;
+*"settings list global") printf 'stay_on_while_plugged_in=3\\nboot_count=41\\n';;
+*) exit 1;; esac""")
         self.tool("system_profiler", """echo '{"SPBluetoothDataType": [{"device_connected": [{"Ada AirPods": {"device_address": "AA:BB:CC:DD:EE:FF", "device_serialNumber": "SERIAL123", "device_minorType": "Headphones", "device_vendorID": "0x004C"}}]}], "SPDisplaysDataType": [{"spdisplays_ndrvs": [{"_name": "Studio Display", "_spdisplays_resolution": "2560 x 1440 @ 60.00Hz", "spdisplays_connection_type": "spdisplays_thunderbolt", "spdisplays_main": "spdisplays_yes", "_spdisplays_display-serial-number": "DSERIAL"}]}], "SPUSBHostDataType": [{"_name": "USB 3.1 Bus", "_items": [{"_name": "Tide Keyboard", "USBDeviceKeyVendorName": "Tide Co", "USBKeyHardwareType": "Removable", "USBDeviceKeySerialNumber": "USERIAL"}]}]}'""")
         # ssh runs the probe locally with HOME set to a second made-up home, as if it were the host's
         (self.root / "remote/.config/sway").mkdir(parents=True)
@@ -82,6 +189,11 @@ class SetupTests(unittest.TestCase):
         (self.root / "remote/.tmux.conf").write_text("set -g mouse on\n")
         self.tool("ssh", f'host=""; for a; do case "$a" in -o) skip=1;; --) ;; *) [ -n "$skip" ] && skip="" && continue; [ -z "$host" ] && host="$a" && continue; cmd="$a";; esac; done\n'
                          f'[ "$host" = box ] || exit 255\nHOME="{self.root}/remote" PATH=/usr/bin:/bin sh -c "{sys.executable} ${{cmd#python3}}"')
+
+    def ghostty(self, mark1, mark2):
+        """What Ghostty answers: one window, a tab of two terminals, titled by the agents in them (with their marks)."""
+        (self.root / "ghostty.txt").write_text(f"1\t1\t{mark1}\t{mark1}\t{self.home}\n1\t1\t{mark1}\t◐ zsh\t{self.home}/tides\n"
+                                               f"1\t2\tMoon tables | home\tMoon tables | home\t{self.home}\n")
 
     def write(self, rel, text):
         p = self.home / rel
@@ -94,10 +206,12 @@ class SetupTests(unittest.TestCase):
         p.write_text("#!/bin/sh\n" + body + "\n")
         p.chmod(0o755)
 
-    def run_setup(self, hosts=""):
+    def run_setup(self, hosts="", layouts=False):
         env = {k: v for k, v in os.environ.items() if k != "UMP_SETUP_HOSTS"}
-        env.update(HOME=str(self.home), CORPUS_DIR=str(self.corpus), PATH=f"{self.bin}:/usr/bin:/bin", UMP_SETUP_HOSTS=hosts)
-        r = subprocess.run([sys.executable, "-c", "import setup; setup.main()"], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
+        env.update(HOME=str(self.home), CORPUS_DIR=str(self.corpus), PATH=f"{self.bin}:/usr/bin:/bin", UMP_SETUP_HOSTS=hosts,
+                   UMP_MAY_SCRIPT=json.dumps({"com.mitchellh.ghostty": self.may_script}))
+        program = "import setup; setup.main(setup.LAYOUTS)" if layouts else "import setup; setup.main()"
+        r = subprocess.run([sys.executable, "-c", program], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
         recs = [json.loads(l) for l in (self.corpus / "normalized/setup.jsonl").read_text().splitlines()]
         by = {}
@@ -127,8 +241,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(by["defaults:com.knollsoft.Rectangle"]["text"], "gapSize = 8", "an app's choices, not its update checks")
         warp = by["layout:Warp"]
         self.assertEqual(warp["text"], "Window 1: 1440x900, 2 tabs\n  Tab 1\n    terminal ~/tides\n  servers (pinned)\n"
-                                       "    side by side:\n      25% terminal ~\n      75% code")
-        self.assertIn("work:0 editor  [5d1e,200x50,0,0]\n    pane 0: nvim in ~/tides", by["layout:tmux"]["text"])
+                                       "    side by side:\n      25% terminal ~  claude 4ccc0001 \"Fix the tide chart\"\n      75% code")
+        self.assertIn("work:0 editor  [5d1e,200x50,0,0]\n    pane 0: claude in ~/tides", by["layout:tmux"]["text"], "tmux's pane %0: the agent there")
         self.assertEqual(by["layout:AeroSpace"]["text"], "1: Ghostty\n2: Firefox")
         self.assertIn("com.ada.sync: /usr/bin/true (every 3600s)", by["installed:launch_agents"]["text"])
         self.assertEqual(by["installed:brew"]["text"], "Formulae:\nripgrep\nCasks:\nghostty")
@@ -137,16 +251,91 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(by["machines:vms"]["text"], "Parallels: Win11 stopped")
 
     def test_devices_without_addresses_or_serials(self):
-        by, recs, _ = self.run_setup()
+        by, recs, manifest = self.run_setup()
         self.assertEqual(by["device:phone:Ada iPhone"]["text"], "Ada iPhone\nmodel: iPhone 16\ntype: iPhone\nos: iOS 26.1\npaired: paired\ndeveloper mode: on")
-        self.assertEqual(by["device:phone:Pixel 9"]["text"], "Pixel 9\ntype: Android\nproduct: tide", "an unauthorized phone isn't listed")
+        self.assertEqual(by["device:phone:Pixel 9"]["text"], "Pixel 9\ntype: Android\nproduct: tide\nos: Android 15")
         self.assertNotIn("device:phone:X1", by)
         self.assertEqual(by["device:bluetooth:Ada AirPods"]["text"], "Ada AirPods\ntype: Headphones\nvendor: Apple")
         self.assertIn("resolution: 2560 x 1440 @ 60.00Hz\nconnection: thunderbolt\nmain: yes", by["device:display:Studio Display"]["text"])
         self.assertEqual(by["device:usb:Tide Keyboard"]["text"], "Tide Keyboard\nvendor: Tide Co")
-        everything = json.dumps(recs)
-        for private in ("AA:BB:CC:DD:EE:FF", "SERIAL123", "DSERIAL", "USERIAL"):
+        everything = json.dumps([recs, manifest])
+        for private in ("AA:BB:CC:DD:EE:FF", "SERIAL123", "DSERIAL", "USERIAL", "R5CT1", "X1"):
             self.assertNotIn(private, everything)
+
+    def test_android_blocked_devices_have_setup_notes(self):
+        ready = (self.bin / "adb").read_text().replace("X1 unauthorized\\n", "")
+        for state in ("unauthorized", "offline"):
+            with self.subTest(state=state):
+                self.tool("adb", f"""case "$*" in
+"devices -l") printf 'List of devices attached\\nANDROID-PRIVATE-SERIAL {state} model:Locked_Pixel\\n';;
+*) echo "$*" >> "$HOME/adb-shell-reads"; exit 1;;
+esac""")
+                by, recs, manifest = self.run_setup()
+                self.assertNotIn("not_read", manifest.get("notes", {}), manifest)
+                note = manifest.get("notes", {}).get("devices", {}).get(f"android_{state}", "")
+                self.assertIn(f"Android apps and settings weren't read: the device is {state}.", note)
+                for step in ("Turn on USB debugging", "unlock the device", 'accept "Allow USB debugging" for this computer'):
+                    self.assertIn(step, note)
+                self.assertNotIn("ANDROID-PRIVATE-SERIAL", json.dumps([recs, manifest]))
+                self.assertNotIn("device:phone:Locked Pixel", by)
+                self.assertFalse((self.home / "adb-shell-reads").exists(), "a blocked device must not be queried")
+
+        _, _, refreshed = self.run_setup(layouts=True)
+        self.assertEqual(refreshed.get("notes", {}).get("devices"), manifest["notes"]["devices"], "layout reads don't check phones")
+        (self.bin / "adb").write_text(ready)
+        by, _, manifest = self.run_setup()
+        self.assertIn("apps:phone:Pixel 9", by)
+        self.assertIn("settings:phone:Pixel 9", by)
+        self.assertNotIn("devices", manifest.get("notes", {}), "authorization clears the setup note")
+        self.tool("adb", "exit 1")
+        _, _, manifest = self.run_setup()
+        self.assertNotIn("devices", manifest.get("notes", {}), "no device tool is not a blocked phone")
+
+    def test_iphone_without_developer_tunnel_has_setup_note(self):
+        ready = (self.bin / "xcrun").read_text()
+        self.tool("xcrun", """case "$1 $2 $3" in
+"devicectl list devices") cat "$HOME/iphone.json";;
+"devicectl device info") echo "$*" >> "$HOME/iphone-app-reads"; exit 1;;
+*) exit 1;;
+esac""")
+        for tunnel in ("unavailable", None):
+            with self.subTest(tunnel=tunnel):
+                connection = {"pairingState": "unpaired", "transportType": "wired"}  # plugged in
+                if tunnel is not None:
+                    connection["tunnelState"] = tunnel
+                self.write("iphone.json", json.dumps({"result": {"devices": [{"identifier": "IPHONE-PRIVATE-ID",
+                    "deviceProperties": {"name": "Fixture iPhone", "developerModeStatus": "disabled"},
+                    "hardwareProperties": {"deviceType": "iPhone", "serialNumber": "IPHONE-PRIVATE-SERIAL"},
+                    "connectionProperties": connection}]}}))
+                by, recs, manifest = self.run_setup()
+                self.assertNotIn("not_read", manifest.get("notes", {}), manifest)
+                note = manifest.get("notes", {}).get("devices", {}).get("iphone", "")
+                self.assertIn("iPhone apps weren't read: the developer tunnel is unavailable.", note)
+                for step in ("Unlock the device", "trust this computer", "Developer Mode in Settings > Privacy & Security"):
+                    self.assertIn(step, note)
+                self.assertIn("device:phone:Fixture iPhone", by)
+                self.assertNotIn("apps:phone:Fixture iPhone", by)
+                self.assertNotIn("Fixture iPhone", note, "the note names the device kind")
+                for private in ("IPHONE-PRIVATE-ID", "IPHONE-PRIVATE-SERIAL"):
+                    self.assertNotIn(private, json.dumps([recs, manifest]))
+                self.assertFalse((self.home / "iphone-app-reads").exists(), "no app read without a developer tunnel")
+
+        _, _, refreshed = self.run_setup(layouts=True)
+        self.assertEqual(refreshed.get("notes", {}).get("devices"), manifest["notes"]["devices"], "layout reads don't check phones")
+        # paired with this Mac once but not connected now: listed, nothing to fix
+        self.write("iphone.json", json.dumps({"result": {"devices": [{"identifier": "IPHONE-PRIVATE-ID",
+            "deviceProperties": {"name": "Fixture iPhone"}, "hardwareProperties": {"deviceType": "iPhone"},
+            "connectionProperties": {"pairingState": "paired", "tunnelState": "unavailable"}}]}}))
+        by, _, away = self.run_setup()
+        self.assertIn("device:phone:Fixture iPhone", by)
+        self.assertNotIn("iphone", away.get("notes", {}).get("devices", {}), "a phone that isn't plugged in has nothing to fix")
+        (self.bin / "xcrun").write_text(ready)
+        by, _, manifest = self.run_setup()
+        self.assertIn("apps:phone:Ada iPhone", by)
+        self.assertNotIn("iphone", manifest.get("notes", {}).get("devices", {}), "a usable tunnel clears the setup note")
+        self.tool("xcrun", "exit 1")
+        _, _, manifest = self.run_setup()
+        self.assertNotIn("iphone", manifest.get("notes", {}).get("devices", {}), "no device tool is not a blocked phone")
 
     def test_what_isnt_a_change(self):
         first, recs, _ = self.run_setup()
@@ -233,6 +422,78 @@ class SetupTests(unittest.TestCase):
         self.write(".ssh/config.d/work", "Host=build\n  HostName build.example.com\n  User ci\n")
         by, _, _ = self.run_setup()
         self.assertEqual(by["machines:ssh"]["text"], "build hostname=build.example.com user=ci\nbox, lab hostname=100.64.0.9")
+
+    def test_the_agent_sessions_in_each_pane(self):
+        by, recs, manifest = self.run_setup()
+        everything = json.dumps(recs)
+        self.assertNotIn("KEYFILE-NEVER-READ", everything)
+        # every agent running in a terminal, once: not the one an agent started, nor a server in no terminal
+        sessions = by["layout:agents"]["meta"]["sessions"]
+        self.assertEqual(sorted((a["terminal"], a.get("session")) for a in sessions), sorted([
+            ("WarpTerminal", S1), ("ghostty", S2), ("ghostty", S3), ("tmux", None), ("iTerm.app", C1), ("iTerm.app", C3), ("ghostty", C4), ("lane-runner", None),
+            ("herdr", None)]))
+        by_session = {a.get("session"): a for a in sessions}
+        self.assertEqual(by_session[S1]["title"], "Fix the tide chart", "the last custom title, over the AI's")
+        self.assertEqual(by_session[S2]["title"], "Moon phases", "a title's first line")
+        self.assertEqual((by_session[C1]["title"], by_session[C1]["pane"]), ("Port the tide tables", "w0t0p0:ABC"), "codex resume <id>")
+        self.assertEqual(by_session[C3]["title"], "Tide alerts", "a new codex: its terminal conversation (by name), not `codex exec`'s")
+        self.assertNotIn("pane", by_session[S2], "an inherited iTerm id isn't Ghostty's pane")
+        # Warp's split, for a program to rebuild: direction, shares, each pane's folder and agent
+        tab = by["layout:Warp"]["meta"]["layout"][1]
+        self.assertEqual((tab["title"], tab["split"], [c["share"] for c in tab["children"]]), ("servers", "side by side", [0.25, 0.75]))
+        self.assertEqual(tab["children"][0]["agent"], {"tool": "claude", "session": S1, "title": "Fix the tide chart"})
+        # Ghostty: by title (after its mark), then the one left in that folder
+        g = by["layout:Ghostty"]
+        self.assertEqual(g["text"], f'Window 1: 2 tabs\n  Fix the tide chart\n    pane ~  claude 4ccc0002 "Moon phases"\n'
+                                    f'    pane ~/tides  claude 4ccc0003\n  Moon tables | home\n    pane ~  codex 01a10004 "Moon tables"', g["text"])
+
+    def test_multiplexers_windows_simulators_and_phones(self):
+        by, recs, _ = self.run_setup()
+        everything = json.dumps(recs)
+        # herdr: the split, each pane's folder, and the agent its pane variable names
+        h = by["layout:herdr:work"]
+        tab = h["meta"]["layout"][0]
+        self.assertEqual((tab["window"], tab["title"], tab["split"], tab["ratio"]), ("tides", "charts", "vertical", 0.5))
+        self.assertEqual([c["cwd"] for c in tab["children"]], [f"{self.home}/tides", str(self.home)])
+        self.assertEqual(tab["children"][0]["agent"], {"tool": "claude"})
+        self.assertNotIn("agent", tab["children"][1])
+        t = by["layout:taiku"]["meta"]["layout"][0]
+        self.assertEqual((t["split"], t["ratio"], t["children"]), ("horizontal", 0.4, [{"tile": 1}, {"tile": 2, "name": "logs"}]))
+        # every app's windows: on screen or not, the same frame once, not AppKit's hidden ones
+        win = by["layout:windows"]
+        self.assertEqual(win["text"], "display Studio Display: 2560x1440 at 0,0\nFirefox: 1280x1415 at 1280,25 (on screen)\n"
+                                      "Ghostty: 1280x1415 at 0,25 x2 (on screen)\nMail: 900x700 at 300,200", win["text"])
+        # a simulator's apps, read from its bundles while it's shut down; an emulator
+        self.assertIn("Tides 0.3  org.ada.tides", by["device:simulator:5111A000-0000-4000-8000-000000000000"]["text"])
+        self.assertEqual(by["device:emulator:Tide Pixel"]["title"], "emulator: Tide Pixel")
+        # the iPhone's apps by where they came from; not a hidden one
+        self.assertEqual(by["apps:phone:Ada iPhone"]["text"], "installed (1):\n  Moonwatch 2.1  com.moon.watch\nbuilt by you (1):\n  Tides 0.3  org.ada.tides\n"
+                                                             "Apple's (1):\n  Safari", by["apps:phone:Ada iPhone"]["text"])
+        # Android: the apps, and the settings chosen; not ids, the phone's name, counters or a time under another name
+        self.assertEqual(by["apps:phone:Pixel 9"]["text"], "com.moon.watch\norg.ada.tides")
+        self.assertEqual(by["settings:phone:Pixel 9"]["text"], "system:\n  font_scale = 1.15\n  screen_off_timeout = 60000\nsecure:\n  location_mode = 3\n"
+                                                              "global:\n  stay_on_while_plugged_in = 3")
+        for leak in ("9f8e7d6c5b4a3921", "Ada Pixel", "1792801435669", "boot_count"):
+            self.assertNotIn(leak, everything)
+        self.assertIn("os: Android 15", by["device:phone:Pixel 9"]["text"])
+        self.assertIn("displaysleep 5", by["pmset:custom"]["text"])
+        # and nothing of it is a new version when nothing changed
+        _, again, _ = self.run_setup()
+        self.assertEqual(len(again), len(recs))
+
+    def test_an_agent_going_from_idle_to_working_isnt_a_new_layout(self):
+        self.run_setup()
+        self.ghostty("◐ Fix the tide chart", "✳ Moon phases")
+        _, recs, _ = self.run_setup()
+        self.assertEqual(sum(1 for r in recs if r["meta"]["what"] == "layout:Ghostty"), 1)
+
+    def test_ghostty_isnt_asked_when_it_would_put_up_a_dialog(self):
+        self.may_script = "ask"
+        (self.bin / "osascript").write_text(f"#!/bin/sh\n[ \"$1\" = -l ] && exit 0\ntouch {self.root}/asked\n")  # the window list asks nothing
+        by, _, manifest = self.run_setup()
+        self.assertNotIn("layout:Ghostty", by)
+        self.assertFalse((self.root / "asked").exists())
+        self.assertIn("Automation", manifest["notes"]["ghostty"])
 
     def test_one_odd_thing_stops_nothing_else(self):
         (self.home / ".bashrc").write_bytes(b"alias ll='ls -l'\n\xff\xfe not utf-8\n")

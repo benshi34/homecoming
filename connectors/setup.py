@@ -2,8 +2,9 @@
 
 Config files you wrote or tuned (terminals, shells, window managers, editors, coding agents), the Mac's own settings
 worth knowing (Dock, hot corners, keyboard, trackpad, Stage Manager), the layouts you work in (Warp's windows, tabs and
-split panes and where each is; tmux; AeroSpace's workspaces), what you installed and run in the background, and the
-machines you reach (Tailscale, ssh hosts, VMs).
+split panes and where each is; Ghostty's; tmux; AeroSpace's workspaces) with the coding agent session open in each pane
+(Claude Code, Codex: enough to bring a layout back after a crash), what you installed and run in the background, and
+the machines you reach (Tailscale, ssh hosts, VMs).
 
 Each version is a record of its own: a config's id is its path and a hash of what it says, so the corpus keeps every
 version seen and a new one carries the diff from the last. Secrets in configs (API keys in an env block, tokens in a
@@ -21,9 +22,10 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
-from common import FIELDS, HOME, LIB, NORM, Writer, connect, from_unix, snapshot_sqlite
+from common import FIELDS, HOME, LIB, NORM, Writer, connect, from_unix, read_json, read_manifest, snapshot_sqlite, tailscale_devices, tailscale_status
 import redact as redact_module
 
 AVENUE = ("Local files and read-only commands. Configs (each version kept, with a diff from the last): Warp "
@@ -31,11 +33,20 @@ AVENUE = ("Local files and read-only commands. Configs (each version kept, with 
           "AeroSpace, yabai, skhd, Hammerspoon, Karabiner, SketchyBar; VS Code, Cursor, Windsurf, Zed (settings, "
           "keybindings, extensions); Claude Code (settings, CLAUDE.md, agents, commands, skills), Codex, Gemini CLI, "
           "Claude Desktop's MCP servers. Mac settings via `defaults export` of the Dock, the global domain, trackpad, "
-          "Finder, Stage Manager and apps like Rectangle and iTerm2, filtered to settings. Layouts: Warp's warp.sqlite "
-          "(windows, tabs, pane splits, each pane's folder), `tmux list-panes -a`, `aerospace list-windows --all`. "
+          "Finder, Stage Manager, Mission Control, input sources, screenshots, accessibility and apps like Rectangle and "
+          "iTerm2, filtered to settings; `pmset -g custom`. Layouts: Warp's warp.sqlite "
+          "(windows, tabs, pane splits, each pane's folder), Ghostty's AppleScript (windows, tabs, terminals: only if "
+          "macOS already lets Homecoming script it, never asking), `tmux list-panes -a`, herdr's session files, taiku's "
+          "tui-layout.json, `aerospace list-windows --all`, and every app's windows from the window server's list "
+          "(frames and displays; no titles, which would need Screen Recording); `hyprctl clients` or `wmctrl` on Linux. "
+          "Agent sessions: `ps`, each one's pane from what its terminal sets in its environment (WARP_TERMINAL_SESSION_UUID, "
+          "TMUX_PANE, HERDR_PANE_ID...) or Ghostty's terminal titles; Claude Code's ~/.claude/sessions/<pid>.json and "
+          "transcript titles, Codex's `resume <id>` and ~/.codex/state_*.sqlite threads. "
           "Installed: /Applications, `brew leaves`, ~/Library/LaunchAgents, scripts in ~/.local/bin and ~/bin. "
           "Machines: `tailscale status --json`, ~/.ssh/config's hosts, `prlctl list`, `colima list`, UTM's VMs. Devices, each "
-          "its own record: `xcrun devicectl list devices` (iPhones, iPads, Watches), `adb devices -l`, `system_profiler` for "
+          "its own record: `xcrun devicectl list devices` (iPhones, iPads, Watches) and a connected one's apps, `adb devices "
+          "-l` and a connected Android phone's apps and settings (none that names it or its owner), Xcode's simulators "
+          "(`simctl list`, and the apps in each from their bundles), Android emulators (~/.android/avd), `system_profiler` for "
           "paired Bluetooth devices, displays and USB devices (names and kinds, never addresses or serials). Linux too: i3, "
           "sway, Hyprland, systemd user units; and crontab and the OS. Another machine is read by machines.py.")
 
@@ -101,6 +112,11 @@ DOMAINS = [
     ("mac", "Finder", "com.apple.finder", {"ShowPathbar", "ShowStatusBar", "FXPreferredViewStyle", "AppleShowAllFiles",
                                            "FXDefaultSearchScope", "NewWindowTarget", "_FXSortFoldersFirst", "FXEnableExtensionChangeWarning"}),
     ("mac", "Stage Manager and tiling", "com.apple.WindowManager", None),
+    ("mac", "Mission Control", "com.apple.spaces", {"spans-displays"}),
+    ("mac", "Input sources", "com.apple.HIToolbox", {"AppleEnabledInputSources", "AppleFnUsageType", "AppleDictationAutoEnable"}),
+    ("mac", "Screenshots", "com.apple.screencapture", {"location", "type", "target", "disable-shadow", "show-thumbnail", "include-date"}),
+    ("mac", "Accessibility", "com.apple.universalaccess", {"reduceMotion", "reduceTransparency", "increaseContrast", "differentiateWithoutColor",
+                                                         "mouseDriverCursorSize", "closeViewScrollWheelToggle", "showWindowTitlebarIcons"}),
     ("mac", "Menu bar", "com.apple.controlcenter", None),
     ("window manager", "Rectangle", "com.knollsoft.Rectangle", None),
     ("window manager", "Magnet", "com.crowdcafe.windowmagnet", None),
@@ -370,16 +386,203 @@ def domains(w, v):
         if lines:
             v.add(w, f"defaults:{domain}", "preference", f"{tool} settings", "\n".join(lines), None,
                   {"group": group, "tool": tool, "domain": domain, "lines": len(lines)})
+    # power: when it sleeps, on battery and plugged in
+    power = run(["pmset", "-g", "custom"]) if shutil.which("pmset") else None
+    if power and power.strip():
+        v.add(w, "pmset:custom", "preference", "Power settings", power, None, {"group": "mac", "tool": "Power"})
+
+
+# ---------------------------------------------------------------- agent sessions, and the pane each is in
+
+AGENT_TOOLS = ("claude", "codex")
+# What a terminal sets in each pane's shell to name it, by TERM_PROGRAM (which every pane sets afresh, so a variable
+# inherited from the terminal that launched this one isn't taken for its own). Ghostty sets none: its panes are told
+# apart by title (an agent's session title) and folder.
+PANE_VAR = {"WarpTerminal": "WARP_TERMINAL_SESSION_UUID", "tmux": "TMUX_PANE", "iTerm.app": "ITERM_SESSION_ID",
+            "Apple_Terminal": "TERM_SESSION_ID", "WezTerm": "WEZTERM_PANE", "kitty": "KITTY_WINDOW_ID", "zellij": "ZELLIJ_PANE_ID"}
+_agents = None
+
+
+def environ(pid, names, pids=None):
+    """Some of a process's environment variables (your own processes only). With pids, every one of them is read
+    at once on a Mac (one `ps -E`, not one each) and kept for the calls after."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        env = dict(x.decode("utf-8", "replace").split("=", 1) for x in raw if b"=" in x)
+    except OSError:
+        if pid not in _environs:  # macOS: the command, then its environment
+            want = sorted(set(pids or ()) | {pid})
+            out = run(["ps", "-E", "-wwo", "pid=,command=", "-p", ",".join(map(str, want))], timeout=60) or ""
+            for line in out.splitlines():
+                p, _, rest = line.strip().partition(" ")
+                if p.isdigit():
+                    _environs[int(p)] = {k: v for k, v in re.findall(r"(?:^|\s)([A-Z][A-Z0-9_]*)=(\S*)", rest)}
+        env = _environs.get(pid, {})
+    return {k: env[k] for k in names if env.get(k)}
+
+
+_environs = {}
+
+
+def open_files(pid):
+    try:
+        return [os.readlink(f) for f in glob.glob(f"/proc/{pid}/fd/*")]
+    except OSError:
+        pass
+    out = run(["lsof", "-p", str(pid), "-Fn"]) or ""
+    return [l[1:] for l in out.splitlines() if l.startswith("n")]
+
+
+def claude_session(pid):
+    """Claude Code keeps ~/.claude/sessions/<pid>.json for each one running (rewritten in place: it can carry stale
+    bytes after the object). Its title is the transcript's last custom title, else the one Claude gave it."""
+    try:
+        s = json.JSONDecoder().raw_decode((HOME / f".claude/sessions/{pid}.json").read_text(errors="replace"))[0]
+    except (OSError, ValueError):
+        return {}
+    sid = str(s.get("sessionId") or "")
+    out = {"session": sid, "cwd": s.get("cwd")} if sid else {}
+    for t in sorted(glob.glob(str(HOME / f".claude/projects/*/{glob.escape(sid)}.jsonl")), key=os.path.getmtime)[-1:] if sid else []:
+        try:
+            data = Path(t).read_bytes()[-64 << 20:]
+        except OSError:
+            break
+        for key in ("customTitle", "aiTitle"):  # (cut like Codex's below)
+            m = list(re.finditer(rb'"%s":\s*"((?:[^"\\]|\\.)*)"' % key.encode(), data))
+            if m:
+                out["title"] = (json.loads(b'"' + m[-1].group(1) + b'"').strip().splitlines() or [""])[0][:100]
+                break
+    return out
+
+
+def started_ms(pid):
+    out = (run(["ps", "-o", "lstart=", "-p", str(pid)]) or "").strip()
+    try:
+        return int(dt.datetime.strptime(" ".join(out.split()), "%a %b %d %H:%M:%S %Y").timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def codex_session(pid, args, cwd, taken):
+    """Codex names a resumed session on its command line (`codex resume <id>`); a new one is the first conversation
+    its state database has from that folder after the process started. The title comes from there too."""
+    m = re.search(r"\bresume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", args)
+    out = {"session": m.group(1)} if m else {}
+    dbs = sorted(glob.glob(str(HOME / ".codex/state_*.sqlite")), key=os.path.getmtime)
+    if not dbs:
+        return out
+    try:
+        con = sqlite3.connect(f"file:{dbs[-1]}?mode=ro", uri=True, timeout=2)
+        try:
+            if not out and cwd and (t0 := started_ms(pid)):
+                # not `codex exec`'s, a subagent's or the desktop app's: those aren't a terminal's
+                rows = con.execute("select * from threads where cwd = ? and created_at_ms >= ? order by created_at_ms", (cwd, t0 - 5000))
+                names = [c[0] for c in rows.description]
+                row = next((r for r in (dict(zip(names, r)) for r in rows) if r["id"] not in taken and r.get("source") != "exec"
+                            and not str(r.get("source") or "").startswith("{") and r.get("originator") != "Codex Desktop"), None)
+                row = (row["id"],) if row else None
+                out = {"session": row[0]} if row else {}
+            if out:
+                # its name (Codex's, or yours), else its first message
+                row = con.execute("select coalesce(nullif(name, ''), nullif(title, '')) from threads where id = ?", (out["session"],)).fetchone()
+                if row and row[0]:
+                    out["title"] = str(row[0]).strip().splitlines()[0][:100]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        pass
+    return out
+
+
+def owner(pid, rows, ttys):
+    """What a process's terminal belongs to when it doesn't say (no TERM_PROGRAM: a multiplexer, a runner of
+    agents): the first ancestor in no terminal, which made the terminals below it (a shell wrapped in a terminal of
+    its own on the way, as some shell integrations do, is passed)."""
+    p, seen = rows.get(pid, (0,))[0], 0
+    while p in rows and p > 1 and seen < 50:
+        if ttys.get(p, "?").strip("?-") == "":
+            return os.path.basename(rows[p][1].split()[0]) or "?"
+        p, seen = rows[p][0], seen + 1
+    return "?"
+
+
+def agents():
+    """The coding agents running now (Claude Code, Codex), each with its session, folder, title, and the terminal and
+    pane it's in. Not one started by another agent (a Claude running codex): the outer one owns the pane."""
+    global _agents
+    if _agents is not None:
+        return _agents
+    rows, ttys = {}, {}
+    for line in (run(["ps", "-axwwo", "pid=,ppid=,tty=,args="]) or "").splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit():
+            rows[int(parts[0])] = (int(parts[1]), parts[3])
+            ttys[int(parts[0])] = parts[2]
+
+    def tool(args):
+        argv = args.split()
+        name = os.path.basename(argv[0])
+        if name in AGENT_TOOLS:
+            return name
+        if name.startswith("node") and len(argv) > 1 and os.path.basename(argv[1]) in AGENT_TOOLS:
+            return os.path.basename(argv[1])
+        return None
+
+    out = []
+    candidates = [pid for pid, (_, args) in rows.items() if tool(args)]
+    for pid, (ppid, args) in sorted(rows.items()):
+        t = tool(args)
+        if not t:
+            continue
+        p, seen, nested = ppid, 0, False
+        while p in rows and p > 1 and seen < 50:
+            if tool(rows[p][1]):
+                nested = True
+                break
+            p, seen = rows[p][0], seen + 1
+        if nested:
+            continue
+        if ttys.get(pid, "?").strip("?-") == "":  # not in a terminal: a background server (Codex's app server)
+            continue
+        env = environ(pid, ["TERM_PROGRAM", *PANE_VAR.values(), "HERDR_SESSION", "HERDR_PANE_ID"], candidates)
+        a = {"tool": t, "terminal": env.get("TERM_PROGRAM") or owner(pid, rows, ttys)}
+        if env.get("HERDR_PANE_ID"):  # herdr sets no TERM_PROGRAM; its pane is "<session>/w19:p9P"
+            a["terminal"], a["pane"] = "herdr", f"{env.get('HERDR_SESSION') or 'default'}/{env['HERDR_PANE_ID']}"
+        a.update(claude_session(pid) if t == "claude" else {})
+        if not a.get("cwd"):
+            a["cwd"] = next((f for f in [os.path.realpath(f"/proc/{pid}/cwd")] if os.path.isdir(f) and f != f"/proc/{pid}/cwd"), None) or \
+                next((l[1:] for l in (run(["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"]) or "").splitlines() if l.startswith("n")), None)
+        if t == "codex":
+            a.update(codex_session(pid, args, a.get("cwd"), {x.get("session") for x in out}))
+        if env.get(PANE_VAR.get(a["terminal"], "")) and not a.get("pane"):
+            a["pane"] = env[PANE_VAR[a["terminal"]]]
+        out.append(a)
+    _agents = out
+    return out
+
+
+def agent_note(a):
+    """How a pane's agent reads in a layout: "claude 1a2b3c4d "Fix the login bug"" (the full id is in meta)."""
+    return " ".join(x for x in (a["tool"], (a.get("session") or "")[:8], f"\"{a['title']}\"" if a.get("title") else "") if x)
+
+
+def agents_open(w, v):
+    found = agents()
+    if not found:
+        return
+    lines = [f"{a['terminal']}: {agent_note(a)} in {tilde(a['cwd']) if a.get('cwd') else '?'}" for a in
+             sorted(found, key=lambda a: (a["terminal"], a.get("cwd") or "", a.get("session") or ""))]
+    v.add(w, "layout:agents", "layout", f"{len(found)} agent sessions open", "\n".join(lines), None,
+          {"group": "terminal", "tool": "agents", "sessions": [{k: a.get(k) for k in ("tool", "session", "title", "cwd", "terminal", "pane") if a.get(k)} for a in found]})
 
 
 # ---------------------------------------------------------------- layouts
 
 def warp_db():
-    for p in (LIB / "Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable/warp.sqlite",
-              LIB / "Application Support/dev.warp.Warp-Stable/warp.sqlite"):
-        if p.exists():
-            return p
-    return None
+    # Warp's own folder (its team id in the name), or the older one; Stable, Preview or another channel: the one used last
+    found = [*LIB.glob("Group Containers/*.dev.warp/Library/Application Support/dev.warp.Warp-*/warp.sqlite"),
+             *LIB.glob("Application Support/dev.warp.Warp-*/warp.sqlite")]
+    return max(found, key=lambda p: p.stat().st_mtime, default=None)
 
 
 def warp(w, v):
@@ -394,6 +597,9 @@ def warp(w, v):
         branch = {r["pane_node_id"]: r["horizontal"] for r in con.execute("select * from pane_branches")}
         leaves = {r["pane_node_id"]: dict(r) for r in con.execute("select * from pane_leaves")}
         cwd = {r["id"]: r["cwd"] for r in con.execute("select id, cwd from terminal_panes")}
+        # a pane's uuid is what its shell gets as WARP_TERMINAL_SESSION_UUID: how an agent running there is placed
+        uuid = {r["id"]: (r["uuid"].hex() if isinstance(r["uuid"], bytes) else str(r["uuid"] or "")).replace("-", "").lower()
+                for r in con.execute("select id, uuid from terminal_panes")}
     except (sqlite3.Error, KeyError, IndexError) as e:  # another Warp's schema
         w.notes["warp"] = f"not read: {type(e).__name__}: {e}"
         return
@@ -402,12 +608,14 @@ def warp(w, v):
     kids = {}
     for n in nodes.values():
         kids.setdefault(n["parent_pane_node_id"], []).append(n)
+    in_pane = {a["pane"].replace("-", "").lower(): a for a in agents() if a["terminal"] == "WarpTerminal" and a.get("pane")}
 
     def tree(n, pad):
         if n.get("is_leaf") or len(pad) > 40:  # a leaf, or a loop in the tree
             leaf = leaves.get(n["id"]) or {}
             where = tilde(cwd.get(n["id"])) if cwd.get(n["id"]) else ""
-            return [f"{pad}{leaf.get('kind') or 'pane'} {where}".rstrip() ]
+            a = in_pane.get(uuid.get(n["id"], ""))
+            return [f"{pad}{leaf.get('kind') or 'pane'} {where}{'  ' + agent_note(a) if a else ''}".rstrip()]
         ch = kids.get(n["id"], [])
         total = sum(c.get("flex") or 1 for c in ch) or 1
         head = f"{pad}{'side by side' if branch.get(n['id']) else 'stacked'}:"
@@ -417,7 +625,17 @@ def warp(w, v):
             out += [f"{pad}  {round(100 * (c.get('flex') or 1) / total)}% {sub[0].strip()}"] + sub[1:]
         return out
 
-    lines = []
+    def shape(n, depth=0):
+        """The same tree for a program to rebuild: a split's direction and its children's shares, a pane's folder and agent."""
+        if n.get("is_leaf") or depth > 20:
+            a = in_pane.get(uuid.get(n["id"], ""))
+            return {"cwd": cwd.get(n["id"]), **({"agent": {k: a.get(k) for k in ("tool", "session", "title") if a.get(k)}} if a else {})}
+        ch = kids.get(n["id"], [])
+        total = sum(c.get("flex") or 1 for c in ch) or 1
+        return {"split": "side by side" if branch.get(n["id"]) else "stacked",
+                "children": [{"share": round((c.get("flex") or 1) / total, 3), **shape(c, depth + 1)} for c in ch]}
+
+    lines, shapes = [], []
     for win in wins:
         mine = [t for t in tabs if t.get("window_id") == win.get("id")]
         lines.append(f"Window {win.get('id')}: {int(win.get('window_width') or 0)}x{int(win.get('window_height') or 0)}"
@@ -428,26 +646,305 @@ def warp(w, v):
             lines.append(f"  {name}{' (pinned)' if t.get('pinned') else ''}")
             if root:
                 lines += tree(root, "    ")
+                shapes.append({"window": wins.index(win), "tab": i, "title": t.get("custom_title"), **shape(root)})
     if lines:
         v.add(w, "layout:Warp", "layout", f"Warp: {len(wins)} windows, {len(tabs)} tabs, {len(leaves)} panes", "\n".join(lines),
-              from_unix(os.path.getmtime(db)), {"group": "terminal", "tool": "Warp", "windows": len(wins), "tabs": len(tabs), "panes": len(leaves)})
+              from_unix(os.path.getmtime(db)), {"group": "terminal", "tool": "Warp", "windows": len(wins), "tabs": len(tabs), "panes": len(leaves),
+                                                "agents": sum(1 for u in uuid.values() if u in in_pane), "layout": shapes})
+
+
+def may_script(bundle_id):
+    """Whether macOS lets this process script an app without asking: "yes", "ask" (it would put up a dialog, which a
+    background read mustn't), or None (not running, or not a Mac). Asks nothing (AEDeterminePermissionToAutomateTarget
+    with askUserIfNeeded false)."""
+    if os.environ.get("UMP_MAY_SCRIPT"):  # the tests: {"bundle id": "yes" | "ask"}
+        return json.loads(os.environ["UMP_MAY_SCRIPT"]).get(bundle_id)
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+
+    class AEDesc(ctypes.Structure):
+        _fields_ = [("descriptorType", ctypes.c_uint32), ("dataHandle", ctypes.c_void_p)]
+
+    code = lambda s: int.from_bytes(s.encode(), "big")
+    try:
+        cs = ctypes.CDLL("/System/Library/Frameworks/CoreServices.framework/CoreServices")
+        cs.AEDeterminePermissionToAutomateTarget.restype = ctypes.c_int32
+        d, b = AEDesc(), bundle_id.encode()
+        if cs.AECreateDesc(code("bund"), b, len(b), ctypes.byref(d)):
+            return None
+        try:
+            r = cs.AEDeterminePermissionToAutomateTarget(ctypes.byref(d), code("****"), code("****"), ctypes.c_bool(False))
+        finally:
+            cs.AEDisposeDesc(ctypes.byref(d))
+    except (OSError, AttributeError):
+        return None
+    return "yes" if r == 0 else "ask" if r == -1744 else None  # -600: not running
+
+
+# Ghostty's windows, tabs and terminals in order, each terminal's title and folder (its AppleScript, 1.3 and later:
+# `tab` there is Ghostty's tab class, so a tab character is ASCII character 9). It has no split geometry.
+GHOSTTY_SCRIPT = """set sep to (ASCII character 9)
+tell application id "com.mitchellh.ghostty"
+set out to ""
+set wi to 0
+repeat with w in windows
+set wi to wi + 1
+repeat with t in tabs of w
+repeat with term in terminals of t
+set out to out & wi & sep & (index of t) & sep & (name of t) & sep & (name of term) & sep & (working directory of term) & linefeed
+end repeat
+end repeat
+end repeat
+return out
+end tell"""
+
+
+def unmarked(title):
+    """A title without the status mark an agent puts before it (Claude's ✳ idle, a spinner while working): the mark
+    changes by the second, the title is the session's."""
+    return re.sub(r"^[^\w\s\"'(\[]{1,2}\s+", "", title).strip()
+
+
+def ghostty(w, v):
+    allowed = may_script("com.mitchellh.ghostty")
+    if allowed == "ask":
+        w.notes["ghostty"] = "its windows and tabs need Homecoming allowed to see them (Privacy & Security > Automation)"
+    if allowed != "yes":
+        return
+    # A Ghostty that's frozen doesn't answer: the last version read stays the latest
+    out = run(["osascript", "-e", GHOSTTY_SCRIPT], timeout=20)
+    if not out:
+        return
+    terms = []
+    for line in out.splitlines():
+        p = line.split("\t")
+        if len(p) == 5 and p[0].isdigit() and p[1].isdigit():
+            # a title an agent sets is its session's, after a status mark (Claude's ✳ idle, a spinner while working)
+            terms.append({"window": int(p[0]), "tab": int(p[1]), "tab_name": unmarked(p[2]), "title": unmarked(p[3]), "cwd": p[4]})
+    mine = [a for a in agents() if a["terminal"] == "ghostty"]
+    # by title (one agent with it; Codex's reads "<name> | <folder>"), then by folder (one left there)
+    for t in terms:
+        t["titles"] = {t["title"], t["title"].rsplit(" | ", 1)[0]} - {""}
+    for key in ("title", "cwd"):
+        for t in terms:
+            if t.get("agent") or not (t["titles"] if key == "title" else t[key]):
+                continue
+            same = (lambda x: x.get("title") in t["titles"]) if key == "title" else (lambda x: x.get("cwd") == t["cwd"])
+            left = [a for a in mine if same(a) and not a.get("_placed")]
+            rivals = [u for u in terms if not u.get("agent") and (u["titles"] & t["titles"] if key == "title" else u["cwd"] == t["cwd"])]
+            if len(left) == 1 and len(rivals) == 1:
+                t["agent"], left[0]["_placed"] = left[0], True
+    for a in mine:
+        a.pop("_placed", None)
+    lines, layout, last = [], [], None
+    wins = sorted({t["window"] for t in terms})
+    for t in terms:
+        if (t["window"], t["tab"]) != last:
+            if t["window"] != (last or (None,))[0]:
+                lines.append(f"Window {t['window']}: {sum(1 for x in {(u['window'], u['tab']) for u in terms} if x[0] == t['window'])} tabs")
+            lines.append(f"  {t['tab_name'] or 'Tab ' + str(t['tab'])}")
+            layout.append({"window": t["window"] - 1, "tab": t["tab"] - 1, "title": t["tab_name"], "terminals": []})
+            last = (t["window"], t["tab"])
+        a = t.get("agent")
+        lines.append(f"    pane {tilde(t['cwd']) if t['cwd'] else ''}{'  ' + agent_note(a) if a else ''}".rstrip())
+        layout[-1]["terminals"].append({"cwd": t["cwd"], **({"agent": {k: a.get(k) for k in ("tool", "session", "title") if a.get(k)}} if a else {})})
+    if lines:
+        v.add(w, "layout:Ghostty", "layout", f"Ghostty: {len(wins)} windows, {len(layout)} tabs, {len(terms)} panes", "\n".join(lines), None,
+              {"group": "terminal", "tool": "Ghostty", "windows": len(wins), "tabs": len(layout), "panes": len(terms),
+               "agents": sum(1 for t in terms if t.get("agent")), "layout": layout})
 
 
 def tmux(w, v):
-    out = run(["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{pane_index}\t#{pane_current_path}\t#{pane_current_command}"])
+    out = run(["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{pane_index}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_id}"])
     if not out:
         return
-    lines, sessions = [], set()
+    lines, sessions, panes = [], set(), []
     last = None
+    # TMUX_PANE (%3) names an agent's pane; one server per user, so its id is enough (another socket's panes aside)
+    in_pane = {a["pane"]: a for a in agents() if a["terminal"] == "tmux" and a.get("pane")}
     for row in out.splitlines():
-        s, wi, wn, layout, pi, path, cmd = (row.split("\t") + [""] * 7)[:7]
+        s, wi, wn, layout, pi, path, cmd, pid = (row.split("\t") + [""] * 8)[:8]
         sessions.add(s)
         if (s, wi) != last:
             lines.append(f"{s}:{wi} {wn}  [{layout}]")
             last = (s, wi)
-        lines.append(f"    pane {pi}: {cmd} in {tilde(path)}")
+        a = in_pane.get(pid)
+        lines.append(f"    pane {pi}: {agent_note(a) if a else cmd} in {tilde(path)}")
+        panes.append({"session": s, "window": wi, "layout": layout, "pane": pi, "cwd": path,
+                      **({"agent": {k: a.get(k) for k in ("tool", "session", "title") if a.get(k)}} if a else {})})
     v.add(w, "layout:tmux", "layout", f"tmux: {len(sessions)} sessions", "\n".join(lines), None,
-          {"group": "terminal", "tool": "tmux", "sessions": len(sessions)})
+          {"group": "terminal", "tool": "tmux", "sessions": len(sessions), "layout": panes})
+
+
+def splits(node, leaf):
+    """A saved split tree, whatever its nodes are called: {"split": direction, "ratio", "children"} down to what
+    leaf(node) makes of a pane; a node that's neither is walked through."""
+    out = leaf(node)
+    if out is not None:
+        return out
+    if isinstance(node, list):
+        kids = [k for k in (splits(x, leaf) for x in node) if k]
+        return kids[0] if len(kids) == 1 else {"split": None, "children": kids} if kids else None
+    if not isinstance(node, dict):
+        return None
+    inner = node.get("Split") if isinstance(node.get("Split"), dict) else node
+    kids = [k for k in (splits(inner.get(x), leaf) for x in ("first", "second", "children", "panes", "tiles") if x in inner) if k]
+    if not kids:
+        kids = [k for k in (splits(x, leaf) for x in inner.values() if isinstance(x, (dict, list))) if k]
+    if len(kids) == 1:
+        return kids[0]
+    d = inner.get("direction") or inner.get("axis")
+    return {"split": str(d).lower() if d else None, **({"ratio": round(inner["ratio"], 3)} if isinstance(inner.get("ratio"), (int, float)) else {}),
+            "children": kids} if kids else None
+
+
+def leaves(node):
+    return [node] if node and "split" not in node else [x for k in (node or {}).get("children", []) for x in leaves(k)]
+
+
+def herdr(w, v):
+    """herdr's sessions, each in a file of its own: named workspaces, their tabs and splits, each pane's folder, and
+    the agent in it (herdr tells a pane's processes HERDR_PANE_ID, w19:p9P: its workspace, and its pane in base 36)."""
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "herdr"
+    files = [("default", root / "session.json")] + [(p.parent.name, p) for p in sorted(root.glob("sessions/*/session.json"))]
+    in_pane = {a["pane"]: a for a in agents() if a["terminal"] == "herdr" and a.get("pane")}
+    for name, path in files:
+        d = read_json(path, None)
+        if not isinstance(d, dict) or not isinstance(d.get("workspaces"), list):
+            continue
+        lines, layout, panes, placed = [], [], 0, 0
+        for ws in d["workspaces"]:
+            if not isinstance(ws, dict):
+                continue
+            title = ws.get("custom_name") or os.path.basename(str(ws.get("identity_cwd") or "").rstrip("/")) or str(ws.get("id"))
+            lines.append(f"{title}  ({tilde(ws['identity_cwd'])})" if ws.get("identity_cwd") else title)
+            for ti, tab in enumerate(t for t in ws.get("tabs") or [] if isinstance(t, dict)):
+                info = tab.get("panes") if isinstance(tab.get("panes"), dict) else {}
+
+                def leaf(node):
+                    if isinstance(node, dict) and set(node) == {"Pane"}:
+                        pid = str(node["Pane"])
+                        key = f"{name}/{ws.get('id')}:p{base36(int(pid))}" if pid.isdigit() else None
+                        a = in_pane.get(key)
+                        return {"cwd": (info.get(pid) or {}).get("cwd"), **({"agent": {k: a.get(k) for k in ("tool", "session", "title") if a.get(k)}} if a else {})}
+                    return None
+                tree = splits(tab.get("layout"), leaf) or {"children": []}
+                here = leaves(tree)
+                panes, placed = panes + len(here), placed + sum(1 for x in here if x.get("agent"))
+                lines.append(f"  {tab.get('custom_name') or 'tab ' + str(ti + 1)}" + (f"  [{tree['split']} split]" if tree.get("split") else ""))
+                for x in here:
+                    a = x.get("agent")
+                    lines.append(f"    pane {tilde(x['cwd']) if x.get('cwd') else ''}{'  ' + agent_note(a) if a else ''}".rstrip())
+                layout.append({"window": title, "tab": ti, "title": tab.get("custom_name"), **tree})
+        if layout:
+            v.add(w, f"layout:herdr:{name}", "layout", f"herdr {name}: {len(d['workspaces'])} workspaces, {len(layout)} tabs, {panes} panes",
+                  "\n".join(lines), None, {"group": "terminal", "tool": "herdr", "session": name, "tabs": len(layout), "panes": panes,
+                                           "agents": placed, "layout": layout})
+
+
+def base36(n):
+    digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    out = ""
+    while True:
+        n, r = divmod(n, 36)
+        out = digits[r] + out
+        if not n:
+            return out
+
+
+def taiku(w, v):
+    """taiku's terminal layout, kept per folder it was opened in: tabs, splits and the tiles' names."""
+    for path in (HOME / "Library/Application Support/taiku/tui-layout.json",
+                 Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "taiku/tui-layout.json",
+                 Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "taiku/tui-layout.json"):
+        d = read_json(path, None)
+        if not isinstance(d, dict) or not isinstance(d.get("workspaces"), dict):
+            continue
+        lines, layout = [], []
+        for folder, ws in sorted(d["workspaces"].items()):
+            snap = (ws or {}).get("snapshot") if isinstance(ws, dict) else None
+            if not isinstance(snap, dict):
+                continue
+            names = snap.get("tile_names") if isinstance(snap.get("tile_names"), dict) else {}
+            lines.append(tilde(folder))
+            for ti, tab in enumerate(t for t in snap.get("tabs") or [] if isinstance(t, dict)):
+                def leaf(node):
+                    if isinstance(node, dict) and node.get("kind") == "leaf":
+                        tiles = [{"tile": t, **({"name": names[str(t)]} if names.get(str(t)) else {})} for t in node.get("tiles") or []]
+                        return tiles[0] if len(tiles) == 1 else {"split": "stacked", "children": tiles} if tiles else None
+                    return None
+                tree = splits(tab.get("layout"), leaf) or {"children": []}
+                here = leaves(tree)
+                lines.append(f"  tab {ti + 1}: {len(here)} tiles" + (f" [{tree['split']} split]" if tree.get("split") else "") +
+                             "".join(f", {x['name']}" for x in here if x.get("name")))
+                layout.append({"window": folder, "tab": ti, **tree})
+        if layout:
+            v.add(w, "layout:taiku", "layout", f"taiku: {len(d['workspaces'])} folders, {len(layout)} tabs", "\n".join(lines), None,
+                  {"group": "terminal", "tool": "taiku", "tabs": len(layout), "layout": layout})
+        return
+
+
+WINDOWS_SCRIPT = """ObjC.import('CoreGraphics'); ObjC.import('AppKit');
+const regular = {};
+ObjC.unwrap($.NSWorkspace.sharedWorkspace.runningApplications).forEach(a => { if (a.activationPolicy == 0) regular[a.processIdentifier] = a.localizedName.js; });
+const ws = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll | $.kCGWindowListExcludeDesktopElements, 0)));
+const out = ws.filter(w => w.kCGWindowLayer === 0 && regular[w.kCGWindowOwnerPID] && w.kCGWindowBounds.Height >= 100 && w.kCGWindowBounds.Width >= 100)
+  .map(w => [regular[w.kCGWindowOwnerPID], w.kCGWindowIsOnscreen ? 1 : 0, w.kCGWindowBounds.X, w.kCGWindowBounds.Y, w.kCGWindowBounds.Width, w.kCGWindowBounds.Height]);
+const screens = ObjC.unwrap($.NSScreen.screens).map(s => [s.localizedName.js, s.frame.origin.x, s.frame.origin.y, s.frame.size.width, s.frame.size.height]);
+JSON.stringify({windows: out, screens: screens})"""
+
+
+def windows(w, v):
+    """Where every app's windows are: each display, and the frame of each window on screen (the ones on another
+    Space or minimized, counted). Read from the window server's list, which asks for no permission; so no titles."""
+    rows, screens = [], []
+    if sys.platform == "darwin":
+        out = run(["osascript", "-l", "JavaScript", "-e", WINDOWS_SCRIPT], timeout=20)
+        try:
+            d = json.loads(out) if out else {}
+        except ValueError:
+            d = {}
+        screens = [{"name": s[0], "frame": [round(x) for x in s[1:5]]} for s in d.get("screens") or [] if len(s) == 5]
+        rows = [{"app": r[0], "on screen": bool(r[1]), "frame": [round(x) for x in r[2:6]]} for r in d.get("windows") or [] if len(r) == 6]
+    elif shutil.which("hyprctl"):
+        try:
+            clients = json.loads(run(["hyprctl", "clients", "-j"]) or "[]")
+        except ValueError:
+            clients = []
+        for c in clients if isinstance(clients, list) else []:
+            if isinstance(c, dict) and c.get("mapped", True):
+                rows.append({"app": c.get("class") or "?", "on screen": not c.get("hidden"), "frame": [*(c.get("at") or [0, 0]), *(c.get("size") or [0, 0])],
+                             "workspace": (c.get("workspace") or {}).get("name")})
+    elif shutil.which("wmctrl") and os.environ.get("DISPLAY"):
+        for line in (run(["wmctrl", "-lGx"]) or "").splitlines():
+            p = line.split(None, 7)
+            if len(p) >= 7 and p[1] != "-1":
+                rows.append({"app": p[6].split(".")[-1], "on screen": True, "frame": [int(x) for x in p[2:6]], "workspace": p[1]})
+    # AppKit keeps hidden windows of its own in each app, all at one frame (500x500 at 0,617): a frame off screen in
+    # three or more apps' windows is that, not where someone put a window
+    apps_at = {}
+    for r in rows:
+        if not r["on screen"]:
+            apps_at.setdefault(tuple(r["frame"]), set()).add(r["app"])
+    rows = [r for r in rows if r["on screen"] or len(apps_at.get(tuple(r["frame"]), ())) < 3]
+    if not rows:
+        return
+    by = {}
+    for r in rows:
+        by.setdefault(r["app"], []).append(r)
+    lines = [f"display {s['name']}: {s['frame'][2]}x{s['frame'][3]} at {s['frame'][0]},{s['frame'][1]}" for s in screens]
+    # a window on another Space or full screen has its frame too; the same frame several times (tabs) is said once
+    for app, ws in sorted(by.items(), key=lambda x: x[0].lower()):
+        same = {}
+        for r in ws:
+            k = (tuple(r["frame"]), r.get("workspace"))
+            same[k] = (same.get(k, (0, False))[0] + 1, same.get(k, (0, False))[1] or r["on screen"])
+        lines.append(f"{app}: " + ", ".join(f"{f[2]}x{f[3]} at {f[0]},{f[1]}" + (f" x{n}" if n > 1 else "") + (f" (workspace {ws_})" if ws_ else "") +
+                                           (" (on screen)" if shown else "") for (f, ws_), (n, shown) in sorted(same.items())))
+    v.add(w, "layout:windows", "layout", f"Windows: {len(rows)} of {len(by)} apps", "\n".join(lines), None,
+          {"group": "windows", "tool": "windows", "apps": len(by), "screens": screens,
+           "layout": [{k: r[k] for k in ("app", "frame", "workspace", "on screen") if r.get(k)} for r in rows]})
 
 
 def aerospace(w, v):
@@ -510,11 +1007,11 @@ def scripts(w, v):
 # ---------------------------------------------------------------- machines
 
 def tailscale(w, v):
-    ts = run(["tailscale", "status", "--json"]) or run(["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "status", "--json"])
-    if ts:
+    # UMP_SETUP_SYSTEM=0 (the app's end-to-end tests, test-python): only what's under HOME, so not this Mac's Tailscale.
+    d = tailscale_status() if os.environ.get("UMP_SETUP_SYSTEM") != "0" else None
+    if d:
         try:
-            d = json.loads(ts)
-            peers = [p for p in (d.get("Peer") or {}).values() if p.get("HostName") != "funnel-ingress-node"]
+            peers = tailscale_devices(d)
             lines = [f"{p.get('HostName')} ({p.get('OS') or '?'})"  # not whether it's online: that's now, not your setup
                      f"{' (shared in)' if p.get('ShareeNode') else ''}" for p in sorted(peers, key=lambda p: str(p.get("HostName")))]
             me = d.get("Self") or {}
@@ -596,6 +1093,91 @@ def device(w, v, kind, name, facts):
           {"group": "devices", "tool": kind, "device": name})
 
 
+def iphone_apps(w, v, kind, name, ident):
+    """The apps on a connected iPhone or iPad: yours from the App Store, Apple's, and ones you built and put on it."""
+    out = run(["xcrun", "devicectl", "device", "info", "apps", "--device", ident, "--include-removable-apps", "--include-default-apps",
+               "--quiet", "--json-output", "/dev/stdout"], timeout=90)
+    try:
+        apps = json.loads(out[out.index("{"):])["result"]["apps"] if out and "{" in out else []
+    except (ValueError, KeyError, TypeError):
+        apps = []
+    apps = [a for a in apps if isinstance(a, dict) and a.get("name") and not a.get("hidden") and not a.get("appClip")]
+    if not apps:
+        return
+    group = lambda a: "built by you" if a.get("builtByDeveloper") else "Apple's" if a.get("defaultApp") or not a.get("removable") else "installed"
+    lines = []
+    for g in ("installed", "built by you", "Apple's"):
+        mine = sorted((a for a in apps if group(a) == g), key=lambda a: a["name"].lower())
+        if mine:
+            lines.append(f"{g} ({len(mine)}):\n" + "\n".join(f"  {a['name']} {a.get('version') or ''}  {a.get('bundleIdentifier') or ''}".rstrip() for a in mine))
+    v.add(w, f"apps:{kind}:{name}", "inventory", f"{kind}: {name}: {len(apps)} apps", "\n".join(lines), None,
+          {"group": "devices", "tool": kind, "device": name, "apps": len(apps)})
+
+
+# An Android setting kept: one a person chooses. Not what the phone writes for itself (counters, times, states), nor
+# what names the phone or its owner (ids, addresses, accounts).
+ANDROID_SKIP = re.compile(r"(?i)(_id$|^android_id|address|serial|imei|imsi|iccid|account|token|uuid|mac$|_mac_|bssid|ssid|"
+                          r"date|_ms$|count|cnt|last|logging|status|state|history|recent|seen|shown|boot|uptime|"
+                          r"version|update|checkin|^sem_|^SEM_|_info_|^add_info|session|nonce|random|hash|^lock_screen_owner|"
+                          r"owner_info|device_name|bluetooth_name|^SMLDM|^ABC_|_CONSTANT_PATH|offset|^TIME_)")
+
+
+def android(w, v, name, serial):
+    """A connected Android phone's apps (the ones you installed) and its settings (system, secure and global)."""
+    pkgs = sorted(l.split(":", 1)[1].strip() for l in (run(["adb", "-s", serial, "shell", "pm", "list", "packages", "-3"], timeout=60) or "").splitlines()
+                  if l.startswith("package:"))
+    if pkgs:
+        v.add(w, f"apps:phone:{name}", "inventory", f"phone: {name}: {len(pkgs)} apps you installed", "\n".join(pkgs), None,
+              {"group": "devices", "tool": "phone", "device": name, "apps": len(pkgs)})
+    lines = []
+    for table in ("system", "secure", "global"):
+        kept = []
+        for l in (run(["adb", "-s", serial, "shell", "settings", "list", table], timeout=30) or "").splitlines():
+            k, _, val = l.partition("=")
+            # a value that's a time (ms or s since 1970) is the phone's, whatever its name says
+            if k and not ANDROID_SKIP.search(k) and len(val) <= 200 and not looks_random(val) and not re.fullmatch(r"1[5-9]\d{8}(\d{3})?", val):
+                kept.append(f"  {k} = {val}")
+        if kept:
+            lines.append(f"{table}:\n" + "\n".join(sorted(kept)))
+    if lines:
+        v.add(w, f"settings:phone:{name}", "preference", f"phone: {name}: settings", "\n".join(lines), None,
+              {"group": "devices", "tool": "phone", "device": name})
+
+
+def simulators(w, v):
+    """Xcode's simulators: each one's OS, and the apps put on it (the ones you built, read from their bundles, so a
+    simulator that isn't running is read too); and the Android emulators set up."""
+    out = run(["xcrun", "simctl", "list", "devices", "--json"], timeout=60)
+    try:
+        listed = json.loads(out).get("devices") or {} if out else {}
+    except ValueError:
+        listed = {}
+    for runtime, sims in sorted(listed.items()):
+        os_name = re.sub(r"^.*SimRuntime\.", "", runtime).replace("-", " ", 1).replace("-", ".")
+        for sim in sims or []:
+            if not isinstance(sim, dict) or not sim.get("name") or not sim.get("isAvailable", True):
+                continue
+            apps = []
+            for info in glob.glob(os.path.join(sim.get("dataPath") or "", "Containers/Bundle/Application/*/*.app/Info.plist")):
+                try:
+                    d = plistlib.loads(open(info, "rb").read())
+                except Exception:
+                    continue
+                apps.append(f"  {d.get('CFBundleDisplayName') or d.get('CFBundleName') or os.path.basename(os.path.dirname(info))[:-4]} "
+                            f"{d.get('CFBundleShortVersionString') or ''}  {d.get('CFBundleIdentifier') or ''}".rstrip())
+            name = f"{sim['name']} ({os_name})"
+            text = f"{name}\nmodel: {(sim.get('deviceTypeIdentifier') or '').rsplit('.', 1)[-1].replace('-', ' ')}\n" + \
+                (f"apps ({len(apps)}):\n" + "\n".join(sorted(apps, key=str.lower)) if apps else "no apps of yours")
+            v.add(w, f"device:simulator:{sim.get('udid') or name}", "device", f"simulator: {name}" + (f", {len(apps)} apps" if apps else ""),
+                  text, None, {"group": "devices", "tool": "simulator", "device": name, "apps": len(apps)})
+    for ini in sorted(glob.glob(str(Path(os.environ.get("ANDROID_AVD_HOME") or HOME / ".android/avd") / "*.avd/config.ini"))):
+        conf = dict(l.split("=", 1) for l in open(ini, errors="replace").read().splitlines() if "=" in l)
+        conf = {k.strip(): x.strip() for k, x in conf.items()}
+        name = conf.get("avd.ini.displayname") or os.path.basename(os.path.dirname(ini))[:-4]
+        device(w, v, "emulator", name, {"device": conf.get("hw.device.name"), "image": conf.get("image.sysdir.1", "").strip("/").replace("system-images/", ""),
+                                        "abi": conf.get("abi.type"), "memory": conf.get("hw.ramSize")})
+
+
 def devices(w, v):
     out = run(["xcrun", "devicectl", "list", "devices", "--quiet", "--json-output", "/dev/stdout"], timeout=60)
     try:
@@ -605,14 +1187,31 @@ def devices(w, v):
     for d in (listed.get("result") or {}).get("devices") or []:
         dp, hp, cp = d.get("deviceProperties") or {}, d.get("hardwareProperties") or {}, d.get("connectionProperties") or {}
         if dp.get("name"):
-            device(w, v, "phone" if hp.get("deviceType") in ("iPhone", None) else (hp.get("deviceType") or "device").lower(), dp["name"],
+            kind = "phone" if hp.get("deviceType") in ("iPhone", None) else (hp.get("deviceType") or "device").lower()
+            device(w, v, kind, dp["name"],
                    {"model": hp.get("marketingName"), "type": hp.get("deviceType"), "os": " ".join(x for x in (hp.get("platform"), dp.get("osVersionNumber")) if x),
                     "paired": cp.get("pairingState"), "developer mode": "on" if dp.get("developerModeStatus") == "enabled" else None})
+            if cp.get("tunnelState") in (None, "unavailable"):
+                if not cp.get("transportType"):  # paired once, not connected now: nothing to say
+                    continue
+                device_type = hp.get("deviceType") or "iPhone"
+                w.notes.setdefault("devices", {})[device_type.lower()] = (
+                    f"{device_type} apps weren't read: the developer tunnel is unavailable. Unlock the device, "
+                    "trust this computer, and turn on Developer Mode in Settings > Privacy & Security.")
+            elif d.get("identifier"):
+                iphone_apps(w, v, kind, dp["name"], d["identifier"])
     for line in (run(["adb", "devices", "-l"]) or "").splitlines()[1:]:
         parts = line.split()
         if len(parts) >= 2 and parts[1] == "device":
             info = dict(p.split(":", 1) for p in parts[2:] if ":" in p)
-            device(w, v, "phone", info.get("model", "Android device").replace("_", " "), {"type": "Android", "product": info.get("product")})
+            name = info.get("model", "Android device").replace("_", " ")
+            device(w, v, "phone", name, {"type": "Android", "product": info.get("product"),
+                                         "os": "Android " + (run(["adb", "-s", parts[0], "shell", "getprop", "ro.build.version.release"]) or "").strip()})
+            android(w, v, name, parts[0])
+        elif len(parts) >= 2 and parts[1] in ("unauthorized", "offline"):
+            w.notes.setdefault("devices", {})[f"android_{parts[1]}"] = (
+                f"Android apps and settings weren't read: the device is {parts[1]}. Turn on USB debugging, "
+                'unlock the device, and accept "Allow USB debugging" for this computer.')
     sp = run(["system_profiler", "-json", "SPBluetoothDataType", "SPDisplaysDataType", "SPUSBHostDataType"], timeout=90)
     try:
         sp = json.loads(sp) if sp else {}
@@ -660,10 +1259,27 @@ def system(w, v):
         v.add(w, "machines:system", "inventory", "This machine", text, None, {"group": "machines", "tool": "system"})
 
 
-def main():
-    with Writer("setup", AVENUE, forget=lambda old: bool((old.get("meta") or {}).get("generated"))) as w:
+def main(parts=None):
+    """Every part, or some (`setup.py --layouts`: the layouts and the agent sessions in them, every few minutes).
+    One at a time per corpus: a frequent read, a full one and the app's never write this file at once."""
+    import fcntl
+    NORM.mkdir(parents=True, exist_ok=True)
+    with open(NORM.parent / ".setup.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _main(parts)
+
+
+def _main(parts):
+    some = parts is not None
+    # a generated file not read again is gone, unless this read didn't look (only the layouts)
+    with Writer("setup", AVENUE, forget=lambda old: not some and bool((old.get("meta") or {}).get("generated"))) as w:
+        if parts and devices not in parts:
+            # Layout refreshes don't check phones. Keep the last device check's notes until the next one.
+            device_notes = read_manifest().get("setup", {}).get("notes", {}).get("devices")
+            if device_notes:
+                w.notes["devices"] = device_notes
         v = Versions()
-        for part in (configs, domains, warp, tmux, aerospace, apps, brew, launch_agents, scripts, tailscale, ssh_hosts, vms, devices, scheduled, system):
+        for part in parts or PARTS:
             try:
                 part(w, v)
             except Exception as e:  # one tool's odd file stops nothing else
@@ -671,5 +1287,9 @@ def main():
         v.finish(w)
 
 
+PARTS = (configs, domains, warp, ghostty, tmux, herdr, taiku, agents_open, aerospace, windows, apps, brew, launch_agents, scripts, tailscale, ssh_hosts,
+         vms, devices, simulators, scheduled, system)
+LAYOUTS = (warp, ghostty, tmux, herdr, taiku, agents_open, aerospace, windows)
+
 if __name__ == "__main__":
-    main()
+    main(LAYOUTS if "--layouts" in sys.argv else None)
