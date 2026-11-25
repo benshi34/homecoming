@@ -92,12 +92,12 @@ class DrivePhotoTests(unittest.TestCase):
 
     def run_connector(self, extra="", info=True):
         drive = self.volumes / "Camera Card"
-        on = bool(info)  # whatever the card is called, diskutil says it's the same volume
+        on = bool(info)  # whatever the card is called, diskutil says it's the same volume, and an external one
         code = (
             "import drive_photos, documents; from pathlib import Path; "
             f"documents.VOLUMES=Path({str(self.volumes)!r}); "
             f"documents._mounted_fs_types=lambda: {{}}; documents._backup_mounts=lambda: set(); "
-            f"documents._diskutil_info=lambda p: {{'VolumeName': Path(p).name, 'VolumeUUID': 'camera-id'}} if {on!r} else {{}}; "
+            f"documents._diskutil_info=lambda p: {{'VolumeName': Path(p).name, 'VolumeUUID': 'camera-id', 'Internal': False}} if {on!r} else {{}}; "
             f"{extra}drive_photos.main()"
         )
         env = {**os.environ, "HOME": str(self.home), "CORPUS_DIR": str(self.corpus), "TZ": "America/Los_Angeles",
