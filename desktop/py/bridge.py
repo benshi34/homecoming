@@ -59,7 +59,7 @@ BACKUPS = LIB / "Application Support/MobileSync/Backup"
 KEYCHAIN_ITEM = "q1_user_model iPhone backup"
 SF_DATALESS = 0x40000000  # st_flags bit for iCloud files that are only in the cloud
 
-# Where each Mac connector reads from. A source is present if any path is readable.
+
 def plugged_in():
     """The volumes mounted beside the startup disk (UMP_VOLUMES: a folder of their own, in tests). /Volumes itself is
     there on every Mac, so it can't say a drive is plugged in."""
@@ -70,6 +70,7 @@ def plugged_in():
         return []
 
 
+# Where each Mac connector reads from. A source is present if any path is readable.
 MAC_PATHS = {
     "contacts": [LIB / "Application Support/AddressBook"],
     "imessage": [LIB / "Messages/chat.db"],
