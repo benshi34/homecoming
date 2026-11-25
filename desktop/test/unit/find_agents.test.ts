@@ -65,11 +65,12 @@ test('the login shell\'s PATH is added after the system\'s, once; a shell that f
     fs.mkdirSync(path.dirname(shell));
     fs.writeFileSync(shell, '#!/bin/bash\nPATH="/Users/someone/.nvm/versions/node/v22/bin:/usr/bin:/opt/homebrew/bin" exec /bin/bash -c "$2"\n');
     fs.chmodSync(shell, 0o755);
-    const env: NodeJS.ProcessEnv = { SHELL: shell, PATH: '/usr/bin:/bin' };
+    // HOME is the test's own folder: started over a pipe, bash reads ~/.bashrc, and one that sets PATH would answer for the stand-in.
+    const env: NodeJS.ProcessEnv = { SHELL: shell, PATH: '/usr/bin:/bin', HOME: dir };
     assert.deepEqual(await addShellPath(env), ['/Users/someone/.nvm/versions/node/v22/bin', '/opt/homebrew/bin']);
     assert.equal(env.PATH, '/usr/bin:/bin:/Users/someone/.nvm/versions/node/v22/bin:/opt/homebrew/bin');
     assert.deepEqual(await addShellPath(env), [], 'nothing new the second time');
-    const broken = { SHELL: path.join(dir, 'bin/bash'), PATH: '/usr/bin:/bin' };
+    const broken = { SHELL: path.join(dir, 'bin/bash'), PATH: '/usr/bin:/bin', HOME: dir };
     fs.writeFileSync(broken.SHELL, '#!/bin/sh\nexit 3\n');
     fs.chmodSync(broken.SHELL, 0o755);
     assert.deepEqual(await addShellPath(broken), []);

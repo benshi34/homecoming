@@ -5,8 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { DESKTOP, launch, sandbox, sandboxEnv } from './harness.ts';
+import { PY } from '../python.ts';
 
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 
 test('a saved answer keeps its citation and refreshes its photo after a full rebuild', { timeout: 60_000 }, async () => {
   const sb = sandbox({ identity: true });

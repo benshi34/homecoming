@@ -94,9 +94,9 @@ class SetupTests(unittest.TestCase):
         p.write_text("#!/bin/sh\n" + body + "\n")
         p.chmod(0o755)
 
-    def run_setup(self, hosts=""):
-        env = {k: v for k, v in os.environ.items() if k != "UMP_SETUP_HOSTS"}
-        env.update(HOME=str(self.home), CORPUS_DIR=str(self.corpus), PATH=f"{self.bin}:/usr/bin:/bin", UMP_SETUP_HOSTS=hosts)
+    def run_setup(self, hosts="", **extra):
+        env = {k: v for k, v in os.environ.items() if k not in ("UMP_SETUP_HOSTS", "UMP_SETUP_SYSTEM")}
+        env.update(HOME=str(self.home), CORPUS_DIR=str(self.corpus), PATH=f"{self.bin}:/usr/bin:/bin", UMP_SETUP_HOSTS=hosts, **extra)
         r = subprocess.run([sys.executable, "-c", "import setup; setup.main()"], cwd=CONNECTORS, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
         recs = [json.loads(l) for l in (self.corpus / "normalized/setup.jsonl").read_text().splitlines()]
@@ -105,6 +105,15 @@ class SetupTests(unittest.TestCase):
             if r["meta"]["what"] not in by or (r.get("ts") or "") > (by[r["meta"]["what"]].get("ts") or ""):
                 by[r["meta"]["what"]] = r
         return by, recs, json.loads((self.corpus / "manifest.json").read_text())["setup"]
+
+    def test_only_the_home_it_is_given_when_told(self):
+        # The app's end-to-end tests read a made-up home; the commands and /Applications would see the real Mac.
+        by, recs, manifest = self.run_setup(UMP_SETUP_SYSTEM="0")
+        self.assertIn("file:~/.zshrc", by, "what's under HOME is still read")
+        took = sorted(w for w in by if w.startswith(("defaults:", "installed:brew", "machines:tailscale", "devices:", "vms:", "layout:tmux", "layout:aerospace")))
+        self.assertEqual(took, [], "no command run, so nothing of the Mac outside HOME")
+        apps = by.get("installed:apps", {}).get("text", "")
+        self.assertNotIn("Safari", apps, "/Applications isn't listed")
 
     def test_configs_with_their_secrets_out(self):
         by, recs, manifest = self.run_setup()

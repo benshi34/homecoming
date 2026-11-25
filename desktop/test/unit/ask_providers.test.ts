@@ -14,9 +14,9 @@ import { Ask } from '../../src/main/ask.ts';
 import { resolvePaths } from '../../src/main/paths.ts';
 import { type AskConversation, type AskEvent, type AskSettings, DEFAULT_ASK, thoughtsOf } from '../../src/shared/ask.ts';
 import { fakeModelServer } from '../fakes/model_servers.ts';
+import { PY } from '../python.ts';
 
 const DESKTOP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 
 let root: string;
 let corpus: string;

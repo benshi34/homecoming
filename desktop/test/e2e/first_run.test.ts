@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { act, clickAction, find, launch, readJson, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
+import { PY } from '../python.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -68,7 +69,7 @@ test('identity comes pre-filled from the Mac, validates, saves, and re-labels wh
   assert.equal(find(s, 'ai_coding').records, 2);
   assert.equal(find(s, 'git_commits').records, 1);
   assert.ok(fs.existsSync(path.join(sb.corpus, 'corpus.db')));
-  const commit = execFileSync(process.env.UMP_PYTHON || '/usr/local/bin/python3', ['-c', `import sqlite3; print(sqlite3.connect(${JSON.stringify(path.join(sb.corpus, 'corpus.db'))}).execute("select is_me, author from records where source='git_commits'").fetchone())`]).toString().trim();
+  const commit = execFileSync(PY, ['-c', `import sqlite3; print(sqlite3.connect(${JSON.stringify(path.join(sb.corpus, 'corpus.db'))}).execute("select is_me, author from records where source='git_commits'").fetchone())`]).toString().trim();
   assert.equal(commit, "('1', 'me')", 'the commit is marked as Ada\'s after she confirmed who she is');
   await shot(run.page, 'mac-read');
 });

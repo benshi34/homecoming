@@ -11,6 +11,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { type FakeServer, fakeModelServer } from '../fakes/model_servers.ts';
 import { DESKTOP, launch, type Running, type Sandbox, sandbox, sandboxEnv, shot, snap } from './harness.ts';
+import { PY } from '../python.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -25,7 +26,6 @@ const look = async (name: string) => {
 };
 const opened = () => (fs.existsSync(path.join(sb.userData, 'opened.txt')) ? fs.readFileSync(path.join(sb.userData, 'opened.txt'), 'utf8') : '');
 const askApi = (x: object) => run.page.evaluate((v) => (window as unknown as { api: { ask(x: object): Promise<unknown> } }).api.ask(v), x);
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 const plan = (who: 'claude' | 'codex', p: unknown) => fs.writeFileSync(path.join(sb.root, `${who}-plan.json`), JSON.stringify(p));
 
 before(async () => {

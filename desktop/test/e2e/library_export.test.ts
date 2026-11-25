@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { launch, type Running, type Sandbox, sandbox, sandboxEnv, shot, until } from './harness.ts';
+import { PY } from '../python.ts';
 
-const PY = process.env.UMP_PYTHON || '/usr/local/bin/python3';
 let sb: Sandbox;
 let run: Running;
 let drive: string;

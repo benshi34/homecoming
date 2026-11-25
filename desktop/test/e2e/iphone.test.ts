@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { DESKTOP, find, launch, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
+import { PY } from '../python.ts';
 
 const PASSWORD = 'correct horse battery';
 const FAKE_IPHONE = `
@@ -40,7 +41,7 @@ let mods: string;
 
 before(async () => {
   sb = sandbox({ identity: true });
-  execFileSync(process.env.UMP_PYTHON || '/usr/local/bin/python3', [path.join(DESKTOP, 'test/fixtures/make_fixtures.py'), 'backup', sb.home]);
+  execFileSync(PY, [path.join(DESKTOP, 'test/fixtures/make_fixtures.py'), 'backup', sb.home]);
   mods = path.join(sb.root, 'mods');
   fs.mkdirSync(mods);
   fs.writeFileSync(path.join(mods, 'fake_iphone.py'), FAKE_IPHONE);

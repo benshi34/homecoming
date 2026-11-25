@@ -9,6 +9,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, before, test } from 'node:test';
 import { act, clickAction, find, launch, readJson, type Running, type Sandbox, sandbox, sandboxEnv, selectSource, shot, snap, until } from './harness.ts';
+import { PY } from '../python.ts';
 
 let sb: Sandbox;
 let run: Running;
@@ -101,7 +102,7 @@ test('Takeout: once requested, its download page opens, and the parts that arriv
   const part2 = path.join(sb.downloads, 'takeout-20250301T120000Z-1-002.zip');
   const tasks = { kind: 'tasks#taskLists', items: [{ kind: 'tasks#tasks', id: 'L2', title: 'Errands', items: [
     { kind: 'tasks#task', id: 't2', title: 'Post the letter', status: 'needsAction', created: '2024-01-04T09:00:00.000Z' }] }] };
-  execFileSync(process.env.UMP_PYTHON || '/usr/local/bin/python3', ['-c', 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1], "w"); z.writestr("Takeout/Tasks/Tasks.json", sys.argv[2]); z.close()',
+  execFileSync(PY, ['-c', 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1], "w"); z.writestr("Takeout/Tasks/Tasks.json", sys.argv[2]); z.close()',
     part2, JSON.stringify(tasks)]);
   await until(run.page, 'second part in', () => fs.existsSync(path.join(sb.corpus, 'imports/takeout-20250301/takeout-20250301T120000Z-1-002.zip')), 90_000);
   const s2 = await until(run.page, 'both parts read', (x) => !x.jobs.length && readJson(path.join(sb.corpus, 'manifest.json')).google_tasks?.count === 2, 90_000);
