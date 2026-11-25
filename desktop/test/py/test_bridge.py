@@ -243,7 +243,7 @@ class MachineTests(Sandbox):
         ssh.mkdir()
         (ssh / "config").write_text("Host devbox\n  HostName 192.0.2.1\n")
         (self.corpus / "network.json").write_text(json.dumps({"offline": True, "sources": {"machines": True}}))
-        access = {"full_disk_access": False, "blocked": ["Messages", "Mail"], "drives_blocked": ["U35 Bolt+"],
+        access = {"full_disk_access": False, "blocked": ["Messages", "Mail"], "drives_blocked": ["Field Drive"],
                   "macos": "15.2", "fix": "System Settings > General > Sharing, click (i) next to Remote Login"}
         (self.corpus / "machines.json").write_text(json.dumps({"read": ["devbox"], "auto": False}))
         (self.corpus / "manifest.json").write_text(json.dumps({"machines": {"machines": {
