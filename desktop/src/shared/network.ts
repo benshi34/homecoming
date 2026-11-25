@@ -4,7 +4,7 @@ import type { Settings } from './types.ts';
 export const NETWORK_SOURCES: { id: string; name: string; hosts: string[]; what: string }[] = [
   { id: 'icloud-exports', name: 'Download iCloud exports', hosts: ['iCloud Drive'], what: 'Download export files that are not on this Mac yet.' },
   { id: 'speech_models', name: 'Download speech models', hosts: ['Apple'],
-    what: 'Download the speech model for a language this Mac has none for yet, to transcribe audio on this Mac (connectors/transcribe.py).' },
+    what: 'Download the speech model for a language this Mac doesn’t have yet, so audio in it can be transcribed on this Mac.' },
 ];
 
 export const INTERNET_OFF = 'Homecoming is offline. Turn on Use the internet in General.';
