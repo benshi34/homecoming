@@ -43,7 +43,7 @@ before(async () => {
   fs.writeFileSync(path.join(sb.corpus, 'machines.json'), JSON.stringify({ read: ['devbox'], auto: false }));
   fs.writeFileSync(path.join(sb.corpus, 'manifest.json'), JSON.stringify({ machines: { machines: {
     devbox: { sources: { _access: {
-      full_disk_access: false, blocked: ['Messages', 'Mail'], drives_blocked: ['U35 Bolt+'], macos: '15.2',
+      full_disk_access: false, blocked: ['Messages', 'Mail'], drives_blocked: ['Field Drive'], macos: '15.2',
       fix: 'System Settings > General > Sharing, click (i) next to Remote Login, turn on Full Disk Access.'
     } }, seconds: 1 }
   } } }));
@@ -176,6 +176,12 @@ test('turning the internet off cancels cloud answers and mappings while local an
 });
 
 test('Other machines: rows explain access, and its switch is what network.json says', async () => {
+  // The test before this one leaves the internet off, and every switch under it is then off too: on again first.
+  await run.page.locator('[data-testid=nav-general]').click();
+  if ((await until(run.page, 'settings', () => true)).settings.offline) {
+    await run.page.locator('[data-testid=toggle-network]').click();
+    await until(run.page, 'online', (x) => x.settings.offline === false);
+  }
   const sw = run.page.locator('[data-testid=toggle-network-machines]');
   assert.equal(await sw.getAttribute('aria-checked'), 'false');
   await sw.click();
@@ -184,7 +190,7 @@ test('Other machines: rows explain access, and its switch is what network.json s
     ['machine-row-devbox', 'machine-row-studio-mini'], 'only the made-up machines');
   const machine = run.page.locator('[data-testid=machine-row-devbox]');
   await machine.waitFor();
-  assert.match(await machine.innerText(), /Can't read Messages and Mail, or the drive U35 Bolt\+, over ssh/);
+  assert.match(await machine.innerText(), /Can't read Messages and Mail, or the drive Field Drive, over ssh/);
   assert.match(await machine.innerText(), /System Settings > General > Sharing, click \(i\) next to Remote Login/);
   await machine.locator('[data-testid=toggle-machine-devbox]').click();
   await until(run.page, 'machine skipped', () => readJson(path.join(sb.corpus, 'machines.json')).skip?.includes('devbox'));

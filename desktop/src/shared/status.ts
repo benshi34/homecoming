@@ -9,6 +9,7 @@ import { ago, bytes, count, day, list, range, waitRange } from './format.ts';
 import { describeNew, newCandidates } from './identity.ts';
 import { inboxesFor, inboxLabel } from './inbox.ts';
 import type { Action, AppState, Candidate, Backup, JobView, Probe, SignInCheck, SourceState, SourceView, Stats, Summary } from './types.ts';
+import { INTERNET_OFF, NEEDS_NETWORK, NETWORK_SOURCES, networkOff } from './network.ts';
 
 export interface StatusInput {
   probe: Probe | null;
@@ -448,6 +449,11 @@ function macView(src: Source, inp: StatusInput): SourceView {
   if (!t.records && noMailAccounts(src, probe)) {
     return { ...v, section: 'unavailable', status: 'No accounts in Mail', detail: 'Add one in System Settings → Internet Accounts to have it read, then choose Check Again.',
       actions: [{ id: 'open-internet-accounts', label: 'Open Internet Accounts' }, { id: 'recheck', label: 'Check Again' }] };
+  }
+  if (!t.records && networkOff(src.id, state.settings)) {
+    const row = NETWORK_SOURCES.find((r) => r.id === NEEDS_NETWORK[src.id]);
+    return { ...v, section: 'unavailable', status: 'Off in Network',
+      detail: state.settings?.offline ? INTERNET_OFF : `Turn on ${row?.name ?? 'its switch'} in Settings → General → Network to have it read.` };
   }
   if (t.ranAt) {
     if (t.records === 0) {
