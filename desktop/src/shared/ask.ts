@@ -153,10 +153,12 @@ export interface AgentState {
   keys: { anthropic: boolean; openai: boolean };
   local?: LocalStatus;
   signIn?: Partial<Record<'claude-code' | 'codex', SignIn>>;
+  offline?: boolean;
 }
 
 // What's missing before a provider can answer: the agent itself, its sign-in or key, or a local model server that answers.
 export type AgentNeed =
+  | { kind: 'offline' }
   | { kind: 'install'; harness: 'claude-code' | 'codex' }
   | { kind: 'sign-in'; harness: 'claude-code' | 'codex' }
   | { kind: 'key'; key: 'anthropic' | 'openai' }
@@ -167,6 +169,7 @@ export type AgentNeed =
 export function agentNeed(v: AgentState, p: AskProvider = v.settings.provider): AgentNeed | null {
   const info = PROVIDER[p];
   if (!info) return null;
+  if (v.offline && (info.cloud || (p === 'local' && !isLocalAddress(v.settings.localUrl)))) return { kind: 'offline' };
   if (!v.installed[info.harness]) return { kind: 'install', harness: info.harness };
   if (info.needsKey && !v.keys[info.needsKey]) return { kind: 'key', key: info.needsKey };
   // Signed in with your account (not a key, not the model on this Mac): only once it says it isn't.
@@ -187,6 +190,7 @@ export function agentNeed(v: AgentState, p: AskProvider = v.settings.provider): 
 // The same, in a sentence or two.
 export function needText(n: AgentNeed): string {
   switch (n.kind) {
+    case 'offline': return 'Homecoming is offline. Turn on Use the internet to ask a cloud AI.';
     case 'install': return `${n.harness === 'codex' ? 'Codex' : 'Claude Code'} isn't on this Mac.`;
     case 'sign-in': return n.harness === 'codex' ? 'Codex isn\'t signed in on this Mac. Sign In opens ChatGPT\'s sign-in in your browser.'
       : 'Claude Code isn\'t signed in on this Mac. Sign In opens claude.ai\'s sign-in in your browser.';

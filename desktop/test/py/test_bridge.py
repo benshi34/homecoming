@@ -63,11 +63,26 @@ class Sandbox(unittest.TestCase):
                     pass
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def probe(self):
-        return jsonout(bridge(["probe"], self.home, self.corpus))
+    def probe(self, tailscale="exit 1"):
+        # this Mac's own Tailscale (and its apps) out of sight: a stand-in first on PATH, signed out unless told
+        bin_ = self.tmp / "bin"
+        bin_.mkdir(exist_ok=True)
+        (bin_ / "tailscale").write_text("#!/bin/sh\n" + tailscale + "\n")
+        (bin_ / "tailscale").chmod(0o755)
+        env = {"PATH": f"{bin_}:{os.environ.get('PATH', '')}", "UMP_APPLICATIONS": str(self.tmp / "no-apps")}
+        return jsonout(bridge(["probe"], self.home, self.corpus, extra_env=env))
 
 
 class ProbeTests(Sandbox):
+    def test_other_machines_are_there_with_one_of_yours_on_tailscale_or_a_vm(self):
+        net = lambda peers: "echo '" + json.dumps({"Self": {"UserID": 1}, "Peer": peers}) + "'"
+        shared = {"a": {"HostName": "theirs", "OS": "linux", "UserID": 2, "ShareeNode": True}, "b": {"HostName": "funnel-ingress-node", "UserID": 2},
+                  "c": {"HostName": "phone", "OS": "iOS", "UserID": 1}}
+        self.assertEqual(self.probe(net(shared))["sources"]["machines"], "absent", "only someone else's, a relay and a phone")
+        self.assertEqual(self.probe(net({**shared, "d": {"HostName": "box", "OS": "linux", "UserID": 1}}))["sources"]["machines"], "ok")
+        (self.home / ".orbstack").mkdir()
+        self.assertEqual(self.probe()["sources"]["machines"], "ok", "OrbStack set up, Tailscale signed out")
+
     def test_empty_home(self):
         p = self.probe()
         self.assertIsNone(p["fda"])
@@ -201,6 +216,46 @@ class ProbeTests(Sandbox):
         nosync = self.tmp / "corpus.nosync"
         nosync.mkdir()
         self.assertFalse(jsonout(bridge(["probe"], self.home, nosync))["corpus"]["in_icloud"])
+
+
+class MachineTests(Sandbox):
+    def test_machine_set_moves_name_and_keeps_other_settings(self):
+        config = {"read": ["old", "target"], "skip": ["nas", "target"], "auto": False,
+                  "sources": {"old": ["ai_coding"]}, "extra": {"keep": True}}
+        (self.corpus / "machines.json").write_text(json.dumps(config))
+        self.assertEqual(jsonout(bridge(["machine-set"], self.home, self.corpus,
+                                         stdin=json.dumps({"name": "target", "read": False}))),
+                         {"name": "target", "read": False})
+        changed = json.loads((self.corpus / "machines.json").read_text())
+        self.assertEqual(changed["read"], ["old"])
+        self.assertEqual(changed["skip"], ["nas", "target"])
+        self.assertEqual({k: changed[k] for k in ("auto", "sources", "extra")},
+                         {k: config[k] for k in ("auto", "sources", "extra")})
+        jsonout(bridge(["machine-set"], self.home, self.corpus,
+                       stdin=json.dumps({"name": "target", "read": True})))
+        changed = json.loads((self.corpus / "machines.json").read_text())
+        self.assertEqual(changed["read"], ["old", "target"])
+        self.assertEqual(changed["skip"], ["nas"])
+        self.assertEqual(list(self.corpus.glob(".*.tmp")), [], "atomic write leaves no temp file")
+
+    def test_machines_lists_manifest_access_and_last_read(self):
+        ssh = self.home / ".ssh"
+        ssh.mkdir()
+        (ssh / "config").write_text("Host devbox\n  HostName 192.0.2.1\n")
+        (self.corpus / "network.json").write_text(json.dumps({"offline": True, "sources": {"machines": True}}))
+        access = {"full_disk_access": False, "blocked": ["Messages", "Mail"], "drives_blocked": ["Field Drive"],
+                  "macos": "15.2", "fix": "System Settings > General > Sharing, click (i) next to Remote Login"}
+        (self.corpus / "machines.json").write_text(json.dumps({"read": ["devbox"], "auto": False}))
+        (self.corpus / "manifest.json").write_text(json.dumps({"machines": {"machines": {
+            "devbox": {"sources": {"_access": access}, "seconds": 3}
+        }}}))
+        listed = jsonout(bridge(["machines"], self.home, self.corpus))
+        [machine] = [m for m in listed if m["name"] == "devbox"]  # this Mac's own Tailscale peers may be listed too
+        self.assertEqual(machine["name"], "devbox")
+        self.assertEqual(machine["via"], "ssh config")
+        self.assertTrue(machine["read"])
+        self.assertTrue(machine["lastRead"])
+        self.assertEqual(machine["access"], access)
 
 
 class IdentifyTests(Sandbox):
@@ -894,6 +949,7 @@ class ResilientImportsTests(Sandbox):
         (self.corpus / "imports/hotmail/Inbox.mbox/mbox").write_text("x")
         out = self._inprocess("""
             import subprocess, time
+            bridge.common.NETWORK.write_text(json.dumps({"offline": False, "sources": {"icloud-exports": True}}))
             calls, checks = [], {"n": 0}
             real_lstat = os.lstat
             class St:
@@ -915,6 +971,127 @@ class ResilientImportsTests(Sandbox):
         self.assertIn('"brctl", "download"', out)
         self.assertIn("1 export files are only in iCloud", out)
 
+    def test_cloud_only_exports_stay_local_when_network_is_off(self):
+        (self.corpus / "imports/hotmail/Inbox.mbox").mkdir(parents=True)
+        (self.corpus / "imports/hotmail/Inbox.mbox/mbox").write_text("x")
+        out = self._inprocess("""
+            import subprocess
+            bridge.common.NETWORK.write_text(json.dumps({"offline": True, "sources": {"icloud-exports": True}}))
+            real_lstat = os.lstat
+            class St:
+                def __init__(self, s): self.s, self.st_flags = s, bridge.SF_DATALESS
+                def __getattr__(self, k): return getattr(self.s, k)
+            os.lstat = lambda p: St(real_lstat(p)) if str(p).endswith("/mbox") else real_lstat(p)
+            calls = []
+            subprocess.run = lambda args, **kw: calls.append(args)
+            try:
+                bridge.resilient_imports(sys.__stdout__)
+            except RuntimeError as e:
+                print("ERROR", e)
+            print("CALLS", json.dumps(calls))
+        """)
+        self.assertIn("ERROR 1 export files aren't on this Mac yet (hotmail/Inbox.mbox/mbox)", out)
+        self.assertIn("Turn on Use the internet and allow iCloud exports", out)
+        self.assertIn("CALLS []", out)
+        self.assertFalse((self.corpus / "manifest.json").exists(), "cloud-only imports are not parsed")
+
+    def test_cloud_only_exports_need_their_network_permission(self):
+        (self.corpus / "imports/hotmail/Inbox.mbox").mkdir(parents=True)
+        (self.corpus / "imports/hotmail/Inbox.mbox/mbox").write_text("x")
+        out = self._inprocess("""
+            import subprocess
+            bridge.common.NETWORK.write_text(json.dumps({"offline": False, "sources": {}}))
+            real_lstat = os.lstat
+            class St:
+                def __init__(self, s): self.s, self.st_flags = s, bridge.SF_DATALESS
+                def __getattr__(self, k): return getattr(self.s, k)
+            os.lstat = lambda p: St(real_lstat(p)) if str(p).endswith("/mbox") else real_lstat(p)
+            calls = []
+            subprocess.run = lambda args, **kw: calls.append(args)
+            print("LEFT", json.dumps(bridge.materialize(bridge.CORPUS / "imports", timeout=0)))
+            print("CALLS", json.dumps(calls))
+        """)
+        self.assertIn("LEFT [", out)
+        self.assertIn("CALLS []", out)
+
+    def test_turning_off_network_stops_materializing_remaining_files(self):
+        root = self.corpus / "imports/hotmail"
+        root.mkdir(parents=True)
+        for name in ("one.mbox", "two.mbox"):
+            (root / name).write_text("x")
+        out = self._inprocess("""
+            import subprocess, time
+            bridge.common.NETWORK.write_text(json.dumps({"offline": False, "sources": {"icloud-exports": True}}))
+            real_lstat = os.lstat
+            class St:
+                def __init__(self, s): self.s, self.st_flags = s, bridge.SF_DATALESS
+                def __getattr__(self, k): return getattr(self.s, k)
+            os.lstat = lambda p: St(real_lstat(p)) if str(p).endswith(("one.mbox", "two.mbox")) else real_lstat(p)
+            calls = []
+            def download(args, **kw):
+                calls.append(args)
+                bridge.common.NETWORK.write_text(json.dumps({"offline": True, "sources": {"icloud-exports": True}}))
+            subprocess.run = download
+            time.sleep = lambda s: None
+            left = bridge.materialize(bridge.CORPUS / "imports", timeout=5)
+            print("LEFT", json.dumps([os.path.basename(p) for p in left]))
+            print("CALLS", json.dumps(calls))
+        """)
+        calls = json.loads(out.split("CALLS ", 1)[1])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(Path(calls[0][-1]).name, "one.mbox")
+        self.assertIn('LEFT ["one.mbox", "two.mbox"]', out)
+
+    def test_local_exports_import_without_network_permission(self):
+        (self.corpus / "imports/local/source.txt").parent.mkdir(parents=True)
+        (self.corpus / "imports/local/source.txt").write_text("local fixture")
+        out = self._inprocess("""
+            import imports, subprocess
+            bridge.common.NETWORK.write_text(json.dumps({"offline": True, "sources": {}}))
+            real_run = subprocess.run
+            def run(args, **kw):
+                if args[0] == "brctl": raise AssertionError("unexpected iCloud download")
+                return real_run(args, **kw)
+            subprocess.run = run
+            def local(es, W, used):
+                W("synthetic_local").add(id="1", kind="note", text="read locally")
+            imports.PARSERS = [local]
+            print("RESULT", json.dumps(bridge.resilient_imports(sys.__stdout__)))
+        """)
+        self.assertIn('RESULT []', out)
+        records = (self.corpus / "normalized/synthetic_local.jsonl").read_text()
+        self.assertIn('"text": "read locally"', records)
+
+    def test_revoking_source_permission_stops_waiting_for_started_download(self):
+        (self.corpus / "imports/hotmail/Inbox.mbox").mkdir(parents=True)
+        (self.corpus / "imports/hotmail/Inbox.mbox/mbox").write_text("x")
+        out = self._inprocess("""
+            import subprocess
+            bridge.common.NETWORK.write_text(json.dumps({"offline": False, "sources": {"icloud-exports": True}}))
+            real_lstat = os.lstat
+            class St:
+                def __init__(self, s): self.s, self.st_flags = s, bridge.SF_DATALESS
+                def __getattr__(self, k): return getattr(self.s, k)
+            os.lstat = lambda p: St(real_lstat(p)) if str(p).endswith("/mbox") else real_lstat(p)
+            calls, waits = [], {"n": 0}
+            def download(args, **kw): calls.append(args)
+            def sleep(_seconds):
+                waits["n"] += 1
+                bridge.common.NETWORK.write_text(json.dumps({"offline": False, "sources": {}}))
+                if waits["n"] > 1: raise AssertionError("wait continued after source permission was turned off")
+            subprocess.run = download
+            bridge.time.sleep = sleep
+            bridge.time.time = lambda: 0
+            left = bridge.materialize(bridge.CORPUS / "imports", timeout=100)
+            print("LEFT", json.dumps([os.path.basename(p) for p in left]))
+            print("CALLS", json.dumps(calls))
+            print("WAITS", waits["n"])
+        """)
+        calls = json.loads(out.split("CALLS ", 1)[1].splitlines()[0])
+        self.assertEqual(len(calls), 1, "the authorized download started once")
+        self.assertIn("WAITS 1", out, "it stopped waiting as soon as the source permission was removed")
+        self.assertIn('LEFT ["mbox"]', out)
+
     def test_exports_that_stay_cloud_only_stop_the_import_before_anything_is_written(self):
         (self.corpus / "imports/hotmail/Inbox.mbox").mkdir(parents=True)
         (self.corpus / "imports/hotmail/Inbox.mbox/mbox").write_text("x")
@@ -932,7 +1109,7 @@ class ResilientImportsTests(Sandbox):
             except RuntimeError as e:
                 print("ERROR", e)
         """)
-        self.assertIn("ERROR 1 export files are still only in iCloud (hotmail/Inbox.mbox/mbox)", out)
+        self.assertIn("ERROR 1 export files aren't on this Mac yet (hotmail/Inbox.mbox/mbox)", out)
         self.assertFalse((self.corpus / "manifest.json").exists(), "nothing was written")
 
     def test_mirror_of_imports_main_is_current(self):

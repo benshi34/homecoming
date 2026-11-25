@@ -1,6 +1,6 @@
 import type { AskConversation, AskEvent, AskProvider, AskSettings, AskSummary } from '../shared/ask.ts';
 import type { ExploreProgress } from '../shared/explore.ts';
-import type { AskView, DirectoryEntry, ExportPart, LibrarySizes, Onboarding, Settings, Snapshot } from '../shared/types.ts';
+import type { AskView, DirectoryEntry, ExportPart, LibrarySizes, MachineAccess, MachineView, Onboarding, Settings, Snapshot } from '../shared/types.ts';
 import type { Release } from '../shared/version.ts';
 
 export interface Api {
@@ -11,6 +11,9 @@ export interface Api {
   action(sourceId: string, action: string, payload?: unknown): Promise<{ ok: boolean; error?: string; id?: string; ids?: string[]; data?: unknown }>;
   dropFiles(files: File[], sourceId: string | null): Promise<{ ok: boolean; error?: string }>;
   settings(patch: Partial<Settings>): Promise<Settings>;
+  machines(): Promise<MachineView[]>;
+  machineSet(name: string, read: boolean): Promise<{ name: string; read: boolean }>;
+  machineCheck(name: string): Promise<MachineAccess>;
   onboarding(patch: Partial<Onboarding>): Promise<Onboarding>;
   jobLog(sourceId: string): Promise<string[]>;
   directory(): Promise<DirectoryEntry[]>;
@@ -47,7 +50,7 @@ export interface AskApi {
   (op: { op: 'check' }): Promise<AskView>; // look again for the agents, and the local model's server
   (op: { op: 'open-terminal' }): Promise<null>;
   (op: { op: 'sign-in'; harness: 'claude-code' | 'codex' }): Promise<{ ok: boolean; error?: string }>;
-  (op: { op: 'open-sign-in-page'; harness: 'claude-code' | 'codex'; code?: boolean }): Promise<null>;
+  (op: { op: 'open-sign-in-page'; harness: 'claude-code' | 'codex'; code?: boolean }): Promise<{ ok: boolean; error?: string } | null>;
   (op: { op: 'sign-in-code'; harness: 'claude-code' | 'codex'; code: string }): Promise<{ ok: boolean; error?: string }>;
   (op: { op: 'stop' | 'remove'; id: string }): Promise<unknown>;
   (op: { op: 'settings'; patch: Partial<AskSettings> }): Promise<AskSettings>;
@@ -55,7 +58,7 @@ export interface AskApi {
   (op: { op: 'set-key'; kind: 'anthropic' | 'openai'; key: string | null }): Promise<{ ok?: boolean; error?: string }>;
   (op: { op: 'models'; provider: AskProvider }): Promise<string[]>;
   (op: { op: 'record'; rowid: number }): Promise<AskRecord | null>;
-  (op: { op: 'open-link'; url: string }): Promise<null>;
+  (op: { op: 'open-link'; url: string }): Promise<{ ok: boolean; error?: string } | null>;
 }
 
 export interface AskRecord {

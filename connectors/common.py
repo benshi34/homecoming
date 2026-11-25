@@ -54,6 +54,34 @@ LIB = HOME / "Library"
 # symlink to ~/Library/Application Support/q1_user_model/iphone, outside iCloud Drive).
 IPHONE = RAW / "iphone" / "files"
 
+NETWORK = CORPUS / "network.json"  # the app writes it from its Network settings; scheduled and command-line runs read it too
+
+
+class Offline(RuntimeError):
+    """A source asked to go online when it may not: Homecoming is offline, or that source's switch is off."""
+
+
+def online(source):
+    """Whether this source may reach the internet. Everything Homecoming reads comes from this Mac's own files unless
+    a source is switched on here: network.json {"offline": false, "sources": {"slack": true}}, off unless named.
+    UMP_OFFLINE=1, or "offline": true, turns every one of them off, whatever the switches say."""
+    if os.environ.get("UMP_OFFLINE") == "1":
+        return False
+    conf = read_json(NETWORK, {})
+    if not isinstance(conf, dict) or conf.get("offline") is True:
+        return False
+    sources = conf.get("sources")
+    return isinstance(sources, dict) and sources.get(source) is True
+
+
+def need_online(source, notes=None):
+    """online(source), or note it in a run's notes ("offline": what it would have reached) and raise Offline."""
+    if online(source):
+        return True
+    if notes is not None:
+        notes["offline"] = notes.get("offline", 0) + 1
+    raise Offline(f"{source} is off: Homecoming reaches the internet only for sources switched on in Network")
+
 
 def phone(domain, rel=""):
     """A file (or folder) from the decrypted iPhone backup, e.g. phone("HomeDomain", "Library/SMS/sms.db")."""
@@ -170,7 +198,10 @@ LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 
 
 def snapshot_sqlite(src, name):
-    """Copy a live SQLite DB into corpus/raw/<name> without disturbing the owning app."""
+    """Copy a live SQLite DB into corpus/raw/<name> without disturbing the owning app. UMP_READ_IN_PLACE (another
+    machine read by machines.py, whose disk may have no room for a copy): the DB itself, opened read-only by connect."""
+    if os.environ.get("UMP_READ_IN_PLACE") == "1":
+        return Path(src)
     src, dst = Path(src), RAW / name
     dst.parent.mkdir(parents=True, exist_ok=True)
     for suffix in ("", "-wal", "-shm", "-journal"):
@@ -458,3 +489,26 @@ class Writer:
         if self.notes:
             print(f"[{self.source}] notes: {self.notes}")
         return False
+
+
+def tailscale_status():
+    """Tailscale's view of your network (`tailscale status --json`), from its command on PATH or the one inside the app
+    wherever it's installed (UMP_APPLICATIONS in the tests); None without Tailscale or signed out."""
+    roots = (Path(os.environ.get("UMP_APPLICATIONS") or "/Applications"), HOME / "Applications")
+    for cmd in (shutil.which("tailscale"), *(str(r / "Tailscale.app/Contents/MacOS/Tailscale") for r in roots)):
+        if not cmd or not os.path.exists(cmd):
+            continue
+        try:
+            r = subprocess.run([cmd, "status", "--json"], capture_output=True, text=True, timeout=20)
+            d = json.loads(r.stdout) if r.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            continue
+        if isinstance(d, dict):
+            return d
+    return None
+
+
+def tailscale_devices(status):
+    """The devices on a Tailscale network: its peers with an operating system. (Tailscale's own nodes, the Funnel
+    ingress relays shared into every network that uses Funnel, have none.)"""
+    return [p for p in ((status or {}).get("Peer") or {}).values() if isinstance(p, dict) and p.get("OS")]
