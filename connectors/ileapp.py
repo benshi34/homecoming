@@ -22,7 +22,9 @@ avoids decrypting 18 GB twice, and keeps the backup password away from iLEAPP's 
 to ~/Library/Application Support/q1_user_model/ileapp/<backup>/ (outside iCloud). Only the LAVA database
 (_lava_artifacts.db, one table per artifact) and _lava_data.lava (per-artifact metadata: category, column types,
 chat column roles) are kept; iLEAPP's copies of extracted files and media, and its HTML/TSV/timeline reports
-(~20 GB for this phone), are deleted. The backup password is never passed to this process.
+are deleted. Before running, it estimates free working space as three quarters of the selected backup's file sizes
+plus 2 GB for databases and reports (an 18 GB backup peaked near 10 GB, 2026-10-12). Hard links add no second copy of the mirror. This is an estimate, not a bound
+on every module's output. The backup password is never passed to this process.
 
 Import: one source per iLEAPP module, named phone_<module>. Tables with a "conversation" data view become
 messages (thread, text, direction, sender, time and media come from the columns the module declares); every
@@ -68,7 +70,8 @@ TOOLS = BASE / "tools"
 VENV_PY = TOOLS / f"ileapp-venv-{ILEAPP_VERSION}/bin/python"
 OUT = BASE / "ileapp"
 CUSTOM = Path(__file__).resolve().parent / "ileapp_modules"
-MIN_FREE = 15e9  # iLEAPP's working files for this backup peaked near 10 GB (vendored copy, 2026-10-12)
+SPACE_NUM, SPACE_DEN = 3, 4  # three quarters of the backup: extracted files and reports beside the hard-linked input
+SPACE_MARGIN = 2_000_000_000  # databases and small-backup overhead, in bytes (2 GB)
 TIMEOUT = 4 * 3600  # a full run took ~8 minutes here: one far past this has a module stuck, and stops (ILEAPP.md #9)
 UNREAD = "couldn't be read"
 
@@ -234,18 +237,33 @@ def build_view(view):
     return n
 
 
+def working_space(backup):
+    """Estimated extra bytes: three quarters of this backup's logical file sizes plus 2 GB, without following child
+    symlinks."""
+    def unreadable(error):
+        raise error  # an incomplete walk would underestimate the space needed
+    size = sum((Path(folder) / name).lstat().st_size
+               for folder, _, files in os.walk(backup, onerror=unreadable) for name in files)
+    return size * SPACE_NUM // SPACE_DEN + SPACE_MARGIN
+
+
 def run(backup=None, force=False):
-    if not (ILEAPP / "ileapp.py").exists() or not VENV_PY.exists():
-        install()
     # The backup iphone.py has just copied (Finder may have started another since: only its name is needed here).
     bk = backup if isinstance(backup, iphone_backup.Backup) else iphone_backup.Backup(backup)
     if not IPHONE.is_dir():
         sys.exit(f"[ileapp] there's no decrypted copy of the backup to read yet ({IPHONE}): iphone_backup.py makes it")
     BASE.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(BASE).free
-    if free < MIN_FREE and not force:
-        sys.exit(f"[ileapp] only {free / 1e9:.0f} GB free; iLEAPP needs ~{MIN_FREE / 1e9:.0f} GB while it runs "
-                 f"(--force to try anyway)")
+    try:
+        need = working_space(bk.dir)
+    except OSError as e:
+        sys.exit(f"[ileapp] couldn't measure this backup's size: {e}. Check access to the backup and try again.")
+    if free < need and not force:
+        sys.exit(f"[ileapp] only {free / 1e9:.1f} GB free; this backup needs about {need / 1e9:.1f} GB free "
+                 f"while iLEAPP runs (three quarters of the backup's size plus {SPACE_MARGIN / 1e9:g} GB). "
+                 f"Free up space and try again (--force to try anyway).")
+    if not (ILEAPP / "ileapp.py").exists() or not VENV_PY.exists():
+        install()
     dest = OUT / bk.dir.name
     work = dest / "run"
     shutil.rmtree(work, ignore_errors=True)
