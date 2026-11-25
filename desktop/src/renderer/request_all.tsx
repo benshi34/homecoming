@@ -34,7 +34,8 @@ export function RequestAllSheet({ snap, onClose, onJump, onAsked }: { snap: Snap
   const ag = snap.setup?.agent;
   const why = snap.settings.aiOn !== true ? 'AI is off' : snap.settings.agentExports === false ? 'Do It for Me is off'
     : ag?.fix === 'provider' ? (ag.soon ? 'Do It for Me is coming soon with the AI you picked' : 'Do It for Me needs your claude.ai account')
-      : ag && !ag.ok ? 'Do It for Me can\'t run yet: AI Settings says why' : 'Do It for Me is off';
+      : ag?.fix === 'offline' ? (ag.why ?? 'Homecoming is offline')
+        : ag && !ag.ok ? 'Do It for Me can\'t run yet: AI Settings says why' : 'Do It for Me is off';
   // What it does (the first time, which asks Anthropic's data settings itself), or the data settings when they're due;
   // "not yet" was said as the sheet opened.
   const checked = () => (agentGate(snap) === 'retention' ? setGate('retention') : ask());

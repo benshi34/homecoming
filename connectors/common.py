@@ -57,6 +57,10 @@ IPHONE = RAW / "iphone" / "files"
 NETWORK = CORPUS / "network.json"  # the app writes it from its Network settings; scheduled and command-line runs read it too
 
 
+class Offline(RuntimeError):
+    """A source asked to go online when it may not: Homecoming is offline, or that source's switch is off."""
+
+
 def online(source):
     """Whether this source may reach the internet. Everything Homecoming reads comes from this Mac's own files unless
     a source is switched on here: network.json {"offline": false, "sources": {"slack": true}}, off unless named.
@@ -68,6 +72,15 @@ def online(source):
         return False
     sources = conf.get("sources")
     return isinstance(sources, dict) and sources.get(source) is True
+
+
+def need_online(source, notes=None):
+    """online(source), or note it in a run's notes ("offline": what it would have reached) and raise Offline."""
+    if online(source):
+        return True
+    if notes is not None:
+        notes["offline"] = notes.get("offline", 0) + 1
+    raise Offline(f"{source} is off: Homecoming reaches the internet only for sources switched on in Network")
 
 
 def phone(domain, rel=""):

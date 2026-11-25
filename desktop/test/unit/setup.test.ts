@@ -83,6 +83,7 @@ test('what the connectors are told, and the inboxes Claude may look in', () => {
   assert.deepEqual(setupEnv({}), { UMP_BROWSERS_SKIP: '' });
   assert.deepEqual(setupEnv({ historyOff: ['arc', 'firefox'], phoneRegion: 'GB', mailChecks: false, notificationChecks: false }),
     { UMP_BROWSERS_SKIP: 'arc,firefox', UMP_PHONE_REGION: 'GB', UMP_READY_MAIL: '0', UMP_READY_NOTIFICATIONS: '0' });
+  assert.deepEqual(setupEnv({ offline: true }), { UMP_BROWSERS_SKIP: '', UMP_OFFLINE: '1' });
   assert.deepEqual(setupEnv({ phoneRegion: '' }), { UMP_BROWSERS_SKIP: '' }, 'unset: this Mac\'s region');
   assert.deepEqual(inboxesOn(['Ada@Gmail.com', 'ada@work.example'], ['ada@gmail.com']), ['ada@work.example']);
 });
