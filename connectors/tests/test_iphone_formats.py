@@ -767,12 +767,14 @@ class IleappTests(Phone):
             f.truncate(4_000_000_000)
         script = self.fake_ileapp(0, "Processes completed.")
         self.run_py(f"""
+            import shutil
             import ileapp, iphone
             from pathlib import Path
             from types import SimpleNamespace
             ileapp.VENV_PY = Path({str(script)!r})
             ileapp.write_profile = lambda path: 1
-            ileapp.shutil.disk_usage = lambda path: SimpleNamespace(free=3_000_000_000)
+            # 3 GB free as iLEAPP's own check sees it, not for the rest of the run (the index has its own free-space rule)
+            ileapp.shutil = SimpleNamespace(**{{**vars(shutil), "disk_usage": lambda path: SimpleNamespace(free=3_000_000_000)}})
             iphone.main(['--skip-decrypt', '--only', 'ileapp', '--backup', {str(selected)!r}])""")
         self.assertEqual(list(self.records("phone_notesapp")), ["notesA:n1"])
         self.assertTrue((self.corpus / "corpus.db").is_file())
