@@ -127,7 +127,7 @@ class ScheduleTests(unittest.TestCase):
         import shutil
         free = shutil.disk_usage(self.corpus).free
         with open(self.corpus / "corpus.db", "wb") as f:
-            f.truncate(free)  # sparse: as big as the free space, using none of it
+            f.truncate(free * 2)  # sparse: twice the free space, using none of it (as big as it, and anything freed meanwhile lets the read start)
         self.schedule("run", "all", UMP_SCHEDULE_MIN_FREE="1")
         self.assertIn("skipped:", (self.corpus / "raw/schedule/all.log").read_text())
 
