@@ -8,6 +8,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, safeStorage, shell, systemPreferences, Tray } from 'electron';
 import { agentNeed, isLocalAddress, LINKS, LOCAL_SERVERS, needText, PROVIDER, providerLabel, RETENTION, retentionOk, type AskProvider, type AskSettings } from '../shared/ask.ts';
 import { BY_ID, CATALOG, IMPORT_PARSER_SOURCES, isAccount, KIND_TO_SOURCE, MAC_CONNECTORS, refreshServices, reservedFolders, serviceKey, setServices, type Source } from '../shared/catalog.ts';
@@ -20,7 +21,7 @@ import { identityKeys, setPhoneRegion } from '../shared/identity.ts';
 import { inboxesFor, inboxUrl } from '../shared/inbox.ts';
 import { agentBrowser, agentProvider, agentReady, claudeInboxes, macDefault, pageBrowser, setupEnv, type AgentReady } from '../shared/setup.ts';
 import { buildNote, compareVersions, parseChangelog, type Release, whatsNewSince } from '../shared/version.ts';
-import { networkFile } from '../shared/network.ts';
+import { INTERNET_OFF, networkFile } from '../shared/network.ts';
 import type { AgentMode, AgentState, AppState, BuildInfo, Candidate, DirectoryEntry, Discovery, ExportPart, FoundService, Identified, Identity, MachineAccess, MachineView, MappingPreview, NotifyCheck, Probe, ServiceEntry, SignInCheck, Snapshot, SourceState, SourceView, Stats, UpdateView } from '../shared/types.ts';
 import { agentLink } from '../shared/agent_link.ts';
 import { agentProfile, Ask, findClaude, findCodex, addShellPath } from './ask.ts';
@@ -383,7 +384,7 @@ const claudeKind = (): Snapshot['claude'] => {
 // model's address (checked now). Null when it can.
 async function agentBlocked(): Promise<string | null> {
   installed = null;
-  if (!offline() && store.state.ask.provider === 'local' && (await ask.checkLocal(true)).changed) push();
+  if (store.state.ask.provider === 'local' && (await ask.checkLocal(true)).changed) push();
   const need = agentNeed({ ...askView(), local: ask.localStatus(), offline: offline() });
   return need && needText(need);
 }
@@ -720,7 +721,7 @@ function askView(): Snapshot['ask'] {
     if (has[other]) store.update((s) => (s.ask.provider = other));
   }
   // The local model's server: looked at again now and then while it's the one picked (on this Mac only).
-  if (!offline() && store.state.ask.provider === 'local') void ask.checkLocal().then((r) => r.changed && push());
+  if (store.state.ask.provider === 'local') void ask.checkLocal().then((r) => r.changed && push());
   // Whether Claude Code and Codex are signed in: asked of them now and then (each says from what's on this Mac).
   void checkSignIns();
   return { settings: store.state.ask, offline: offline(), installed: installed.v, keys: { anthropic: ask.hasKey('anthropic'), openai: ask.hasKey('openai') }, local: ask.localStatus(),
@@ -737,6 +738,10 @@ const signingIn = new Map<'claude-code' | 'codex', { url?: string; codeUrl?: str
 const signInProcs = new Map<'claude-code' | 'codex', ReturnType<typeof spawn>>();
 const signInView = () => Object.fromEntries([...signingIn].map(([h, x]) => [h, { url: x.paste ? x.codeUrl : x.url, code: !!x.codeUrl, paste: x.paste }]));
 function agentSignIn(harness: 'claude-code' | 'codex'): { ok: boolean; error?: string } {
+  if (offline()) {
+    toast(INTERNET_OFF, 'error');
+    return { ok: false, error: INTERNET_OFF };
+  }
   const bin = harness === 'codex' ? findCodex() : findClaude(P.home);
   const name = harness === 'codex' ? 'Codex' : 'Claude Code';
   if (!bin) return { ok: false, error: `${name} isn't on this Mac.` };
@@ -850,7 +855,7 @@ async function askOp(a: AskOp): Promise<unknown> {
     case 'check':
       // Look again: installed since, signed in since, or the local model's server opened.
       installed = null;
-      await Promise.all([offline() ? Promise.resolve() : ask.checkLocal(true), checkSignIns(true)]);
+      await Promise.all([ask.checkLocal(true), checkSignIns(true)]);
       push();
       return askView();
     case 'stop': return a.id && ask.stop(a.id);
@@ -890,11 +895,12 @@ async function askOp(a: AskOp): Promise<unknown> {
     case 'record': return typeof a.rowid === 'number' ? ask.record(a.rowid).catch(() => null) : null;
     case 'open-link':
       // Only the pages the app itself names: privacy settings, and where to get an agent or a key.
-      if ([...Object.values(RETENTION).map((r) => r?.link.url), ...Object.values(LINKS).map((l) => l.url)].includes(a.url ?? '')) void openExternal(a.url!);
+      if ([...Object.values(RETENTION).map((r) => r?.link.url), ...Object.values(LINKS).map((l) => l.url)].includes(a.url ?? '')) return openExternal(a.url!);
       return null;
     case 'sign-in':
       return agentSignIn(a.harness === 'codex' ? 'codex' : 'claude-code');
     case 'sign-in-code': {
+      if (offline()) return { ok: false, error: INTERNET_OFF };
       // The code Anthropic's page showed, to Claude Code's sign-in, as you'd type it there. Not kept or logged.
       const p = signInProcs.get(a.harness === 'codex' ? 'codex' : 'claude-code');
       const code = typeof a.code === 'string' ? a.code.trim() : '';
@@ -907,9 +913,9 @@ async function askOp(a: AskOp): Promise<unknown> {
       const st = signingIn.get(a.harness === 'codex' ? 'codex' : 'claude-code');
       if (st && a.code && st.codeUrl) st.paste = true;
       const url = st?.paste ? st.codeUrl : st?.url;
-      if (url && /^https:\/\/([a-z0-9-]+\.)*(claude\.ai|anthropic\.com|claude\.com|openai\.com|chatgpt\.com)\//i.test(url)) void openExternal(url);
+      const opened = url && /^https:\/\/([a-z0-9-]+\.)*(claude\.ai|anthropic\.com|claude\.com|openai\.com|chatgpt\.com)\//i.test(url) ? await openExternal(url) : null;
       push();
-      return null;
+      return opened;
     }
     case 'open-terminal':
       // To sign in to Claude Code or Codex, which happens in Terminal.
@@ -1233,15 +1239,40 @@ function electronBrowser(): string {
 }
 
 // Tests point UMP_EXTERNAL_LOG at a file: links and mail drafts are written there instead of opened. Only web
-// pages (in the person's browser), mail drafts and System Settings panes: never a file, app or other handler.
-async function openExternal(url: string) {
-  if (!/^(https?:|mailto:|x-apple\.systempreferences:)/i.test(url)) return log(`Didn't open ${url.split(':')[0]}: link`);
-  if (DEMO) return toast(`The demo doesn't open links (this one goes to ${/^https?:/i.test(url) ? new URL(url).hostname.replace(/^www\./, '') : url.split(':')[0]}).`);
-  if (process.env.UMP_EXTERNAL_LOG) return fs.appendFileSync(process.env.UMP_EXTERNAL_LOG, `${url}\n`);
-  if (HIDDEN) return log(`Didn't open ${url.split(':')[0]}: link (running hidden)`); // a hidden run never puts anything on screen
+// pages (in the person's browser), local files, mail drafts and System Settings panes: no other handlers.
+async function openExternal(url: string): Promise<{ ok: boolean; error?: string }> {
+  if (!/^(https?:|file:|mailto:|x-apple\.systempreferences:)/i.test(url)) {
+    log(`Didn't open ${url.split(':')[0]}: link`);
+    return { ok: false };
+  }
+  if (/^https?:/i.test(url) && offline()) {
+    toast(INTERNET_OFF, 'error');
+    return { ok: false, error: INTERNET_OFF };
+  }
+  let file: string | undefined;
+  if (/^file:/i.test(url)) {
+    try { file = fileURLToPath(url); } catch { return { ok: false }; } // no remote file hosts
+  }
+  if (DEMO) {
+    toast(`The demo doesn't open links (this one goes to ${/^https?:/i.test(url) ? new URL(url).hostname.replace(/^www\./, '') : url.split(':')[0]}).`);
+    return { ok: true };
+  }
+  if (process.env.UMP_EXTERNAL_LOG) {
+    fs.appendFileSync(process.env.UMP_EXTERNAL_LOG, `${url}\n`);
+    return { ok: true };
+  }
+  if (HIDDEN) {
+    log(`Didn't open ${url.split(':')[0]}: link (running hidden)`); // a hidden run never puts anything on screen
+    return { ok: true };
+  }
+  if (file) {
+    const error = await shell.openPath(file);
+    return error ? { ok: false, error } : { ok: true };
+  }
   const chosen = /^https?:/i.test(url) ? chosenPageBrowser() : null;
-  if (chosen?.app) return execFile('open', ['-a', chosen.app, url], (e) => e && toast(`Couldn't open ${chosen.name}.`, 'error'));
-  await shell.openExternal(url);
+  if (chosen?.app) execFile('open', ['-a', chosen.app, url], (e) => e && toast(`Couldn't open ${chosen.name}.`, 'error'));
+  else await shell.openExternal(url);
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------- your setup
@@ -1535,13 +1566,12 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       const inbox = inboxesFor(m.emails, m.appleMail, st().notifyEmail).find((x) => x.id === payload.inbox) ?? inboxesFor(m.emails, m.appleMail, st().notifyEmail)[0];
       if (!inbox) return { ok: false, error: 'no inbox to open' };
       const url = inboxUrl(inbox, { name: src.name, domains: src.domains ?? [], since: st().requestedAt });
-      if (url) await openExternal(url);
+      if (url) return openExternal(url);
       else openApp('Mail');
       return { ok: true };
     }
     case 'get-claude-code':
-      await openExternal('https://claude.com/claude-code');
-      return { ok: true };
+      return openExternal('https://claude.com/claude-code');
     case 'show-setup':
       sendToWindow('show-setup');
       return { ok: true };
@@ -1929,17 +1959,17 @@ async function act(sourceId: string, action: string, payload: Payload = {}): Pro
       const url = store.state.sources[sourceId]?.readySignal?.link ?? urlFor(src, 'downloadUrl');
       if (!url) return { ok: false, error: 'no page for this source' };
       if (DEMO && demoArrives(sourceId)) break;
-      await openExternal(url);
-      break;
+      return openExternal(url);
     }
     case 'open':
     case 'open-external':
     case 'open-download': {
       const url = urlFor(src, action === 'open-download' ? 'downloadUrl' : 'url');
       if (!url) return { ok: false, error: 'no page for this source' };
-      if (!READONLY) store.update(() => (st().openedAt = new Date().toISOString()));
       if (DEMO && demoArrives(sourceId)) break;
-      await openExternal(url);
+      const opened = await openExternal(url);
+      if (!opened.ok) return opened;
+      if (!READONLY) store.update(() => (st().openedAt = new Date().toISOString()));
       break;
     }
     case 'add-file': {
@@ -2834,6 +2864,7 @@ async function checkForUpdate(manual = false) {
 // Update: npm run update from the clone it was built from, on its own (it quits this app to replace it, then opens the
 // new one), with where it is read from what it writes as it goes.
 function startUpdate(): { ok?: boolean; error?: string } {
+  if (offline()) return { error: INTERNET_OFF };
   updateHow = lookAtHow();
   if (updateHow !== 'app') {
     push();
@@ -3075,6 +3106,8 @@ function wireIpc() {
     if (patch.offline === true) {
       stopAgents();
       visiting?.stop();
+      ask.stopCloud();
+      for (const p of signInProcs.values()) p.kill();
     }
     // Do It for Me turned on: it tells you in notifications when it needs you, so they're asked for now, while you're looking.
     if (patch.agentExports === true && !was.agentExports) void checkNotifications(true);
@@ -3222,7 +3255,7 @@ if (!app.requestSingleInstanceLock()) {
     const added = await addShellPath();
     applySetupEnv(); // before anything runs Python
     ask = new Ask({
-      paths: P, dir: app.getPath('userData'), settings: () => store.state.ask, log,
+      paths: P, dir: app.getPath('userData'), settings: () => store.state.ask, offline, log,
       name: () => probe?.identity?.names?.[0] ?? null,
       send: (ch, payload) => win && !win.isDestroyed() && win.webContents.send(ch, payload),
       crypt: { available: () => safeStorage.isEncryptionAvailable(), encrypt: (t) => safeStorage.encryptString(t), decrypt: (b) => safeStorage.decryptString(b) },
