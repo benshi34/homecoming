@@ -32,6 +32,8 @@ export function fileKey(p: string, size: number): string {
 function settingsFrom(d: AppState['settings'], r: unknown): AppState['settings'] {
   const s = { ...d, ...(r && typeof r === 'object' ? r : {}) } as AppState['settings'];
   if (s.agentExports && s.aiOn === undefined) Object.assign(s, { aiOn: true, aiAgreedAt: s.aiAgreedAt ?? new Date().toISOString() });
+  if (s.offline !== undefined) s.offline = s.offline === true;
+  if (s.networkOn !== undefined) s.networkOn = Array.isArray(s.networkOn) ? [...new Set(s.networkOn.filter((x): x is string => typeof x === 'string'))] : undefined;
   s.agentsAtOnce = agentsAtOnce(s);
   return s;
 }

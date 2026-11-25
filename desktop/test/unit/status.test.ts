@@ -247,6 +247,18 @@ describe('Mac sources', () => {
     assert.equal(blocked.blockedBy, 'fda', 'without Full Disk Access, that\'s what it needs');
   });
 
+  test('Other machines off in Network: unavailable and said so until it has read something; on, it is ready', () => {
+    const off = view('machines');
+    assert.equal(off.section, 'unavailable', 'a read would read nothing, so it is not waited on');
+    assert.equal(off.status, 'Off in Network');
+    assert.match(off.detail ?? '', /Turn on Other machines in Settings → General → Network/);
+    const on = state((s) => (s.settings.networkOn = ['machines']));
+    assert.equal(view('machines', { state: on }).status, 'Ready to read');
+    const offline = state((s) => { s.settings.networkOn = ['machines']; s.settings.offline = true; });
+    assert.equal(view('machines', { state: offline }).status, 'Off in Network', 'the internet off turns it off too');
+    assert.equal(view('machines', { stats: stats({ machines: { count: 9 } }) }).section, 'done', 'what an earlier read brought stays');
+  });
+
   test('errors show until a later successful run', () => {
     const err = state((s) => (s.sources.calls = { lastError: 'database is locked', lastErrorAt: hoursAgo(0.5) }));
     const failed = view('calls', { state: err, stats: stats({ calls: { count: 3, ran_at: hoursAgo(5) } }) });

@@ -9,6 +9,7 @@ import { ago, bytes, count, day, list, range, waitRange } from './format.ts';
 import { describeNew, newCandidates } from './identity.ts';
 import { inboxesFor, inboxLabel } from './inbox.ts';
 import type { Action, AppState, Candidate, Backup, JobView, Probe, SignInCheck, SourceState, SourceView, Stats, Summary } from './types.ts';
+import { INTERNET_OFF, NEEDS_NETWORK, NETWORK_SOURCES, networkOff } from './network.ts';
 
 export interface StatusInput {
   probe: Probe | null;
@@ -449,6 +450,11 @@ function macView(src: Source, inp: StatusInput): SourceView {
     return { ...v, section: 'unavailable', status: 'No accounts in Mail', detail: 'Add one in System Settings → Internet Accounts to have it read, then choose Check Again.',
       actions: [{ id: 'open-internet-accounts', label: 'Open Internet Accounts' }, { id: 'recheck', label: 'Check Again' }] };
   }
+  if (!t.records && networkOff(src.id, state.settings)) {
+    const row = NETWORK_SOURCES.find((r) => r.id === NEEDS_NETWORK[src.id]);
+    return { ...v, section: 'unavailable', status: 'Off in Network',
+      detail: state.settings?.offline ? INTERNET_OFF : `Turn on ${row?.name ?? 'its switch'} in Settings → General → Network to have it read.` };
+  }
   if (t.ranAt) {
     if (t.records === 0) {
       const phone = stats?.manifest?.[ON_THE_PHONE[src.id] ?? '']?.count ?? 0;  // kept on the iPhone page, not here
@@ -660,6 +666,9 @@ function exportView(src: Source, inp: StatusInput): SourceView {
   const watching = set.watchDownloads !== false;
   const v: SourceView = { ...base(src, st), section: 'todo', status: '', priority: 40, records: t.records, first: t.first, last: t.last,
     ranAt: t.ranAt ?? undefined, steps: stepsView(src, st, watching), tag: isWeb ? 'Web' : 'Manual', requestedAt: st?.requestedAt, accountName: st?.accountName };
+  if (isWeb && set.aiOn !== false && set.agentExports !== false && inp.agentWhy?.fix === 'offline' && inp.agentWhy.why) {
+    v.notes = [inp.agentWhy.why, ...(v.notes ?? [])];
+  }
   const addFile: Action = { id: 'add-file', label: 'Add the Download…', input: 'file' };
   // A service you added with no website has no page to open: its steps and a drafted request stand in.
   const open: Action | null = src.url ? { id: 'open', label: 'Open the Export Page', primary: true } : null;
@@ -943,7 +952,7 @@ export function computeSources(inp: StatusInput): SourceView[] {
   const noAi = inp.state.settings?.aiOn === false;
   // Can't run: no Do It for Me buttons, unless it's only the AI picked (it isn't there yet with it): then the button
   // stays, and says so when pressed (renderer agent_gate.tsx).
-  const noAgent = inp.claudeCode === false && inp.agentWhy?.fix !== 'provider';
+  const noAgent = inp.claudeCode === false && inp.agentWhy?.fix !== 'provider' && inp.agentWhy?.fix !== 'offline';
   const views = CATALOG.map((src) => {
     const v: SourceView = src.group === 'setup' ? setupView(src, inp)
       : src.group === 'mac' ? withContents(macView(src, inp), src, inp.stats)
